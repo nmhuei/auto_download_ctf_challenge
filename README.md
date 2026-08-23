@@ -1,0 +1,196 @@
+# ⚡ CTF Challenge Downloader & Workspace Builder
+
+Công cụ tự động hóa tải toàn bộ challenge từ các trang CTF (CTFd, rCTF, custom CTF platform), tự động trích xuất link nguồn/file đính kèm (bao gồm cả link bên thứ 3 như Google Drive, Dropbox, Mediafire, GitHub, Discord...), phân loại và tạo cấu trúc thư mục làm bài chuyên nghiệp.
+
+---
+
+## 🌟 Tính năng nổi bật
+
+- **Tự động phân loại & tổ chức thư mục**:
+  - Phân loại challenge theo danh mục (`Web`, `Pwn`, `Crypto`, `Forensics`, `Reverse`, `Misc`, ...).
+  - Tạo từng thư mục riêng biệt cho từng challenge.
+  - Tự động tạo `README.md` (chứa toàn bộ đề bài, points, author, hints, tags, lệnh netcat/kết nối).
+  - Tự động tạo file `solve.py` mẫu (đã tích hợp sẵn thư viện `pwn`, `requests` hoặc `Crypto` và host:port tương ứng).
+  - Lưu trữ `metadata.json` chứa dữ liệu thô của challenge.
+  - Tạo `SUMMARY.md` và `challenges.json` tổng quan ở thư mục gốc.
+
+- **Nhận diện & tải toàn bộ file liên quan**:
+  - Tải file đính kèm chính thức từ nền tảng CTF.
+  - **Tự động trích xuất link bên thứ 3 trong đề bài**:
+    - **Google Drive**: Tự động lấy file ID, bypass xác nhận file lớn / quét virus và tải trực tiếp.
+    - **Dropbox**: Tự động chuyển đổi thành link tải trực tiếp (`dl=1`).
+    - **MediaFire**: Tự động cào link tải trực tiếp.
+    - **GitHub / GitLab**: Tải raw files & releases.
+    - **Discord CDN**: Tải attachments đính kèm trong tin nhắn.
+    - Tải mọi file trực tiếp (`.zip`, `.pcap`, `.elf`, `.exe`, `.py`, `.c`, `.tar.gz`, ...).
+
+- **Hỗ trợ đa nền tảng**:
+  - **CTFd** (hầu hết các giải CTF hiện nay) - hỗ trợ cả Session Cookie và API Token, tự động xử lý CSRF nonce.
+  - **rCTF** (nền tảng của redpwn).
+  - **Generic / HTML Scraper** (tự động cào dữ liệu cho các trang web CTF tùy biến).
+
+- **Hiệu năng cao & An toàn**:
+  - Tải đa luồng (Multi-threading).
+  - Thanh tiến trình trực quan với `rich`.
+  - Tự động kiểm tra file đã tải để tránh tải lại (có cờ `--force` nếu muốn tải đè).
+  - Chuẩn hóa tên file/thư mục an toàn trên cả Linux, Windows, macOS.
+
+---
+
+## 🚀 Cài đặt
+
+Yêu cầu Python 3.8+.
+
+```bash
+# Cài đặt các thư viện cần thiết
+pip install -r requirements.txt
+```
+
+---
+
+## 🔑 Cách lấy Cookie hoặc Token từ trình duyệt
+
+### Cách 1: Lấy Session Cookie (Khuyên dùng)
+1. Mở trình duyệt và đăng nhập vào trang CTF.
+2. Nhấn `F12` để mở **Developer Tools** (Công cụ nhà phát triển).
+3. Vào tab **Application** (Chrome/Edge) hoặc **Storage** (Firefox) -> Chọn **Cookies** -> Chọn domain trang CTF.
+4. Tìm cookie có tên `session` (hoặc copy toàn bộ cookie).
+5. Copy giá trị của `session` (ví dụ: `session=.eJw1...` hoặc toàn bộ chuỗi).
+
+### Cách 2: Lấy API Token (Trên CTFd)
+1. Đăng nhập vào trang CTFd -> Bấm vào tên tài khoản ở góc trên bên phải -> Chọn **Settings**.
+2. Cuộn xuống phần **Access Tokens** -> Tạo một token mới.
+3. Copy mã token bắt đầu bằng `ctfd_...`.
+
+---
+
+## 💻 Hướng dẫn sử dụng
+
+### 1. Chế độ tương tác từng bước (Interactive Wizard)
+Chỉ cần chạy lệnh sau, công cụ sẽ hỏi bạn URL, Cookie, thư mục lưu, số luồng:
+```bash
+python main.py -i
+# hoặc chỉ cần chạy không tham số:
+python main.py
+```
+
+### 2. Chế độ dòng lệnh (CLI Commands)
+
+#### Tải toàn bộ với Cookie:
+```bash
+python main.py -u https://ctf.example.com -c "session=.eJw1z..." -o ./my_ctf
+```
+
+#### Tải bằng file chứa cookie:
+```bash
+# Lưu cookie vào file cookie.txt
+python main.py -u https://ctf.example.com -c cookie.txt -o ./my_ctf
+```
+
+#### Tải bằng CTFd API Token:
+```bash
+python main.py -u https://ctf.example.com -t ctfd_xxxxxxxxxxxxxxxxxxxx -o ./my_ctf
+```
+
+#### Chỉ tải một số Category cụ thể (Ví dụ: Web và Pwn):
+```bash
+python main.py -u https://ctf.example.com -c "session=..." -C Web Pwn -j 8
+```
+
+#### Bỏ qua một Category không muốn tải:
+```bash
+python main.py -u https://ctf.example.com -c "session=..." -E Misc Forensics
+```
+
+#### Không tải file từ bên thứ 3 (chỉ tải file đính kèm chính thức):
+```bash
+python main.py -u https://ctf.example.com -c "session=..." --no-third-party
+```
+
+---
+
+## 📂 Cấu trúc thư mục được tạo ra
+
+```text
+my_ctf/
+├── SUMMARY.md                       # Bảng tổng kết toàn bộ giải đấu, điểm số, danh mục, link từng bài
+├── challenges.json                  # Dữ liệu JSON tổng hợp toàn bộ giải
+│
+├── Web/                             # Thư mục thể loại Web
+│   ├── Super_Secure_Login/
+│   │   ├── README.md                # Đề bài, gợi ý, author, points, connection url
+│   │   ├── metadata.json            # Dữ liệu metadata chi tiết
+│   │   ├── solve.py                 # File exploit template có sẵn requests/session
+│   │   ├── src.zip                  # Source code đính kèm (hoặc tải từ GDrive)
+│   │   └── Dockerfile
+│   └── ...
+│
+├── Pwn/                             # Thư mục thể loại Pwn
+│   ├── Ret2Libc_Easy/
+│   │   ├── README.md                # Đề bài & câu lệnh `nc target.ctf.org 9001`
+│   │   ├── metadata.json
+│   │   ├── solve.py                 # File exploit template có sẵn pwntools kết nối target
+│   │   ├── vuln                     # Binary thực thi
+│   │   └── libc.so.6
+│   └── ...
+│
+├── Crypto/
+├── Reverse/
+└── Forensics/
+```
+
+---
+
+## 🛠️ Danh sách tham số đầy đủ
+
+| Tham số | Viết tắt | Ý nghĩa | Mặc định |
+| :--- | :--- | :--- | :--- |
+| `--url` | `-u` | Đường dẫn trang CTF (ví dụ `https://ctf.example.com`) | Bắt buộc |
+| `--cookie` | `-c` | Chuỗi cookie hoặc đường dẫn đến file cookie | `None` |
+| `--token` | `-t` | Token API (CTFd token hoặc Bearer token) | `None` |
+| `--output` | `-o` | Thư mục đầu ra để lưu challenge | `./ctf_challenges` |
+| `--threads` | `-j` | Số luồng tải song song | `4` |
+| `--category` | `-C` | Danh sách category muốn tải (cách nhau bởi dấu cách) | Tất cả |
+| `--exclude` | `-E` | Danh sách category muốn loại trừ | Không có |
+| `--no-third-party`| | Tắt tự động tải từ link bên thứ 3 (GDrive, Dropbox, ...) | `False` |
+| `--no-template` | | Tắt tạo file mẫu `solve.py` | `False` |
+| `--force` | `-f` | Buộc tải lại toàn bộ file dù đã tồn tại | `False` |
+| `--timeout` | | Thời gian timeout mỗi request (giây) | `30` |
+| `--interactive` | `-i` | Bật giao diện hướng dẫn từng bước | `False` |
+
+---
+
+## 🚩 Công cụ tự động nộp Flag (`submit.py`)
+
+Công cụ hỗ trợ nộp flag tự động lên nền tảng **CTFd**, **GZ::CTF**, và **rCTF**, đồng thời tự động cập nhật trạng thái `- [x] Solved` trong file `README.md` và `metadata.json` của challenge.
+
+### 1. Nộp theo tên hoặc ID của challenge:
+```bash
+# Nộp theo tên bài:
+python3 submit.py -u https://jeo.infosecptit.org/games/6/challenges -c "GZCTF_Token=..." --name "Tiger Bạc" -f "PTITCTF{Vu_Duc_Luong}"
+
+# Nộp theo ID bài:
+python3 submit.py -u https://jeo.infosecptit.org/games/6/challenges -c "GZCTF_Token=..." --id 18 -f "PTITCTF{Vu_Duc_Luong}"
+```
+
+### 2. Tự động quét Workspace và nộp hàng loạt (Auto Scan & Submit):
+Khi bạn giải xong bài và điền flag vào `README.md` (khung `FLAG{...}`) hoặc tạo file `flag.txt` trong thư mục bài, chỉ cần chạy lệnh:
+```bash
+python3 submit.py -w ./PTIT_CTF_2026 -c "GZCTF_Token=..." --auto
+```
+Công cụ sẽ tự động duyệt toàn bộ workspace, tìm tất cả các bài đã có flag nhưng chưa nộp, submit lên hệ thống và cập nhật trạng thái solved.
+
+### 3. Giao diện tương tác nộp flag:
+```bash
+python3 submit.py -i
+```
+
+---
+
+## 🧪 Kiểm thử (Unit Tests)
+
+Chạy bộ test suite tích hợp để kiểm tra mọi tính năng:
+```bash
+python3 test_suite.py
+```
+

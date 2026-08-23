@@ -1,0 +1,54 @@
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict
+import os
+
+@dataclass
+class DownloaderConfig:
+    url: str
+    cookie: Optional[str] = None
+    token: Optional[str] = None
+    output_dir: Optional[str] = None
+    download_third_party: bool = True
+    threads: int = 4
+    timeout: int = 30
+    create_solve_template: bool = True
+    force_redownload: bool = False
+    categories: Optional[List[str]] = None
+    exclude_categories: Optional[List[str]] = None
+    custom_headers: Dict[str, str] = field(default_factory=dict)
+    
+    def validate(self):
+        if not self.url:
+            raise ValueError("CTF platform URL is required.")
+        
+        # Remove hash fragment
+        self.url = self.url.split("#")[0].strip()
+        
+        # Ensure url starts with http:// or https://
+        if not self.url.startswith("http://") and not self.url.startswith("https://"):
+            self.url = "https://" + self.url
+        self.url = self.url.rstrip("/")
+
+        # Extract token from query params if present in URL
+        import urllib.parse
+        parsed = urllib.parse.urlparse(self.url)
+        if not self.token and parsed.query:
+            qs = urllib.parse.parse_qs(parsed.query)
+            if "token" in qs and qs["token"]:
+                self.token = qs["token"][0]
+
+        # Strip common trailing page suffixes (like /challenges, /scoreboard, /login)
+        path = parsed.path.rstrip("/")
+        for suffix in ["/challenges", "/scoreboard", "/login", "/register", "/users", "/teams", "/rules", "/notifications"]:
+            if path.endswith(suffix):
+                path = path[:-len(suffix)]
+                break
+        
+        self.url = f"{parsed.scheme}://{parsed.netloc}{path}".rstrip("/")
+        
+        # Expand user path if provided
+        if self.output_dir:
+            self.output_dir = os.path.abspath(os.path.expanduser(self.output_dir))
+
+
+
