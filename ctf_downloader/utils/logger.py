@@ -38,12 +38,11 @@ class Logger:
 
     @staticmethod
     def banner():
-        banner_text = """
- [bold cyan]╔═══════════════════════════════════════════════════════════╗[/bold cyan]
- [bold cyan]║[/bold cyan]   [bold magenta]⚡ CTF Challenge Auto-Downloader & Workspace Builder ⚡[/bold magenta]  [bold cyan]║[/bold cyan]
- [bold cyan]╚═══════════════════════════════════════════════════════════╝[/bold cyan]
-        """
-        console.print(banner_text)
+        """Banner PHOSPHOR FIELD KIT — phương án B half-block (spec §2)."""
+        from rich.console import Group
+
+        from ..ui.banner import banner_b, tagline_text
+        console.print(Group(banner_b(), tagline_text()))
 
     @staticmethod
     def print_table(title: str, columns: list, rows: list):

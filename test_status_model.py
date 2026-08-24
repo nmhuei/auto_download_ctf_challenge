@@ -22,7 +22,7 @@ from ctf_downloader.platforms.gzctf import GZCTFPlatform
 from ctf_downloader.platforms.rctf import RCTFPlatform
 from ctf_downloader.services.pull_service import PullService
 from ctf_downloader.services.status_service import StatusService
-from ctf_downloader.storage.constants import STATUS_ICONS
+from ctf_downloader.storage.constants import STATUS_ICONS  # noqa: F401 (legacy icon bảng)
 from ctf_downloader.storage.workspace_repo import WorkspaceRepo, normalize_status
 
 
@@ -613,31 +613,29 @@ class TestRenderIcons(TempWorkspaceCase):
             "notes": "SSTI sandbox escape — đang bypass",
         })
         out = self._render()
-        # Badge đa chiều theo bảng icon spec §6
-        self.assertIn(f"[{STATUS_ICONS['solve']['solved_by_me']}]", out)
-        self.assertIn(f"[{STATUS_ICONS['flag']['hoarded']}]", out)
-        self.assertIn(f"[{STATUS_ICONS['writeup']['draft']}]", out)
-        # Header thống kê đầy đủ
-        self.assertIn("📊 Progress:", out)
-        self.assertIn("💰 Points:", out)
-        self.assertIn("🏴 Hoarded:", out)
-        self.assertIn("📝 Drafts:", out)
-        self.assertIn("📦 Files:", out)
-        # Dòng note
+        # PHOSPHOR redesign: badge đa chiều [a][b][c] thay bằng glyph ngữ
+        # nghĩa spec §4.3 — ✔ solved, ✎ draft; hoarded/drafts về dashboard sub.
+        self.assertIn("✔", out)
+        self.assertIn("✎", out)
+        # Dashboard header (spec §4.2): nhãn UPPERCASE faint + sub muted
+        self.assertIn("TIẾN ĐỘ", out)
+        self.assertIn("ĐIỂM", out)
+        self.assertIn("hoarded 1 · drafts 1", out)
+        # Dòng note (cột cuối, giữ ngoặc kép)
         self.assertIn('"SSTI sandbox escape — đang bypass"', out)
 
     def test_unsolved_default_icons(self):
         out = self._render()
-        self.assertIn(f"[{STATUS_ICONS['solve']['unsolved']}]", out)
-        self.assertIn(f"[{STATUS_ICONS['flag']['none']}]", out)
-        self.assertIn(f"[{STATUS_ICONS['writeup']['none']}]", out)
+        # PHOSPHOR: unsolved → glyph '·' faint (không còn badge [∅]/[-])
+        self.assertIn("·", out)
 
     def test_container_icon_for_container_chall(self):
         meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
         meta["instance_info"] = {"is_container": True}
         self.meta_path.write_text(json.dumps(meta), encoding="utf-8")
         out = self._render()
-        self.assertIn(STATUS_ICONS["container"]["stopped"], out)
+        # PHOSPHOR: container axis → glyph ⛁ (spec §4.3, thay 🐳⏸)
+        self.assertIn("⛁", out)
 
 
 class TestInstanceContainerMirror(TempWorkspaceCase):
@@ -805,10 +803,9 @@ class TestStatusSmokePTIT(unittest.TestCase):
             [sys.executable, "main.py", "status", "-w", "PTIT_CTF_2026"],
             cwd=str(repo_root), capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
-        # UI redesign: header cũ "🏆 CTF WORKSPACE: <tên>" (divider ====) được
-        # thay bằng Panel bo tròn title "┌ 🏆 <tên giải> ┐" — assert trên
-        # trophy marker của panel title thay vì chuỗi "CTF WORKSPACE".
-        self.assertIn("🏆", result.stdout)
+        # UI redesign (PHOSPHOR): header cũ "🏆 CTF WORKSPACE: <tên>" được thay
+        # bằng StatusDashboard panel (spec §4.2) — assert nhãn cột TIẾN ĐỘ.
+        self.assertIn("TIẾN ĐỘ", result.stdout)
 
 
 # ----------------------------------------------------------------------
@@ -1187,9 +1184,9 @@ class TestEventWindowHeader(TempWorkspaceCase):
         self._set_window((now - dt.timedelta(hours=1)).isoformat(),
                          (now + dt.timedelta(hours=5)).isoformat())
         out = self._render_stdout()
-        self.assertIn("⏱️", out)
-        line = next(ln for ln in out.splitlines() if "⏱️" in ln)
-        self.assertIn("🔴 LIVE", line)
+        # PHOSPHOR: window nằm trong subtitle đáy panel, marker không emoji
+        line = next(ln for ln in out.splitlines() if "LIVE" in ln)
+        self.assertIn("LIVE", line)
         self.assertIn("còn ", line)
         # mốc tuyệt đối hiển thị giờ local
         self.assertRegex(line, r"\d{2}:\d{2} \d{2}/\d{2}")
@@ -1200,8 +1197,7 @@ class TestEventWindowHeader(TempWorkspaceCase):
         self._set_window((now + dt.timedelta(days=2, hours=3)).isoformat(),
                          (now + dt.timedelta(days=4)).isoformat())
         out = self._render_stdout()
-        line = next(ln for ln in out.splitlines() if "⏱️" in ln)
-        self.assertIn("⏳ Countdown", line)
+        line = next(ln for ln in out.splitlines() if "Countdown" in ln)
         self.assertIn("bắt đầu sau 2d", line)
 
     def test_ended_after_end(self):
@@ -1210,8 +1206,7 @@ class TestEventWindowHeader(TempWorkspaceCase):
         self._set_window((now - dt.timedelta(days=10)).isoformat(),
                          (now - dt.timedelta(days=3)).isoformat())
         out = self._render_stdout()
-        line = next(ln for ln in out.splitlines() if "⏱️" in ln)
-        self.assertIn("✅ Ended", line)
+        line = next(ln for ln in out.splitlines() if "Ended" in ln)
         self.assertIn("kết thúc 3 ngày trước", line)
 
     def test_epoch_ms_and_garbage_inputs(self):
@@ -1220,17 +1215,19 @@ class TestEventWindowHeader(TempWorkspaceCase):
         # epoch-ms (GZCTF style) → LIVE
         self._set_window(now_ms - 3600_000, now_ms + 3600_000)
         out = self._render_stdout()
-        self.assertIn("🔴 LIVE", out)
+        self.assertIn("LIVE", out)
         # garbage / null / start>=end → coi như không có window
         for bad in (("null", "null"), ("garbage", 1756000000),
                     ("2026-08-24T10:00:00+00:00", "2026-08-24T09:00:00+00:00")):
             self._set_window(*bad)
-            self.assertNotIn("⏱️", self._render_stdout())
+            clean = self._render_stdout()
+            self.assertNotIn("LIVE", clean)
+            self.assertNotIn("Countdown", clean)
 
     def test_no_window_output_identical_to_legacy_snapshot(self):
         """Không có event_window → header phải y hệt snapshot bản cũ."""
         baseline = self._render_stdout()
-        self.assertNotIn("⏱️", baseline)
+        self.assertNotIn("LIVE", baseline)
         # key hỏng/giá trị null cũng không được đổi MỘT ký tự nào
         self._set_window(None, None)          # pop event_window (no-op)
         self.assertEqual(self._render_stdout(), baseline)

@@ -228,7 +228,13 @@ def test_theme_defaults_have_ctf_semantic_keys():
     theme = load_theme(None)
     for key in ("solved", "unsolved", "firstblood", "div_line", "hi_fg", "title"):
         assert key in theme.styles
-    assert theme.styles["success"] == Style.parse("green")
+    # PHOSPHOR FIELD KIT (spec §3): token mới + legacy alias trỏ vào hex spec.
+    for key in ("fg.base", "fg.muted", "fg.faint",
+                "accent", "accent.hi", "accent.deep",
+                "info", "solved", "firstblood", "error", "warn"):
+        assert key in theme.styles
+    assert theme.styles["success"] == Style.parse("#46C46B")   # = solved
+    assert theme.styles["div_line"] == Style.parse("#7A5200")  # = accent.deep
 
 
 def test_theme_toml_override(tmp_path):
@@ -242,8 +248,8 @@ def test_theme_toml_override(tmp_path):
     theme = load_theme(toml_file)
     assert theme.styles["solved"] == Style.parse("bold blue")
     assert theme.styles["firstblood"] == Style.parse("#ff004f")
-    # untouched defaults remain
-    assert theme.styles["hint"] == Style.parse("cyan")
+    # untouched defaults remain (PHOSPHOR info teal)
+    assert theme.styles["hint"] == Style.parse("#62C8CE")
 
 
 def test_loaded_theme_applies_to_console(tmp_path):

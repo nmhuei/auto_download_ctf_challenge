@@ -180,8 +180,8 @@ class TagsNotesCase(unittest.TestCase):
     def test_render_labels_and_note_icons(self):
         self._tag_fixture()
         out = self._render_capture(self.repo)
-        self.assertIn("🏷️ hard,todo", out)
-        # UI redesign: note chuyển từ dòng phụ "└─ 📝 ..." thành cột cuối
+        self.assertIn("#hard,todo", out)
+        # PHOSPHOR redesign: labels → "#tag" muted sau tên; note là cột cuối
         # của bảng challenge (vẫn giữ ngoặc kép).
         self.assertIn('"đã thử SSTI, bị chặn"', out)
 

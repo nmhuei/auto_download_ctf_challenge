@@ -586,7 +586,7 @@ class TestStatusServiceSummaryStats(unittest.TestCase):
         # dòng Logger.info "Scanning all CTF workspaces in ..." + rich Table.
         self.assertIn("Scanning all CTF workspaces", out)
         self.assertIn("TestCTF", out)
-        self.assertIn("GZCTF", out)
+        self.assertIn("gzctf", out)   # PHOSPHOR: platform lowercase muted
         self.assertIn("0/1", out)
         # Workspace rỗng không xuất hiện trong bảng
         self.assertNotIn("ws_empty\n", out.split("Progress")[-1].split("TestCTF")[0])
@@ -772,19 +772,19 @@ class TestRenderTreeOnlyContainer(unittest.TestCase):
         full = self._render()
         cont_only = self._render(only_container=True)
 
-        # Full tree: cả 2 challenge đều xuất hiện; container có badge trục
-        # [🐳⏸] (UI redesign: bỏ tag cuối dòng "[🐳 Container]" trùng lặp).
+        # Full tree: cả 2 challenge đều xuất hiện; container có glyph ⛁
+        # (PHOSPHOR §4.3 — bỏ tag "[🐳 Container]" trùng lặp).
         self.assertIn("Dyn", full)
         self.assertIn("Static", full)
-        self.assertIn(STATUS_ICONS["container"]["stopped"], full)
+        self.assertIn("⛁", full)
 
         # only_container=True: chỉ Dyn còn lại, Static bị lọc bỏ;
-        # header workspace vẫn được in đầy đủ (Panel title + platform badge).
+        # header workspace vẫn được in đầy đủ (panel title + subtitle).
         self.assertIn("Dyn", cont_only)
         self.assertNotIn("Static", cont_only)
-        self.assertIn("┌ 🏆 TreeCTF ┐", cont_only)
-        self.assertIn("[GZCTF]", cont_only)
-        self.assertIn(STATUS_ICONS["container"]["stopped"], cont_only)
+        self.assertIn("TreeCTF", cont_only)
+        self.assertIn("tree", cont_only.lower())
+        self.assertIn("⛁", cont_only)
 
 
 # ======================================================================

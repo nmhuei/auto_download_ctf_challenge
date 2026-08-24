@@ -85,9 +85,9 @@ class TestMeterGradientPath(MeterTestCase):
              patch("ctf_downloader.ui.widgets.gradient",
                    return_value=[(0, 200, 83)] * 101):
             self._render(buf)
-        # UI redesign: bar tổng workspace chuyển vào Panel header, meter
-        # gradient width 30 → 20 (category giữ nguyên 10).
-        self.assertIn((100.0, 20), calls)   # bar tổng workspace (trong Panel)
+        # PHOSPHOR redesign: bar tổng workspace chuyển vào cột TIẾN ĐỘ của
+        # dashboard, meter gradient width 30 → 22 (category giữ nguyên 10).
+        self.assertIn((100.0, 22), calls)   # bar tổng workspace (dashboard)
         self.assertIn((100.0, 10), calls)   # bar từng category
         out = buf.getvalue()
         self.assertIn("█", out)             # output chứa ký tự block
@@ -104,9 +104,8 @@ class TestFallbackPlain(MeterTestCase):
         self.assertEqual(calls, [])         # meter KHÔNG được gọi
         out = buf.getvalue()
         self.assertIn("░", out)             # ký tự block phần rỗng
-        # UI redesign: bar tổng 30 ô đứng riêng thành dòng "[███...]" cũ không
-        # còn; bar plain 20 ô nằm trong ô 📊 Progress của Panel header.
-        self.assertIn("░" * 20, out)
+        # PHOSPHOR: bar plain 22 ô nằm trong cột TIẾN ĐỘ của dashboard.
+        self.assertIn("░" * 22, out)
         self.assertIn("0/1", out)
         self.assertIn("0.0%", out)
 
@@ -118,8 +117,8 @@ class TestFallbackPlain(MeterTestCase):
              patch("ctf_downloader.ui.widgets.meter", fake_meter_recorder(calls)):
             self._render(buf)
         self.assertEqual(calls, [])
-        # UI redesign: bar plain 20 ô nằm trong ô 📊 Progress của Panel header.
-        self.assertIn("░" * 20, buf.getvalue())
+        # PHOSPHOR: bar plain 22 ô nằm trong cột TIẾN ĐỘ của dashboard.
+        self.assertIn("░" * 22, buf.getvalue())
         self.assertIn("0.0%", buf.getvalue())
 
 

@@ -18,9 +18,9 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from ..storage.constants import CATEGORY_ICONS, FLAG_PLACEHOLDER, STATUS_ICONS
+from ..storage.constants import FLAG_PLACEHOLDER
 from ..storage.workspace_repo import WorkspaceRepo
-from ..ui.theme import load_theme
+from ..ui.theme import FG_BASE, FG_MUTED, load_theme
 from ..utils.logger import Logger
 from ..utils.writeup_assessor import assess_writeup
 
@@ -39,10 +39,25 @@ WRITEUP_RANK = {"none": 0, "skeleton": 1, "draft": 2, "complete": 3}
 TAG_PATTERN = re.compile(r'^[a-z0-9-]{1,24}$')
 TAG_MAX_LEN = 24
 
-# Gradient meter (btop pattern): xanh → vàng → đỏ theo % hoàn thành.
-METER_RAMP_START = (0, 200, 83)    # xanh lá
-METER_RAMP_MID = (255, 214, 0)     # vàng
-METER_RAMP_END = (255, 61, 61)     # đỏ
+# Gradient meter (btop pattern, design-system spec §3.3):
+# than hồng → hổ phách → vàng nhạt (PHOSPHOR FIELD KIT — accent duy nhất).
+METER_RAMP_START = (0x6B, 0x43, 0x00)
+METER_RAMP_MID = (0xFF, 0xB0, 0x00)
+METER_RAMP_END = (0xFF, 0xE4, 0x9A)
+
+# Glyph ngữ nghĩa thay emoji (spec §4.3): state / draft / container / file.
+ROW_GLYPHS = {
+    'solve': {
+        'unsolved': ('·', 'fg.faint'),
+        'working': ('◆', 'warn'),
+        'solved_by_me': ('✔', 'solved'),
+        'solved_by_team': ('✔', 'solved'),
+        'solved_other': ('✔', 'solved'),
+    },
+    'draft_badge': '✎',
+    'container_badge': '⛁',
+    'file_badge': '⎘',
+}
 
 
 class ChallengeNotFoundError(Exception):
@@ -533,99 +548,168 @@ class StatusService:
     # ------------------------------------------------------------------ #
     # Render cây challenge
     # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------ #
+    # StatusDashboard (design-system spec §4.2 — PHOSPHOR FIELD KIT)
+    # ------------------------------------------------------------------ #
     @staticmethod
-    def _header_panel(repo: WorkspaceRepo, stats: Dict[str, Any]) -> Panel:
-        """Panel bo tròn (btop box) tổng quan giải: grid 2 cột —
+    def _solve_pulse(repo: WorkspaceRepo) -> Tuple[List[float], int]:
+        """Nhịp giải 24h cho sparkline ``NHỊP GIẢI`` (spec §4.2).
 
-        trái: 👤 user/team · 📊 progress meter · 💰 points;
-        phải: 🏴 hoarded · 📝 drafts · 📦 files · ⏱️ window.
-        Hai cột khi vừa khít chiều rộng render; không thì tự xếp dọc.
+        Chỉ AGGREGATE dữ liệu có sẵn trong ``submit_history.json`` lúc render
+        (không thêm tính năng): 24 bucket theo giờ, flag đếm theo entry
+        ``result == 'correct'`` trong cửa sổ 24h qua. Trả ``(24 giá trị giờ,
+        tổng flag trong window)``.
         """
-        # --- Trái ---
-        who = []
-        if stats['user']:
-            who.append(f"👤 User: {stats['user']}")
-        if stats['team']:
-            who.append(f"👥 Team: {stats['team']}")
-        user_cell = Text(" ".join(who)) if who else Text()
+        import datetime as _dt
+        try:
+            entries = repo.load_submit_history().get('entries') or []
+        except Exception:
+            entries = []
+        if not entries:
+            return [], 0
+
+        now = _utcnow()
+
+        def _parse_ts(v):
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                try:
+                    return _dt.datetime.fromtimestamp(float(v), _dt.timezone.utc)
+                except (OverflowError, OSError, ValueError):
+                    return None
+            s = str(v or '').strip()
+            if not s:
+                return None
+            try:
+                d = _dt.datetime.fromisoformat(s.replace('Z', '+00:00'))
+                return d if d.tzinfo else d.replace(tzinfo=_dt.timezone.utc)
+            except ValueError:
+                return None
+
+        buckets = [0.0] * 24
+        total = 0
+        for e in entries:
+            if str(e.get('result') or '') != 'correct':
+                continue
+            ts = _parse_ts(e.get('timestamp'))
+            if ts is None:
+                continue
+            age_h = (now - ts).total_seconds() / 3600.0
+            if 0 <= age_h <= 24:
+                buckets[min(23, int(age_h))] += 1
+                total += 1
+        return buckets, total
+
+    @classmethod
+    def _header_panel(cls, repo: WorkspaceRepo, stats: Dict[str, Any]) -> Panel:
+        """StatusDashboard (spec §4.2): panel rounded viền ``accent.deep``,
+        padding ``(1, 2)``, width ≤ 92; grid 3 cột — nhãn UPPERCASE ``fg.faint``,
+        value chính, sub ``fg.muted``:
+
+        - TIẾN ĐỘ: meter gradient amber 22 ô + ``d/d solved · x.x%``
+        - ĐIỂM: ``earned / total`` (earned accent.hi) + ``hoarded n · drafts n``
+        - NHỊP GIẢI · 24H: sparkline braille phẳng amber + ``+n flags``
+        Subtitle đáy panel: ``platform · user[ · team][ · window]``.
+        """
+        from rich.cells import cell_len as _cell_len
+        from ..ui.widgets import braille_graph, gradient
+        from ..ui.widgets import meter as _meter
+
+        def lab(s: str) -> Text:
+            return Text(s.upper(), style="fg.faint")
 
         rate = stats['completion_rate']
-        progress_cell = Text("📊 Progress: ")
-        progress_cell.append(f"{stats['solved_challenges']}/{stats['total_challenges']} ")
-        progress_cell.append_text(StatusService._meter_only(rate, 20))
-        progress_cell.append(f" {rate:.1f}%", style="dim")
-
-        points_cell = Text("💰 Points: ")
-        points_cell.append(str(stats['earned_points']), style="bold")
-        points_cell.append(f"/{stats['total_points']}", style="dim")
-
-        # --- Phải ---
-        hoarded_cell = Text("🏴 Hoarded: ")
-        hoarded_cell.append(str(stats.get('hoarded_flags', 0)), style="hi_fg")
-        drafts_cell = Text("📝 Drafts: ")
-        drafts_cell.append(str(stats.get('writeup_drafts', 0)), style="hint")
-        files_cell = Text("📦 Files: ")
-        files_cell.append(str(stats.get('local_files', 0)))
-
-        window_str = StatusService._render_window(repo)
-        left_cells: List[Text] = [user_cell, progress_cell, points_cell]
-        right_cells: List[Text] = [hoarded_cell, drafts_cell, files_cell]
-        if window_str:
-            win_cell = Text("⏱️ Window: ", style="dim")
-            win_style = ("error" if window_str.startswith("🔴")
-                         else "warning" if window_str.startswith("⏳")
-                         else "success")
-            win_cell.append(window_str, style=win_style)
-            right_cells.append(win_cell)
-
-        # Degrade theo chiều rộng render thật: nếu 2 cột không khít (panel
-        # trừ viền/padding), xếp dọc 1 cột để KHÔNG bao giờ truncate dữ liệu
-        # (rich sẽ cắt "…" khi grid tràn — mất thông tin mốc giờ window).
-        from rich.cells import cell_len as _cell_len
-        left_w = max(_cell_len(t.plain) for t in left_cells)
-        right_w = max(_cell_len(t.plain) for t in right_cells)
-        avail = max(24, _status_console.width - 6)
-
-        grid = Table.grid(padding=(0, 2))
-        grid.add_column(justify="left", no_wrap=True)
-        if left_w + right_w + 2 <= avail:
-            grid.add_column(justify="left", no_wrap=True)
-            n_rows = max(len(left_cells), len(right_cells))
-            for i in range(n_rows):
-                l = left_cells[i] if i < len(left_cells) else Text()
-                r = right_cells[i] if i < len(right_cells) else Text()
-                grid.add_row(l, r)
+        if cls._gradient_enabled():
+            grad = gradient(METER_RAMP_START, METER_RAMP_MID, METER_RAMP_END)
+            meter_c1 = _meter(rate, 22, grad)
         else:
-            for t in (*left_cells, *right_cells):
-                grid.add_row(t)
+            meter_c1 = cls._meter_only(rate, 22)
 
-        title_text = Text(f"┌ 🏆 {stats['title']} ┐", style="title")
-        subtitle_text = Text(f"[{str(stats['platform']).upper()}]", style="hi_fg")
+        c1 = Table.grid()
+        c1.add_row(lab("tiến độ"))
+        c1.add_row(meter_c1)
+        sub1 = Text()
+        sub1.append(f"{stats['solved_challenges']}/"
+                    f"{stats['total_challenges']}", style=f"bold {FG_BASE}")
+        sub1.append(" solved · ", style="fg.muted")
+        sub1.append(f"{rate:.1f}%", style="fg.base")
+        c1.add_row(sub1)
+
+        c2 = Table.grid()
+        c2.add_row(lab("điểm"))
+        val2 = Text()
+        val2.append(str(stats['earned_points']), style="accent.hi")
+        val2.append(f" / {stats['total_points']}", style="fg.muted")
+        c2.add_row(val2)
+        c2.add_row(Text(
+            f"hoarded {stats.get('hoarded_flags', 0)} · "
+            f"drafts {stats.get('writeup_drafts', 0)}", style="fg.muted"))
+
+        pulse, pulse_total = cls._solve_pulse(repo)
+        spark = braille_graph(pulse if pulse else [0.0], 12)
+        spark.stylize("accent")
+        c3 = Table.grid()
+        c3.add_row(lab("nhịp giải · 24h"))
+        c3.add_row(spark)
+        c3.add_row(Text(f"+{pulse_total} flags", style="fg.muted"))
+
+        # 3 cột cố định theo spec (30 + 22 + phần còn lại) — natural width
+        # ≈79 cols vừa mọi terminal ≥80. Lưu ý: rich cũ bỏ qua Panel.width
+        # khi expand=False nên panel tự co theo nội dung lưới.
+        grid = Table.grid(padding=(0, 4))
+        grid.add_column(width=30)
+        grid.add_column(width=22)
+        grid.add_column(width=17)   # 15 nội dung + 2 padding cột (0,4)
+        grid.add_row(c1, c2, c3)
+
+        subtitle = Text(style="fg.muted")
+        parts = [str(stats['platform']).lower()]
+        if stats['user']:
+            parts.append(str(stats['user']))
+        if stats['team']:
+            parts.append(f"team {stats['team']}")
+        subtitle.append(" · ".join(parts))
+        window_str = StatusService._render_window(repo)
+        if window_str:
+            win_style = ("error" if window_str.startswith("LIVE")
+                         else "warn" if window_str.startswith("Countdown")
+                         else "fg.muted")
+            subtitle.append(" · ", style="fg.faint")
+            subtitle.append(window_str, style=win_style)
+
         return Panel(
             grid,
             box=box.ROUNDED,
-            border_style="div_line",
-            title=title_text,
-            subtitle=subtitle_text,
+            border_style="accent.deep",
+            title=Text(f" {stats['title']} ", style=f"bold {FG_BASE}"),
+            subtitle=subtitle,
             expand=False,
-            padding=(0, 1),
+            padding=(1, 2),
         )
 
-    @staticmethod
-    def _category_heading(cat_icon: str, cat: str,
-                          solved: int, total: int) -> Text:
-        """Heading category: ``📁 🔐 Crypto ───────── 0/7 [meter10]``
-        (tên dim, gạch nối div_line, đếm dim, meter gradient)."""
+    @classmethod
+    def _category_heading(cls, cat: str, solved: int, total: int,
+                          earned_pts: int, total_pts: int) -> Text:
+        """CategorySection heading (spec §4.4):
+
+        ``── NAME ....đẩy tới cột phải.... d/d [meter10] earned/total``
+
+        ``──`` accent.deep, TÊN bold fg.base UPPERCASE (không icon, không
+        dot-leader), đếm bold, mini-meter 10 ô gradient amber, điểm muted.
+        """
+        from rich.cells import cell_len as _cell_len
         head = Text()
-        head.append("📁 ")
-        head.append(f"{cat_icon} {cat}", style="dim")
-        label_w = 2 + len(cat_icon) + 1 + len(cat)  # xấp xỉ độ rộng hiển thị
-        dashes = max(2, 40 - label_w)
-        head.append(" " + "─" * dashes + " ", style="div_line")
-        head.append(f"{solved}/{total}", style="dim")
-        head.append(" ")
-        head.append_text(StatusService._meter_only(
+        head.append("── ", style="accent.deep")
+        head.append(str(cat).upper(), style=f"bold {FG_BASE}")
+        tail = Text()
+        tail.append(f"{solved}/{total} ", style=f"bold {FG_BASE}")
+        tail.append_text(cls._meter_only(
             (solved / total * 100) if total > 0 else 0, 10))
+        tail.append(" ")
+        tail.append(f"{earned_pts}/{total_pts}", style="fg.muted")
+        target = min(88, max(40, _status_console.width - 4))
+        pad = target - _cell_len(head.plain) - _cell_len(tail.plain)
+        head.append(" " * max(1, pad))
+        head.append_text(tail)
         return head
 
     @classmethod
@@ -681,9 +765,9 @@ class StatusService:
             if not c_list:
                 continue
 
-            cat_icon = CATEGORY_ICONS.get(str(cat).lower(), '📁')
             cls._emit(cls._category_heading(
-                cat_icon, cat, data['solved'], data['total']))
+                cat, data['solved'], data['total'],
+                data.get('earned', 0), data.get('points', 0)))
             for line in cls._challenge_rows(repo, c_list, narrow=narrow):
                 indented = Text("  ")
                 indented.append_text(line)
@@ -693,13 +777,16 @@ class StatusService:
     @staticmethod
     def _aligned_grid(rows: List[List[Text]],
                       aligns: List[str],
-                      gap: str = "  ") -> List[Text]:
+                      gap: str = "  ",
+                      gaps: Optional[List[int]] = None) -> List[Text]:
         """Grid ẩn viền căn cột THẲNG HÀNG kiểu btop: mỗi cột rộng bằng cell
         dài nhất, đệm bằng khoảng trắng (không dùng rich Table để bảng KHÔNG
         bị nén/truncate theo chiều rộng console — terminal hẹp tự overflow
         giữ nguyên thông tin, đúng hành vi print() cũ).
 
         ``aligns[i]`` là 'left' | 'right'; độ rộng đo bằng ``cell_len``.
+        ``gaps[k]`` đè khoảng cách SAU cột k (spec §4.3: số sát đơn vị
+        ``500 pts``, rộng hơn trước badge); thiếu thì dùng ``gap`` chung.
         """
         if not rows:
             return []
@@ -720,7 +807,8 @@ class StatusService:
                     line.append_text(cell)
                     line.append(pad)
                 if i < len(r) - 1:
-                    line.append(gap)
+                    line.append(" " * (gaps[i] if gaps and i < len(gaps)
+                                       else len(gap)))
             line.rstrip()  # rich cũ: mutate tại chỗ (trả None)
             lines.append(line)
         return lines
@@ -729,81 +817,80 @@ class StatusService:
     def _challenge_rows(cls, repo: WorkspaceRepo,
                         c_list: List[Dict[str, Any]], *,
                         narrow: bool) -> List[Text]:
-        """Các dòng challenge đã căn cột:
+        """ChallengeRow (spec §4.3, PHOSPHOR FIELD KIT):
 
-        badge | # | tên (+🏷️ labels) | pts | solves* | files* | note
-        (*: cột ẩn khi terminal hẹp < 80 cols; non-TTY giữ đầy đủ.)
+        ``[state] [id>3] [name] [pts>4] pts [solves>3] giải [badges ✎⛁⎘] [note]``
+
+        - Glyph ngữ nghĩa thay emoji: ``✔`` solved / ``◆`` working / ``·``
+          unsolved; badge mỗi trục 1 glyph hoặc rỗng: ``✎`` draft · ``⛁``
+          container · ``⎘`` file (chrome màu fg.faint).
+        - Màu theo state: solved → tên muted + pts accent.hi; unsolved → tên
+          fg.base + số muted; working → ◆ warn. (firstblood ``◆`` đỏ chỉ khi
+          có dữ liệu nguồn — hiện chưa track nên không bao giờ tự render.)
+        - Cột solves/files ẩn khi terminal hẹp (<80 cols); non-TTY giữ đầy đủ.
         """
-        solve_styles = {
-            'unsolved': 'unsolved', 'working': 'warning',
-            'solved_by_me': 'solved', 'solved_by_team': 'solved',
-            'solved_other': 'solved',
-        }
-        flag_styles = {
-            'found_unverified': 'warning', 'hoarded': 'success',
-            'submitted_correct': 'success', 'submitted_wrong': 'error',
-        }
-        writeup_styles = {'skeleton': 'unsolved', 'draft': 'hint',
-                          'complete': 'hint'}
-
+        G = ROW_GLYPHS
         rows: List[List[Text]] = []
         for c in c_list:
             status = c.get('_status') or {}
             solve = status.get('solve', 'unsolved')
-            flag_state = (status.get('flag') or {}).get('state', 'none')
             writeup = status.get('writeup', 'none')
             container = StatusService._effective_container(repo, c, status)
-
-            badge = Text()
-            badge.append(
-                f"[{STATUS_ICONS['solve'].get(solve, '·')}]",
-                style=solve_styles.get(solve))
-            badge.append(
-                f"[{STATUS_ICONS['flag'].get(flag_state, '∅')}]",
-                style=flag_styles.get(flag_state))
-            badge.append(
-                f"[{STATUS_ICONS['writeup'].get(writeup, '-')}]",
-                style=writeup_styles.get(writeup))
-            if container:
-                badge.append(
-                    f"[{STATUS_ICONS['container'][container]}]",
-                    style='success' if container == 'running' else 'unsolved')
-
-            labels = [str(x) for x in (status.get('labels') or [])]
-            name_cell = Text(str(c.get('name', 'Unknown')))
-            if labels:
-                name_cell.append(" 🏷️ " + ",".join(labels),
-                                 style="hi_fg")
-
-            notes = str(status.get('notes') or '').strip()
-            note_cell = Text(f'"{notes}"') if notes else Text()
-
-            solves = c.get('solves_count', c.get('solves', '-'))
             files_count = c.get('_local_files_count', 0)
 
+            glyph, glyph_style = G['solve'].get(solve, G['solve']['unsolved'])
+            state_cell = Text(glyph, style=glyph_style)
+            is_solved = solve in StatusService.SOLVED_VALUES
+
+            name_st = FG_MUTED if is_solved else FG_BASE
+            labels = [str(x) for x in (status.get('labels') or [])]
+            name_cell = Text(str(c.get('name', 'Unknown')), style=name_st)
+            if labels:
+                name_cell.append(" #" + ",".join(labels), style="fg.muted")
+
+            pts_st = ("accent.hi" if is_solved
+                      else "warn" if solve == 'working' else "fg.muted")
+
+            badges = Text(style="fg.faint")
+            if writeup in ('skeleton', 'draft', 'complete'):
+                badges.append(G['draft_badge'] + " ")
+            if container:
+                badges.append(G['container_badge'] + " ")
+            if files_count > 0:
+                badges.append(G['file_badge'])
+
+            notes = str(status.get('notes') or '').strip()
+            note_cell = (Text(f'"{notes}"', style="fg.muted")
+                         if notes else Text())
+
+            solves = c.get('solves_count', c.get('solves', '-'))
+
             row = [
-                badge,
-                Text(str(c.get('id', '?'))),
+                state_cell,
+                Text(str(c.get('id', '?')), style="fg.faint"),
                 name_cell,
-                Text(f"{c.get('points', 0)} pts"),
+                Text(str(c.get('points', 0)), style=pts_st),
+                Text("pts", style="fg.faint"),
             ]
             if not narrow:
                 row += [
-                    Text(f"{solves} solves"),
-                    Text(f"[{files_count} file]" if files_count > 0 else ""),
+                    Text(str(solves), style="fg.muted"),
+                    Text("giải", style="fg.faint"),
                 ]
-            row.append(note_cell)
+            row += [badges, note_cell]
             rows.append(row)
 
         aligns = ['left'] * len(rows[0]) if rows else []
-        # Cột id + pts căn phải cho dễ soát mắt (solves/files đã ẩn khi hẹp).
+        # Cột id + pts + solves căn phải (spec §4.3).
         if aligns:
             aligns[1] = 'right'   # id
             aligns[3] = 'right'   # pts
             if not narrow:
-                aligns[4] = 'right'   # solves
-                aligns[5] = 'right'   # files
-        return StatusService._aligned_grid(rows, aligns)
+                aligns[5] = 'right'   # solves
+        # Khoảng cách theo capture §4.3: số sát đơn vị, rộng hơn trước badge.
+        gaps = ([2, 2, 2, 1, 3, 1, 3, 2] if not narrow
+                else [2, 2, 2, 1, 3, 2])
+        return StatusService._aligned_grid(rows, aligns, gaps=gaps)
 
     # ------------------------------------------------------------------ #
     # Helpers render đa chiều
@@ -835,8 +922,9 @@ class StatusService:
 
     @classmethod
     def _render_window(cls, repo: WorkspaceRepo) -> str:
-        """⏱️ Window từ ``ctf_info.event_window`` (feature Event Window mirror):
-        🔴 LIVE / ⏳ Countdown / ✅ Ended. Trả "" khi không có dữ liệu hợp lệ
+        """Window từ ``ctf_info.event_window`` (feature Event Window mirror):
+        LIVE / Countdown / Ended (không emoji — spec PHOSPHOR §6). Trả "" khi
+        không có dữ liệu hợp lệ
         (workspace cũ giữ nguyên output — không in dòng).
 
         Parse qua ``normalize_epoch_to_utc`` (đơn vị ms/giây + ISO string,
@@ -856,15 +944,15 @@ class StatusService:
             remain = int((end - now).total_seconds())
             hrs, rem_sec = divmod(remain, 3600)
             mins = rem_sec // 60
-            return (f"🔴 LIVE (còn {hrs}h{mins:02d}m"
+            return (f"LIVE (còn {hrs}h{mins:02d}m"
                     f" — tới {cls._fmt_local(end)})")
         if now < start:
             remain = start - now
             days, hrs = remain.days, remain.seconds // 3600
-            return (f"⏳ Countdown (bắt đầu sau {days}d {hrs}h"
+            return (f"Countdown (bắt đầu sau {days}d {hrs}h"
                     f" — {cls._fmt_local(start)})")
         days = int((now - end).total_seconds() // 86400)
-        return f"✅ Ended (kết thúc {days} ngày trước — {cls._fmt_local(end)})"
+        return f"Ended (kết thúc {days} ngày trước — {cls._fmt_local(end)})"
 
     # ------------------------------------------------------------------ #
     # Scan toàn bộ workspace trong một thư mục gốc (bản DUY NHẤT — cli/
@@ -872,18 +960,20 @@ class StatusService:
     # ------------------------------------------------------------------ #
     @staticmethod
     def scan_all_workspaces(base_dir: str) -> List[Dict[str, Any]]:
-        """Bảng rich mọi workspace trong ``base_dir`` (thay divider ``====`` +
-        padding tay): Workspace | Platform | Progress meter | Challs.
+        """Bảng rich mọi workspace trong ``base_dir`` (PHOSPHOR FIELD KIT):
+        Workspace | Platform | Progress meter | Challs.
 
-        - Hàng workspace đã kết thúc (Event Window) thêm marker 🏁.
-        - Footer dim tổng kết: số workspace / challs solved-toàn-cục.
+        - Hàng workspace đã kết thúc (Event Window) thêm suffix ``· ended``
+          muted (không emoji — spec §6).
+        - Viền panel accent.deep, nhãn cột fg.faint UPPERCASE; footer dim
+          tổng kết: số workspace / challs solved-toàn-cục.
         Trả về danh sách stats của các workspace có ít nhất 1 challenge.
         """
         from ..platforms.base import normalize_epoch_to_utc
         from ..utils.logger import Logger
 
         base_dir = os.path.abspath(os.path.expanduser(base_dir))
-        Logger.info(f'📁 Scanning all CTF workspaces in [cyan]{base_dir}[/]')
+        Logger.info(f'Scanning all CTF workspaces in [info]{base_dir}[/]')
 
         if not os.path.exists(base_dir):
             Logger.warning(f'Directory {base_dir} does not exist.')
@@ -909,33 +999,34 @@ class StatusService:
                 collected.append(stats)
 
         table = Table(
-            box=box.ROUNDED, border_style="div_line",
-            header_style="title", padding=(0, 1))
-        table.add_column("Workspace", no_wrap=True)
-        table.add_column("Platform", no_wrap=True)
-        table.add_column("Progress", no_wrap=True)
-        table.add_column("Challs", justify="right", no_wrap=True)
+            box=box.ROUNDED, border_style="accent.deep",
+            header_style="fg.faint", padding=(0, 1))
+        table.add_column("WORKSPACE", no_wrap=True)
+        table.add_column("PLATFORM", no_wrap=True)
+        table.add_column("PROGRESS", no_wrap=True)
+        table.add_column("CHALLS", justify="right", no_wrap=True)
 
         total_solved = 0
         total_challs = 0
         for stats in collected:
             total_solved += stats['solved_challenges']
             total_challs += stats['total_challenges']
-            name_cell = Text(str(stats['title'])[:35])
+            name_cell = Text(str(stats['title'])[:35], style="fg.base")
             if stats['_ended']:
-                name_cell = Text("🏁 ") + name_cell
+                name_cell.append(" · ended", style="fg.muted")
 
             rate = stats['completion_rate']
             progress_cell = StatusService._meter_only(rate, 10)
-            progress_cell.append(f" {rate:.0f}%", style="dim")
+            progress_cell.append(f" {rate:.0f}%", style="fg.muted")
 
             challs_cell = Text()
             challs_cell.append(str(stats['solved_challenges']), style="solved")
-            challs_cell.append(f"/{stats['total_challenges']}", style="dim")
+            challs_cell.append(f"/{stats['total_challenges']}",
+                               style="fg.muted")
 
             table.add_row(
                 name_cell,
-                Text(str(stats['platform'])[:10].upper(), style="hi_fg"),
+                Text(str(stats['platform'])[:10].lower(), style="fg.muted"),
                 progress_cell,
                 challs_cell,
             )
@@ -943,6 +1034,6 @@ class StatusService:
         StatusService._emit(table)
         footer = Text(
             f"{len(collected)} workspaces · {total_solved}/{total_challs} "
-            f"challs solved", style="dim")
+            f"challs solved", style="fg.muted")
         StatusService._emit(footer)
         return collected

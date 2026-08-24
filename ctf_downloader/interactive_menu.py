@@ -3,6 +3,7 @@ import sys
 import glob
 from typing import Optional
 from rich.prompt import Prompt, Confirm
+from rich.text import Text
 from .dashboard import CTFDashboard
 from .instance_manager import InstanceManager
 from .submitter import FlagSubmitter
@@ -442,5 +443,11 @@ class CTFInteractiveConsole:
             Logger.info('Đã xoá thông tin xác thực.')
 
 def launch_interactive_menu(workspace_path: Optional[str] = None, cookie: Optional[str] = None, token: Optional[str] = None):
+    # Banner PHOSPHOR FIELD KIT phương án B (spec §2) — human-facing → stderr.
+    from rich.console import Group
+
+    from .ui.banner import banner_b, tagline_text
+    from .ui.console import err_console
+    err_console.print(Group(banner_b(), tagline_text(), Text("")))
     app = CTFInteractiveConsole(workspace_path=workspace_path, cookie=cookie, token=token)
     app.run()
