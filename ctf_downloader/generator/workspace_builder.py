@@ -4,11 +4,46 @@ from typing import List, Dict, Any, Optional
 from ..platforms.base import Challenge
 from ..extractors.link_extractor import ExtractedLink, ConnectionInfo
 from ..extractors.text_parser import TextParser
-from ..storage.constants import FLAG_PLACEHOLDER, TARGET_CONNECTION_FMT
+from ..storage.constants import FLAG_PLACEHOLDER, TARGET_CONNECTION_FMT, DEFAULT_CATEGORY
 from ..utils.sanitize import sanitize_folder_name
 from ..utils.logger import Logger
 
 class WorkspaceBuilder:
+    @staticmethod
+    def _safe_category(challenge: Any) -> str:
+        """
+        Category an toàn để so khớp/lower(): None, rỗng, toàn khoảng trắng hoặc
+        không phải chuỗi -> DEFAULT_CATEGORY. Challenge dị dạng từ platform
+        không được làm crash pipeline tạo workspace.
+        """
+        cat = getattr(challenge, "category", None)
+        if isinstance(cat, str) and cat.strip():
+            return cat.strip()
+        return DEFAULT_CATEGORY
+
+    @staticmethod
+    def _norm_hints(hints: Any) -> List[Dict[str, Any]]:
+        """
+        Chuẩn hoá hints (có thể dị dạng: list[str], cost null, phần tử lạ)
+        về list[{"content": str, "cost": int}] để render README. Không bao giờ raise.
+        """
+        norm: List[Dict[str, Any]] = []
+        if not hints or not isinstance(hints, (list, tuple)):
+            return norm
+        for hint in hints:
+            if isinstance(hint, dict):
+                content = hint.get("content") or hint.get("hint") or ""
+                cost_raw = hint.get("cost", 0)
+                try:
+                    cost = int(cost_raw) if cost_raw is not None else 0
+                except (TypeError, ValueError):
+                    cost = 0
+                norm.append({"content": str(content), "cost": max(cost, 0)})
+            elif isinstance(hint, str):
+                norm.append({"content": hint, "cost": 0})
+            else:
+                norm.append({"content": str(hint), "cost": 0})
+        return norm
     @staticmethod
     def create_challenge_workspace(
         base_output_dir: str,
@@ -22,7 +57,9 @@ class WorkspaceBuilder:
         Creates directory structure for a challenge and generates README.md, metadata.json, and solve.py.
         Returns the created challenge folder path.
         """
-        clean_category = sanitize_folder_name(challenge.category, default="Misc")
+        clean_category = sanitize_folder_name(
+            WorkspaceBuilder._safe_category(challenge), default=DEFAULT_CATEGORY
+        )
         clean_name = sanitize_folder_name(challenge.name, default=f"chall_{challenge.id}")
         
         challenge_dir = os.path.join(base_output_dir, clean_category, clean_name)
@@ -49,14 +86,32 @@ class WorkspaceBuilder:
                     except Exception:
                         pass
 
+        def _safe_generate(path: str, producer) -> None:
+            """
+            Sinh 1 file section (README/writeup/solve.py): một challenge dị dạng
+            làm producer raise thì ghi nội dung lỗi thay vì sập cả workspace.
+            """
+            if os.path.exists(path):
+                return
+            try:
+                content = producer()
+            except Exception as e:
+                Logger.warning(
+                    f"Không sinh được {os.path.basename(path)}: {type(e).__name__}: {str(e)[:200]}"
+                )
+                content = (
+                    f"# Lỗi sinh nội dung tự động\n\n"
+                    f"({type(e).__name__}: {str(e)[:200]})\n\n"
+                    f"Dữ liệu challenge từ platform có thể dị dạng — kiểm tra `metadata.json`.\n"
+                )
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+
         # 1. Generate challenge/README.md (Original Challenge Description & Resources)
         challenge_readme_path = os.path.join(challenge_sub_dir, "README.md")
-        if not os.path.exists(challenge_readme_path):
-            readme_content = WorkspaceBuilder._generate_readme(
-                challenge, extracted_links, connections, download_results
-            )
-            with open(challenge_readme_path, "w", encoding="utf-8") as f:
-                f.write(readme_content)
+        _safe_generate(challenge_readme_path, lambda: WorkspaceBuilder._generate_readme(
+            challenge, extracted_links, connections, download_results
+        ))
 
         # 2. Generate challenge/NOTE.md (Workspace Guidelines)
         challenge_note_path = os.path.join(challenge_sub_dir, "NOTE.md")
@@ -72,10 +127,7 @@ class WorkspaceBuilder:
 
         # 3. Generate writeup/README.md (Blank Writeup Template for after solving)
         writeup_path = os.path.join(writeup_sub_dir, "README.md")
-        if not os.path.exists(writeup_path):
-            writeup_content = WorkspaceBuilder._generate_writeup_template(challenge)
-            with open(writeup_path, "w", encoding="utf-8") as f:
-                f.write(writeup_content)
+        _safe_generate(writeup_path, lambda: WorkspaceBuilder._generate_writeup_template(challenge))
 
         # 2. Generate metadata.json
         meta_data = {
@@ -100,10 +152,8 @@ class WorkspaceBuilder:
 
         # 3. Generate solver/solve.py if requested and doesn't exist
         solver_solve_path = os.path.join(solver_sub_dir, "solve.py")
-        if create_solve_template and not os.path.exists(solver_solve_path):
-            solve_script = WorkspaceBuilder._generate_solve_template(challenge, connections)
-            with open(solver_solve_path, "w", encoding="utf-8") as f:
-                f.write(solve_script)
+        if create_solve_template:
+            _safe_generate(solver_solve_path, lambda: WorkspaceBuilder._generate_solve_template(challenge, connections))
 
         return challenge_dir
 
@@ -156,16 +206,15 @@ class WorkspaceBuilder:
             lines.append("*No description provided.*")
         lines.append("\n")
 
-        # Hints
+        # Hints — qua _norm_hints để chịu được hints dị dạng (list[str],
+        # cost null, ...) mà không crash toàn bộ workspace
         if challenge.hints:
             lines.append("## 💡 Hints\n")
-            for idx, hint in enumerate(challenge.hints, 1):
-                h_content = hint.get("content") or hint.get("hint") or str(hint)
-                cost = hint.get("cost", 0)
-                if cost > 0:
-                    lines.append(f"- **Hint {idx}** (Cost: {cost} pts): {h_content}")
+            for idx, h in enumerate(WorkspaceBuilder._norm_hints(challenge.hints), 1):
+                if h["cost"] > 0:
+                    lines.append(f"- **Hint {idx}** (Cost: {h['cost']} pts): {h['content']}")
                 else:
-                    lines.append(f"- **Hint {idx}**: {h_content}")
+                    lines.append(f"- **Hint {idx}**: {h['content']}")
             lines.append("")
 
         # Downloaded Files / Attachments
@@ -206,7 +255,8 @@ class WorkspaceBuilder:
         """
         Generates an automated starter solve.py template matching category.
         """
-        cat_lower = challenge.category.lower()
+        # category None/không phải chuỗi -> DEFAULT_CATEGORY thay vì AttributeError
+        cat_lower = WorkspaceBuilder._safe_category(challenge).lower()
 
         # Check if there is a netcat connection
         nc_conn = next((c for c in connections if c.proto == "nc"), None)

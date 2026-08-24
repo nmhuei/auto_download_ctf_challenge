@@ -17,6 +17,44 @@ _UNIT_MULTIPLIERS = {
 }
 
 
+def _parse_size_number(raw: str) -> Optional[float]:
+    """
+    Parse chuỗi số dung lượng có thể dùng dấu phẩy/chấm theo kiểu châu Âu:
+    - "1,5"   -> 1.5   (dấu phẩy THẬP PHÂN, không phải "15")
+    - "2.50"  -> 2.5
+    - "1.234,56" -> 1234.56  (dấu chấm ngăn cách nghìn, phẩy thập phân)
+    - "1,234" -> 1234      (nhóm đúng kiểu ngăn cách nghìn)
+    Trả None nếu không parse được (gọi tạm bỏ pre-flight size).
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        has_comma = "," in raw
+        has_dot = "." in raw
+
+        def _strip_thousands(s: str, sep: str) -> str:
+            # Bỏ sep chỉ khi nó luôn ngăn nhóm đúng 3 chữ số (vd 1.234.567)
+            return re.sub(r'(?<=\d)' + re.escape(sep) + r'(?=\d{3}(?:\D|$))', '', s)
+
+        if has_comma and has_dot:
+            # Dấu xuất hiện SAU CÙNG là dấu thập phân, dấu kia là ngăn cách nghìn
+            dec = "," if raw.rfind(",") > raw.rfind(".") else "."
+            thou = "." if dec == "," else ","
+            return float(_strip_thousands(raw, thou).replace(dec, "."))
+        if has_comma:
+            if re.fullmatch(r'\d{1,3}(,\d{3})+', raw):
+                return float(raw.replace(",", ""))  # ngăn cách nghìn: 1,234
+            return float(raw.replace(",", "."))     # thập phân: 1,5
+        if has_dot:
+            if re.fullmatch(r'\d{1,3}(\.\d{3})+', raw):
+                return float(raw.replace(".", ""))  # ngăn cách nghìn: 1.234
+            return float(raw)                       # thập phân: 2.50
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 @register_downloader("mediafire", domains=("mediafire.com",))
 class MediafireDownloader:
     @staticmethod
@@ -76,13 +114,28 @@ class MediafireDownloader:
                     re.IGNORECASE
                 )
                 if size_match:
-                    number = float(size_match.group(1).replace(",", ""))
+                    number = _parse_size_number(size_match.group(1))
+                    if number is None:
+                        Logger.warning(
+                            f"MediaFire: không parse được dung lượng '{size_match.group(1)}' — bỏ qua pre-flight size."
+                        )
+                        return None
                     unit = size_match.group(2).lower()
                     return int(number * _UNIT_MULTIPLIERS.get(unit, 1))
         except requests.RequestException as e:
             Logger.warning(f"Lỗi khi scrape trang MediaFire để đo dung lượng: {type(e).__name__}: {str(e)[:200]}")
 
         return None
+
+    @staticmethod
+    def _is_hidden_element(tag) -> bool:
+        """True nếu tag bị ẩn (thuộc tính hidden hoặc CSS display/visibility:none)."""
+        if tag is None:
+            return True
+        if tag.has_attr("hidden"):
+            return True
+        style = (tag.get("style") or "").replace(" ", "").lower()
+        return "display:none" in style or "visibility:hidden" in style
 
     @staticmethod
     def get_download_stream(
@@ -108,7 +161,19 @@ class MediafireDownloader:
                 return None, expected_size
 
             soup = BeautifulSoup(page_resp.text, "html.parser")
-            download_btn = soup.find("a", {"id": "downloadButton"}) or soup.find("a", {"aria-label": re.compile(r"Download", re.I)})
+
+            # Ưu tiên nút HIỂN THỊ: trang có thể chứa nhiều a#downloadButton,
+            # trong đó có nút decoy bị ẩn (display:none / hidden) — không chọn nó.
+            candidates = list(soup.find_all("a", {"id": "downloadButton"}))
+            aria_btn = soup.find("a", {"aria-label": re.compile(r"Download", re.I)})
+            if aria_btn is not None:
+                candidates.append(aria_btn)
+            download_btn = next(
+                (c for c in candidates if not MediafireDownloader._is_hidden_element(c)),
+                None,
+            )
+            if candidates and download_btn is None:
+                Logger.warning("MediaFire: mọi nút download tìm thấy đều bị ẩn — thử fallback regex direct link.")
 
             direct_url = None
             if download_btn and download_btn.get("href"):

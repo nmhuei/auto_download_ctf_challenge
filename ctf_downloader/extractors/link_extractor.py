@@ -35,6 +35,23 @@ class ConnectionInfo:
 
 class LinkExtractor:
     @staticmethod
+    def _host_in(host: str, domains: tuple) -> bool:
+        """
+        So khớp domain bằng hậu tố CHÍNH XÁC: host == domain hoặc host là
+        subdomain thật ('.' + domain là hậu tố của host). KHÔNG dùng phép
+        'domain in netloc' — kiểu đó khiến drive.google.com.evil.io bị nhận
+        nhầm là Google Drive và route HTTP tới host kẻ tấn công.
+        """
+        host = (host or "").lower().strip()
+        for d in domains:
+            d = (d or "").lower()
+            if not d:
+                continue
+            if host == d or host.endswith("." + d):
+                return True
+        return False
+
+    @staticmethod
     def extract_links_and_files(text: str, base_url: str = "") -> List[ExtractedLink]:
         """
         Extract all links, embedded files, and 3rd party download links from Markdown / HTML / text.
@@ -100,11 +117,11 @@ class LinkExtractor:
         and detects if it is directly downloadable.
         """
         parsed = urllib.parse.urlparse(url)
-        netloc = parsed.netloc.lower()
+        host = (parsed.hostname or "").lower()  # hostname đã strip port + lowercase
         path = parsed.path.lower()
 
         # Google Drive
-        if "drive.google.com" in netloc or "docs.google.com" in netloc:
+        if LinkExtractor._host_in(host, ("drive.google.com", "docs.google.com")):
             # Check if it is a file link or folder link
             return ExtractedLink(
                 url=url,
@@ -117,7 +134,7 @@ class LinkExtractor:
         # Mega.nz — chỉ đánh dấu downloadable khi có megatools (megadl/mega-get);
         # kiểm tra tool tại đây bằng shutil.which, KHÔNG import ngược tầng
         # downloaders (DownloadManager vẫn tự kiểm tra lại một lần lúc tải).
-        if "mega.nz" in netloc or "mega.co.nz" in netloc:
+        if LinkExtractor._host_in(host, ("mega.nz", "mega.co.nz")):
             has_mega_tool = any(shutil.which(tool) for tool in ("megadl", "mega-get"))
             return ExtractedLink(
                 url=url,
@@ -128,7 +145,7 @@ class LinkExtractor:
             )
 
         # Dropbox
-        if "dropbox.com" in netloc:
+        if LinkExtractor._host_in(host, ("dropbox.com",)):
             return ExtractedLink(
                 url=url,
                 link_type="dropbox",
@@ -138,7 +155,7 @@ class LinkExtractor:
             )
 
         # Mediafire
-        if "mediafire.com" in netloc:
+        if LinkExtractor._host_in(host, ("mediafire.com",)):
             return ExtractedLink(
                 url=url,
                 link_type="mediafire",
@@ -148,7 +165,7 @@ class LinkExtractor:
             )
 
         # Discord CDN
-        if "cdn.discordapp.com" in netloc or "media.discordapp.net" in netloc:
+        if LinkExtractor._host_in(host, ("cdn.discordapp.com", "media.discordapp.net")):
             return ExtractedLink(
                 url=url,
                 link_type="discord",
@@ -158,7 +175,7 @@ class LinkExtractor:
             )
 
         # GitHub releases or raw
-        if "github.com" in netloc and ("/releases/download/" in path or "/raw/" in path):
+        if LinkExtractor._host_in(host, ("github.com",)) and ("/releases/download/" in path or "/raw/" in path):
             return ExtractedLink(
                 url=url,
                 link_type="github",
@@ -167,7 +184,7 @@ class LinkExtractor:
                 is_downloadable=True
             )
             
-        if "raw.githubusercontent.com" in netloc or "gitlab.com" in netloc:
+        if LinkExtractor._host_in(host, ("raw.githubusercontent.com", "gitlab.com")):
             return ExtractedLink(
                 url=url,
                 link_type="github",

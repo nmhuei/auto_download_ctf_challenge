@@ -104,6 +104,13 @@ class HttpDownloader:
         try:
             os.makedirs(dest_dir, exist_ok=True)
 
+            # Caller đưa sẵn tên file -> xác định target/.part NGAY TRƯỚC vòng
+            # lặp: cho phép nhận diện .part sót từ các lần chạy TRƯỚC để resume
+            # (và reset khi 416) ngay từ request đầu tiên.
+            if preferred_filename:
+                target_path = os.path.join(dest_dir, sanitize_filename(preferred_filename))
+                part_path = target_path + ".part"
+
             while True:
                 offset = 0
                 req_headers = {}
@@ -130,6 +137,26 @@ class HttpDownloader:
                     # Discord CDN: link chia sẻ chỉ sống ~24h
                     if ("cdn.discordapp.com" in host or "media.discordapp.net" in host) and status in (403, 404):
                         raise DownloadFailed("Link Discord hết hạn (~24h), hãy lấy link mới")
+
+                    # 416 khi đang resume: offset của .part vượt kích thước thật
+                    # trên server (vd .part corrupt/lớn hơn file) -> server sẽ
+                    # trả 416 MÃI MÃI nếu giữ nguyên .part => download chết
+                    # vĩnh viễn. Coi .part là corrupt: xoá và tải lại từ đầu.
+                    if status == 416 and req_headers.get("Range"):
+                        attempt += 1
+                        Logger.warning(
+                            f"Server trả 416 khi resume {url} từ byte {offset}: "
+                            f".part ({offset} bytes) có thể corrupt/lớn hơn file trên server -> xoá .part, tải lại từ đầu."
+                        )
+                        if part_path and os.path.exists(part_path):
+                            try:
+                                os.remove(part_path)
+                            except OSError:
+                                pass
+                        if attempt > MAX_RESUME_ATTEMPTS:
+                            Logger.warning(f"Tải thất bại {url}: quá số lần thử lại ({MAX_RESUME_ATTEMPTS}).")
+                            return None
+                        continue
 
                     if status not in (200, 206):
                         Logger.warning(f"Tải thất bại {url}: HTTP {status}")
@@ -228,6 +255,14 @@ class HttpDownloader:
             raise
         except Exception as e:
             Logger.warning(f"Tải thất bại {url}: {type(e).__name__}: {HttpDownloader._short_error(e)}")
+            # Dọn tệp tạm nửa chừng (.part/.tmp): dữ liệu không đảm bảo flush
+            # (vd disk-full OSError), giữ lại sẽ khiến lần sau resume từ offset lỗi.
+            for leftover in (part_path, target_path and target_path + ".tmp"):
+                if leftover and os.path.exists(leftover):
+                    try:
+                        os.remove(leftover)
+                    except OSError:
+                        pass
             return None
 
     @staticmethod
@@ -300,4 +335,11 @@ class HttpDownloader:
             raise
         except Exception as e:
             Logger.warning(f"Lỗi khi ghi stream ra file '{filename}': {type(e).__name__}: {HttpDownloader._short_error(e)}")
+            # Dọn .tmp nửa chừng (vd disk-full OSError): dữ liệu không đảm bảo
+            # flush, giữ lại chỉ là rác trên đĩa.
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
             return None

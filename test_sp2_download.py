@@ -578,5 +578,295 @@ class TestGDriveQuota(unittest.TestCase):
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+class TestWave4Resume416(unittest.TestCase):
+    """WH3 HD-1a/HD-1h/HD-1i: resume chết vĩnh viễn + disk-full sót .part/.tmp."""
+
+    def setUp(self):
+        self.tmp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_sp2_tmp")
+        os.makedirs(self.tmp_dir, exist_ok=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_resume_416_resets_part_and_redownloads_from_scratch(self):
+        # .part corrupt/lớn hơn file trên server -> server trả 416 khi resume.
+        # Downloader phải xoá .part và tải lại từ đầu thay vì chết vĩnh viễn.
+        part_path = os.path.join(self.tmp_dir, "blob.bin.part")
+        with open(part_path, "wb") as f:
+            f.write(b"CORRUPT-STALE-DATA" * 1000)
+
+        resp416 = FakeResponse(status_code=416, headers={})
+        fresh = FakeResponse(
+            status_code=200,
+            headers={**BINARY_HEADERS, "Content-Length": "6"},
+            chunks=(b"FIXED!",),
+        )
+        session = MagicMock()
+        session.head.side_effect = requests.ConnectionError("no head support")
+        session.get.side_effect = [resp416, fresh]
+
+        saved = HttpDownloader.download_file(
+            "https://host.com/blob.bin", self.tmp_dir, session, max_size=0,
+            preferred_filename="blob.bin",
+        )
+
+        self.assertIsNotNone(saved)
+        with open(saved, "rb") as f:
+            self.assertEqual(f.read(), b"FIXED!")
+        # .part cũ phải bị xoá sau 416, và GET lần 2 KHÔNG mang Range nữa
+        self.assertFalse(os.path.exists(part_path))
+        self.assertEqual(session.get.call_count, 2)
+        second_headers = session.get.call_args_list[1].kwargs.get("headers", {})
+        self.assertIsNone(second_headers.get("Range"))
+
+    def test_persistent_416_gives_up_cleanly_without_part_leftover(self):
+        part_path = os.path.join(self.tmp_dir, "blob.bin.part")
+        with open(part_path, "wb") as f:
+            f.write(b"STALE" * 10)
+
+        session = MagicMock()
+        session.head.side_effect = requests.ConnectionError("no head support")
+        session.get.side_effect = [
+            FakeResponse(status_code=416, headers={}),
+            FakeResponse(status_code=416, headers={}),  # lần sau không còn Range
+        ]
+
+        saved = HttpDownloader.download_file(
+            "https://host.com/blob.bin", self.tmp_dir, session, max_size=0,
+            preferred_filename="blob.bin",
+        )
+        self.assertIsNone(saved)
+        self.assertFalse(os.path.exists(part_path))
+
+    def test_disk_full_midstream_cleans_part_file(self):
+        first = FakeResponse(
+            status_code=200,
+            headers={**BINARY_HEADERS, "Content-Length": "100"},
+            chunks=(b"A" * 50, b"B" * 50),
+            error_after_chunks=1,
+            error=OSError("No space left on device"),
+        )
+        session = MagicMock()
+        session.get.return_value = first
+
+        saved = HttpDownloader.download_file(
+            "https://host.com/blob.bin", self.tmp_dir, session, max_size=0
+        )
+        self.assertIsNone(saved)
+        # .part nửa chừng phải được dọn, không resume từ dữ liệu không flush
+        self.assertEqual(os.listdir(self.tmp_dir), [])
+
+    def test_save_response_stream_disk_full_cleans_tmp_file(self):
+        resp = FakeResponse(
+            status_code=200,
+            headers={**BINARY_HEADERS},
+            chunks=(b"x" * 10, b"y" * 10),
+            error_after_chunks=1,
+            error=OSError("No space left on device"),
+        )
+        saved = HttpDownloader.save_response_stream(resp, self.tmp_dir, "f.bin")
+        self.assertIsNone(saved)
+        # .tmp nửa chừng phải được dọn
+        self.assertFalse(any(n.endswith(".tmp") for n in os.listdir(self.tmp_dir)))
+
+
+class TestWave4GDriveTokenFirst(unittest.TestCase):
+    """WH3 GD-quota-fp: token TRƯỚC quota + 2 biến thể form bị bỏ sót."""
+
+    def _run_interstitial(self, html_text):
+        from ctf_downloader.downloaders.gdrive import GDriveDownloader
+
+        interstitial = FakeResponse(
+            status_code=200, headers={"Content-Type": "text/html"}, text=html_text
+        )
+        file_stream = FakeResponse(
+            status_code=200,
+            headers={
+                **BINARY_HEADERS,
+                "Content-Disposition": 'attachment; filename="data.bin"',
+            },
+            chunks=(b"GDRIVE-OK",),
+        )
+        session = MagicMock()
+        session.get.side_effect = [interstitial, file_stream]
+        resp, size = GDriveDownloader.get_download_stream(
+            "https://drive.google.com/file/d/1ABCdefGHI/view", session, timeout=5
+        )
+        return resp, size, session
+
+    def test_confirm_form_reversed_attribute_order(self):
+        resp, _, session = self._run_interstitial(
+            '<form action=""><input type="hidden" value="rvTok9" name="confirm"></form>'
+        )
+        self.assertIsNotNone(resp)
+        second_url = session.get.call_args_list[1].args[0]
+        self.assertIn("confirm=rvTok9", second_url)
+
+    def test_confirm_form_single_quotes(self):
+        resp, _, session = self._run_interstitial("<input name='confirm' value='sqTok7'>")
+        self.assertIsNotNone(resp)
+        second_url = session.get.call_args_list[1].args[0]
+        self.assertIn("confirm=sqTok7", second_url)
+
+    def test_quota_marker_with_valid_token_is_not_false_positive(self):
+        # Trang interstitial hợp lệ chứa cụm "permission denied" trong help-text
+        # nhưng vẫn có confirm token -> phải đi tiếp theo luồng token, KHÔNG
+        # bị kết tội quota.
+        resp, _, session = self._run_interstitial(
+            "<html><body>If you see permission denied, read the help page."
+            '<input type="hidden" name="confirm" value="tokFP1"></body></html>'
+        )
+        self.assertIsNotNone(resp)
+        second_url = session.get.call_args_list[1].args[0]
+        self.assertIn("confirm=tokFP1", second_url)
+
+
+class TestWave4WorkspaceBuilderDefensive(unittest.TestCase):
+    """WH3 WB-hints/cost/category: challenge dị dạng không được sập workspace."""
+
+    def _build(self, **challenge_kwargs):
+        import tempfile
+        from ctf_downloader.generator.workspace_builder import WorkspaceBuilder
+        from ctf_downloader.models import Challenge
+
+        kwargs = dict(id=1, name="Weird Chall", category="Web")
+        kwargs.update(challenge_kwargs)
+        ch = Challenge(**kwargs)
+        out = tempfile.mkdtemp(prefix="wave4_ws_")
+        return WorkspaceBuilder.create_challenge_workspace(out, ch, [], [], [], True)
+
+    def tearDown(self):
+        import glob
+        for d in glob.glob("/tmp/wave4_ws_*"):
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_hints_as_list_of_strings_no_crash(self):
+        path = self._build(hints=["plain string hint", {"content": "dict hint", "cost": 5}])
+        readme = open(os.path.join(path, "challenge", "README.md"), encoding="utf-8").read()
+        self.assertIn("plain string hint", readme)
+        self.assertIn("dict hint", readme)
+
+    def test_hint_with_null_cost_no_crash(self):
+        path = self._build(hints=[{"content": "free hint", "cost": None}])
+        readme = open(os.path.join(path, "challenge", "README.md"), encoding="utf-8").read()
+        self.assertIn("free hint", readme)
+        self.assertIn("Hint 1", readme)
+
+    def test_category_none_no_crash_and_falls_back_to_default(self):
+        path = self._build(category=None)
+        self.assertTrue(os.path.isdir(path))
+        self.assertIn("Misc", path)  # fallback DEFAULT_CATEGORY
+        self.assertTrue(os.path.exists(os.path.join(path, "solver", "solve.py")))
+        self.assertTrue(os.path.exists(os.path.join(path, "writeup", "README.md")))
+
+
+class TestWave4LinkExtractorSuffixMatch(unittest.TestCase):
+    """WH3 prefix-match misroute: domain lookalike không được nhận nhầm."""
+
+    LOOKALIKE_URLS = (
+        "https://drive.google.com.evil.io/file/d/abc123/view",
+        "https://dropbox.com.evil.pt/s/abc/chall",
+        "https://mediafire.com.attacker.net/file/xyz/payload",
+        "https://mega.nz.phish.io/#F!abc!def",
+    )
+    SERVICE_TYPES = ("gdrive", "dropbox", "mediafire", "mega")
+
+    def test_lookalike_domains_not_misrouted_to_service_downloaders(self):
+        for url in self.LOOKALIKE_URLS:
+            link = LinkExtractor.classify_link(url)
+            self.assertNotIn(link.link_type, self.SERVICE_TYPES, msg=url)
+            self.assertFalse(link.is_downloadable, msg=url)
+
+    def test_real_domains_and_subdomains_still_route_correctly(self):
+        cases = {
+            "https://www.dropbox.com/s/abc/x.zip?dl=0": "dropbox",
+            "https://docs.google.com/document/d/ABC/edit": "gdrive",
+            "https://www.mediafire.com/file/abc/p.rar/file": "mediafire",
+            "https://mega.nz/file/abc#key": "mega",
+            "https://cdn.discordapp.com/attachments/1/2/f.zip": "discord",
+        }
+        for url, expected in cases.items():
+            link = LinkExtractor.classify_link(url)
+            self.assertEqual(link.link_type, expected, msg=url)
+
+
+class TestWave4MediafireLocaleAndDecoy(unittest.TestCase):
+    """WH3: '1,5 MB' parse nhầm thành 15MB + chọn nhầm nút decoy hidden."""
+
+    def test_parse_size_number_european_formats(self):
+        from ctf_downloader.downloaders.mediafire import _parse_size_number
+
+        self.assertAlmostEqual(_parse_size_number("1,5"), 1.5)
+        self.assertAlmostEqual(_parse_size_number("2.50"), 2.5)
+        self.assertAlmostEqual(_parse_size_number("1.234,56"), 1234.56)
+        self.assertAlmostEqual(_parse_size_number("1,234"), 1234.0)
+        self.assertAlmostEqual(_parse_size_number("42"), 42.0)
+        self.assertIsNone(_parse_size_number(""))
+        self.assertIsNone(_parse_size_number("garbage"))
+
+    def test_expected_size_scrape_decimal_comma_not_multiplied_by_ten(self):
+        session = MagicMock()
+        bad_api = FakeResponse(status_code=500)
+        page = FakeResponse(status_code=200, text="<div>File size: 1,5 MB</div>")
+
+        def fake_get(url, *args, **kwargs):
+            if "get_info.php" in url:
+                return bad_api
+            return page
+
+        session.get.side_effect = fake_get
+        size = MediafireDownloader.get_expected_size(
+            "https://www.mediafire.com/file/abc123/payload.rar/file", session, timeout=5
+        )
+        self.assertEqual(size, int(1.5 * 1024 * 1024))
+
+    def test_hidden_decoy_button_skipped_in_favor_of_visible_one(self):
+        page = FakeResponse(
+            status_code=200,
+            text=(
+                '<a id="downloadButton" href="http://download199.mediafire.com/decoy/path" '
+                'style="display:none">Download</a>'
+                '<a id="downloadButton" href="http://download199.mediafire.com/real/path">Download</a>'
+            ),
+        )
+        stream = FakeResponse(
+            status_code=200,
+            headers={"Content-Disposition": 'attachment; filename="p.rar"', **BINARY_HEADERS},
+        )
+
+        def fake_get(url, *args, **kwargs):
+            if "get_info.php" in url:
+                return FakeResponse(status_code=500)
+            if "/real/path" in url:
+                return stream
+            return page
+
+        session = MagicMock()
+        session.get.side_effect = fake_get
+        resp, expected = MediafireDownloader.get_download_stream(
+            "https://www.mediafire.com/file/abc123/p.rar/file", session, timeout=5
+        )
+        self.assertIs(resp, stream)
+
+    def test_all_buttons_hidden_falls_back_without_direct_link(self):
+        # Nút duy nhất bị ẩn và không có direct link nào khác trong trang
+        page = FakeResponse(
+            status_code=200,
+            text='<a id="downloadButton" href="https://decoy.example.com/x" hidden>D</a>',
+        )
+
+        def fake_get(url, *args, **kwargs):
+            if "get_info.php" in url:
+                return FakeResponse(status_code=500)
+            return page
+
+        session = MagicMock()
+        session.get.side_effect = fake_get
+        resp, expected = MediafireDownloader.get_download_stream(
+            "https://www.mediafire.com/file/abc123/p.rar/file", session, timeout=5
+        )
+        self.assertIsNone(resp)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -22,6 +22,27 @@ def _looks_like_quota_html(html_text: str) -> bool:
     return any(marker in lowered for marker in _QUOTA_MARKERS)
 
 
+# Các biến thể form confirm token của trang interstitial Google Drive:
+# 1) link dạng ?confirm=xxx
+# 2) <input name="confirm" value="..."> (thứ tự thuộc tính chuẩn)
+# 3) <input value="..." name="confirm"> (thứ tự thuộc tính ĐẢO)
+# 4/5) như (2)/(3) nhưng dùng nháy đơn
+_CONFIRM_TOKEN_PATTERNS = (
+    r'confirm=([0-9A-Za-z_]+)',
+    r'name=["\']confirm["\'][^>]*value=["\']([^"\']+)["\']',
+    r'value=["\']([^"\']+)["\'][^>]*name=["\']confirm["\']',
+)
+
+
+def _extract_confirm_token(html_text: str) -> Optional[str]:
+    """Trích confirm token từ HTML interstitial; trả None nếu không có."""
+    for pattern in _CONFIRM_TOKEN_PATTERNS:
+        match = re.search(pattern, html_text)
+        if match:
+            return match.group(1)
+    return None
+
+
 @register_downloader("gdrive", domains=("drive.google.com", "docs.google.com"))
 class GDriveDownloader:
     @staticmethod
@@ -79,24 +100,17 @@ class GDriveDownloader:
                 # Read response text to search for confirm token or form
                 html_text = resp.text
 
-                if _looks_like_quota_html(html_text):
-                    raise _fail_quota()
-
-                confirm_token = None
-
-                # Check for confirm=xxx in link or form
-                token_match = re.search(r'confirm=([0-9A-Za-z_]+)', html_text)
-                if token_match:
-                    confirm_token = token_match.group(1)
-                else:
-                    # Look for input name="confirm" value="..."
-                    form_match = re.search(r'name="confirm"\s+value="([^"]+)"', html_text)
-                    if form_match:
-                        confirm_token = form_match.group(1)
+                # QUAN TRỌNG: tìm confirm token TRƯỚC, chỉ khi KHÔNG có token
+                # mới xét marker quota. Trang interstitial hợp lệ vẫn có thể
+                # chứa cụm "permission denied" trong help-text — nếu check quota
+                # trước sẽ chặn nhầm file hoàn toàn tải được (false-positive).
+                confirm_token = _extract_confirm_token(html_text)
 
                 if confirm_token:
                     second_url = f"https://drive.usercontent.google.com/download?id={file_id}&export=download&authuser=0&confirm={confirm_token}"
                     resp = session.get(second_url, stream=True, timeout=timeout)
+                elif _looks_like_quota_html(html_text):
+                    raise _fail_quota()
                 else:
                     # HTML interstitial nhưng không tìm thấy confirm token -> thử fallback
                     Logger.warning(f"Google Drive: HTML interstitial không có confirm token cho file {file_id}, thử fallback...")
