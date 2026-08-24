@@ -317,11 +317,24 @@ class RCTFPlatform(BasePlatform):
 
         url = f"{self.base_url}/api/v1/leaderboard/now"
         try:
-            resp = self.session.get(url, timeout=15)
+            # rCTF schema bắt buộc query params limit & offset trên
+            # /api/v1/leaderboard/now — thiếu → lỗi validation → standings rỗng.
+            # limit=100 an toàn dưới maxLimit mặc định của rCTF.
+            resp = self.session.get(url, params={"limit": 100, "offset": 0}, timeout=15)
             if resp.status_code == 200:
                 data = resp.json() or {}
-                leaderboard = data.get("data", {}).get("leaderboard", []) if isinstance(data.get("data"), dict) else data.get("data", [])
+                data_field = data.get("data")
+                if isinstance(data_field, dict):
+                    leaderboard = data_field.get("leaderboard", [])
+                    total = data_field.get("total")
+                else:
+                    leaderboard = data_field if isinstance(data_field, list) else []
+                    total = None
                 result["total_teams"] = len(leaderboard)
+                if isinstance(total, int) and total > len(leaderboard):
+                    Logger.info(
+                        f"rCTF leaderboard: total={total} nhưng chỉ nhận "
+                        f"{len(leaderboard)} đội (limit=100) — cân nhắc phân trang offset.")
                 standings = []
                 for idx, entry in enumerate(leaderboard, 1):
                     name = entry.get("name")

@@ -360,6 +360,65 @@ class TestRCTFEventTimes(unittest.TestCase):
         self.assertIsNone(p.fetch_event_times())
 
 
+class TestRCTFScoreboard(unittest.TestCase):
+    """fetch_scoreboard: rCTF schema BẮT BUỘC query params limit & offset
+    trên /api/v1/leaderboard/now — thiếu → lỗi validation → standings rỗng."""
+
+    def _leaderboard_resp(self):
+        return make_resp(200, json_data={
+            "kind": "goodLeaderboard",
+            "data": {"total": 42, "leaderboard": [
+                {"id": 1, "name": "TeamA", "score": 5000},
+                {"id": 2, "name": "TeamB", "score": 4000},
+                {"id": 3, "name": "TeamC", "score": 3000},
+            ]}})
+
+    def _session_capturing_params(self):
+        captured = {}
+
+        def get(url, *a, **kw):
+            if "/api/v1/leaderboard/now" in url:
+                captured["url"] = url
+                captured["params"] = kw.get("params")
+                return make_resp(200, json_data={
+                    "kind": "goodLeaderboard",
+                    "data": {"total": 42, "leaderboard": [
+                        {"id": 1, "name": "TeamA", "score": 5000},
+                        {"id": 2, "name": "TeamB", "score": 4000},
+                        {"id": 3, "name": "TeamC", "score": 3000},
+                    ]}})
+            return make_resp(404)
+
+        s = MagicMock()
+        s.get.side_effect = get
+        return s, captured
+
+    def test_leaderboard_request_includes_limit_and_offset(self):
+        s, captured = self._session_capturing_params()
+        p = RCTFPlatform("https://rctf.example.com", s)
+        p.fetch_scoreboard()
+        params = captured.get("params") or {}
+        # limit & offset bắt buộc — nằm trong params dict hoặc ngay trong URL
+        all_qs = dict(params)
+        if "?" in (captured.get("url") or ""):
+            from urllib.parse import parse_qs, urlparse
+            for k, v in parse_qs(urlparse(captured["url"]).query).items():
+                all_qs.setdefault(k, v[0])
+        self.assertIn("limit", all_qs)
+        self.assertIn("offset", all_qs)
+
+    def test_leaderboard_parsed_to_standings(self):
+        s, _ = self._session_capturing_params()
+        p = RCTFPlatform("https://rctf.example.com", s)
+        result = p.fetch_scoreboard()
+        self.assertEqual(result["total_teams"], 3)
+        self.assertEqual(len(result["standings"]), 3)
+        self.assertEqual(result["standings"][0]["pos"], 1)
+        self.assertEqual(result["standings"][0]["name"], "TeamA")
+        self.assertEqual(result["standings"][0]["score"], 5000)
+        self.assertEqual(result["standings"][2]["name"], "TeamC")
+
+
 # ----------------------------------------------------------------------
 # PollScheduler (spec §5): jitter bounds, backoff cap
 # ----------------------------------------------------------------------
