@@ -1,22 +1,105 @@
 import os
+import sys
 import requests
 from typing import List, Dict, Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, DownloadColumn, TransferSpeedColumn, TimeRemainingColumn
 
-from .http_downloader import HttpDownloader
+from .http_downloader import HttpDownloader, DownloadFailed, LargeFileSkipped
 from .gdrive import GDriveDownloader
 from .dropbox import DropboxDownloader
 from .mediafire import MediafireDownloader
+from .mega import MegaDownloader
 from ..extractors.link_extractor import ExtractedLink
 from ..utils.logger import console, Logger
+from ..utils.sanitize import extract_filename_from_url
+
+# Mặc định 1 GB; 0 = tắt gate (không bao giờ hỏi)
+DEFAULT_SIZE_LIMIT_BYTES = 1073741824
+
+
+def human_size(num_bytes: Optional[float]) -> str:
+    """Định dạng dung lượng cho người dùng đọc (VD: 1.5GB)."""
+    if num_bytes is None:
+        return "không rõ"
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.1f}{unit}" if unit != "B" else f"{int(size)}B"
+        size /= 1024
+    return f"{size:.1f}TB"
+
 
 class DownloadManager:
-    def __init__(self, session: requests.Session, timeout: int = 30, force: bool = False):
+    def __init__(
+        self,
+        session: requests.Session,
+        timeout: int = 30,
+        force: bool = False,
+        size_limit_bytes: int = DEFAULT_SIZE_LIMIT_BYTES
+    ):
         self.session = session
         self.timeout = timeout
         self.force = force
+        # Ngưỡng consent file lớn; 0 = vô hiệu hoá gate
+        self.size_limit_bytes = size_limit_bytes or 0
 
+    # ------------------------------------------------------------------ #
+    # Consent gate cho file lớn
+    # ------------------------------------------------------------------ #
+    def _confirm_large_download(self, url: str, expected_size: Optional[int]) -> bool:
+        """
+        Trả True nếu được phép tải tiếp.
+        - Gate tắt (size_limit_bytes == 0) hoặc kích thước unknown/nhỏ hơn ngưỡng -> True.
+        - Vượt ngưỡng: hỏi user qua input() nếu stdin là tty; nếu không phải tty
+          thì tự skip kèm log cảnh báo.
+        """
+        limit = self.size_limit_bytes
+        if not limit or expected_size is None or expected_size <= limit:
+            return True
+
+        pretty_size = human_size(expected_size)
+        pretty_limit = human_size(limit)
+
+        stdin = sys.stdin
+        is_tty = False
+        try:
+            is_tty = bool(stdin and stdin.isatty())
+        except Exception:
+            is_tty = False
+
+        if not is_tty:
+            Logger.warning(
+                f"Bỏ qua {url}: dung lượng {pretty_size} vượt quá giới hạn {pretty_limit} "
+                f"(chạy non-interactive nên không thể hỏi consent)."
+            )
+            return False
+
+        try:
+            answer = input(
+                f"File '{os.path.basename(url)}' ({pretty_size}) vượt quá giới hạn {pretty_limit}, tải? [y/N] "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return False
+        return answer in ("y", "yes")
+
+    @staticmethod
+    def _skip_large_message(url: str, size: Optional[int], limit: int) -> str:
+        size_str = human_size(size) + " " if size is not None else ""
+        return (
+            f"skipped_large_file: {url} — dung lượng {size_str}vượt quá giới hạn "
+            f"{human_size(limit)}, người dùng không đồng ý tải."
+        )
+
+    @staticmethod
+    def _close_quietly(stream) -> None:
+        try:
+            if stream is not None:
+                stream.close()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------ #
+    # Single URL download
+    # ------------------------------------------------------------------ #
     def download_url(
         self,
         url: str,
@@ -26,57 +109,82 @@ class DownloadManager:
     ) -> Tuple[bool, Optional[str], str]:
         """
         Downloads a single URL based on its link_type.
-        Returns (success, saved_file_path, message)
+        Returns (success, saved_file_path_or_None, message).
+
+        Message 'skipped_large_file: ...' đánh dấu file bị skip bởi consent gate.
         """
         try:
-            # 1. Google Drive
+            # 0. Mega: shell-out sang megatools — không có tool thì bỏ qua
+            if link_type == "mega":
+                saved_path, msg = MegaDownloader.download(url, dest_dir, timeout=max(self.timeout * 10, 600))
+                return (saved_path is not None), saved_path, msg
+
+            stream = None
+            expected_size: Optional[int] = None
+            fallback_name: Optional[str] = None
+
+            # 1. Google Drive — luôn unknown-size (interstitial)
             if link_type == "gdrive":
-                resp, fname = GDriveDownloader.get_download_stream(url, session=self.session, timeout=self.timeout)
-                if resp and fname:
-                    saved_path = HttpDownloader.save_response_stream(
-                        resp, dest_dir, preferred_name or fname, force=self.force
-                    )
-                    if saved_path:
-                        return True, saved_path, "Downloaded via Google Drive handler"
-                return False, None, "Google Drive download failed or requires manual access permission"
+                stream, expected_size = GDriveDownloader.get_download_stream(url, session=self.session, timeout=self.timeout)
+                file_id = GDriveDownloader.extract_file_id(url)
+                if file_id:
+                    fallback_name = f"gdrive_{file_id}.bin"
 
-            # 2. Dropbox
+            # 2. Dropbox — pre-flight HEAD để biết trước dung lượng
             elif link_type == "dropbox":
-                resp, fname = DropboxDownloader.get_download_stream(url, session=self.session, timeout=self.timeout)
-                if resp and fname:
-                    saved_path = HttpDownloader.save_response_stream(
-                        resp, dest_dir, preferred_name or fname, force=self.force
-                    )
-                    if saved_path:
-                        return True, saved_path, "Downloaded via Dropbox handler"
-                return False, None, "Dropbox direct download failed"
+                stream, expected_size = DropboxDownloader.get_download_stream(url, session=self.session, timeout=self.timeout)
 
-            # 3. Mediafire
+            # 3. Mediafire — pre-flight API get_info.php / scrape trang
             elif link_type == "mediafire":
-                resp, fname = MediafireDownloader.get_download_stream(url, session=self.session, timeout=self.timeout)
-                if resp and fname:
-                    saved_path = HttpDownloader.save_response_stream(
-                        resp, dest_dir, preferred_name or fname, force=self.force
-                    )
-                    if saved_path:
-                        return True, saved_path, "Downloaded via Mediafire handler"
-                return False, None, "Mediafire direct download failed"
+                stream, expected_size = MediafireDownloader.get_download_stream(url, session=self.session, timeout=self.timeout)
 
-            # 4. Direct / GitHub / Discord / Standard HTTP
+            # 4. Direct / GitHub / GitLab / Discord / catbox / 0x0 / HTTP thuần
             else:
+                expected_size = HttpDownloader.probe_content_length(url, session=self.session, timeout=self.timeout)
+                if not self._confirm_large_download(url, expected_size):
+                    return False, None, self._skip_large_message(url, expected_size, self.size_limit_bytes)
+
                 saved_path = HttpDownloader.download_file(
                     url, dest_dir, self.session,
                     preferred_filename=preferred_name,
                     timeout=self.timeout,
-                    force=self.force
+                    force=self.force,
+                    max_size=self.size_limit_bytes
                 )
                 if saved_path:
                     return True, saved_path, "Direct download successful"
-                return False, None, "Failed to download file (HTTP status or connection error)"
+                return False, None, "Failed to download file (HTTP status, connection error hoặc nội dung HTML)"
 
+            # Các nhánh trả stream: gate consent rồi lưu qua save_response_stream
+            if stream is None:
+                return False, None, f"Failed to download via {link_type} handler (không lấy được stream tải trực tiếp)."
+
+            if not self._confirm_large_download(url, expected_size):
+                self._close_quietly(stream)
+                return False, None, self._skip_large_message(url, expected_size, self.size_limit_bytes)
+
+            filename = preferred_name or fallback_name or extract_filename_from_url(url)
+            saved_path = HttpDownloader.save_response_stream(
+                stream, dest_dir, filename,
+                force=self.force,
+                max_size=self.size_limit_bytes
+            )
+            if saved_path:
+                return True, saved_path, f"Downloaded via {link_type} handler"
+            return False, None, f"Failed to download via {link_type} handler (lỗi khi ghi dữ liệu)."
+
+        except LargeFileSkipped as e:
+            # Unknown-size: vượt ngưỡng phát hiện trong lúc stream -> đã ngắt sớm & dọn tmp
+            return False, None, self._skip_large_message(url, e.size, self.size_limit_bytes)
+        except DownloadFailed as e:
+            return False, None, str(e)
         except Exception as e:
-            return False, None, f"Exception during download: {str(e)}"
+            Logger.warning(f"Ngoại lệ khi tải {url}: {type(e).__name__}: {str(e)[:200]}")
+            return False, None, f"Exception during download: {type(e).__name__}: {str(e)[:200]}"
 
+    # ------------------------------------------------------------------ #
+    # Per-challenge orchestration
+    # ------------------------------------------------------------------ #
     def download_challenge_files(
         self,
         files: List[Tuple[str, str]], # (url, preferred_name)

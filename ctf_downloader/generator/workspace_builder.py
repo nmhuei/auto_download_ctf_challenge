@@ -27,13 +27,54 @@ class WorkspaceBuilder:
         challenge_dir = os.path.join(base_output_dir, clean_category, clean_name)
         os.makedirs(challenge_dir, exist_ok=True)
 
-        # 1. Generate README.md
-        readme_content = WorkspaceBuilder._generate_readme(
-            challenge, extracted_links, connections, download_results
-        )
-        readme_path = os.path.join(challenge_dir, "README.md")
-        with open(readme_path, "w", encoding="utf-8") as f:
-            f.write(readme_content)
+        # Create structured subdirectories for professional modularity
+        challenge_sub_dir = os.path.join(challenge_dir, "challenge")
+        script_sub_dir = os.path.join(challenge_dir, "script")
+        solver_sub_dir = os.path.join(challenge_dir, "solver")
+        writeup_sub_dir = os.path.join(challenge_dir, "writeup")
+        os.makedirs(challenge_sub_dir, exist_ok=True)
+        os.makedirs(script_sub_dir, exist_ok=True)
+        os.makedirs(solver_sub_dir, exist_ok=True)
+        os.makedirs(writeup_sub_dir, exist_ok=True)
+
+        # Copy downloaded files to challenge/ subdirectory
+        import shutil
+        for dl in download_results:
+            if dl.get("success") and dl.get("saved_path") and os.path.isfile(dl["saved_path"]):
+                target_copy = os.path.join(challenge_sub_dir, os.path.basename(dl["saved_path"]))
+                if not os.path.exists(target_copy):
+                    try:
+                        shutil.copy2(dl["saved_path"], target_copy)
+                    except Exception:
+                        pass
+
+        # 1. Generate challenge/README.md (Original Challenge Description & Resources)
+        challenge_readme_path = os.path.join(challenge_sub_dir, "README.md")
+        if not os.path.exists(challenge_readme_path):
+            readme_content = WorkspaceBuilder._generate_readme(
+                challenge, extracted_links, connections, download_results
+            )
+            with open(challenge_readme_path, "w", encoding="utf-8") as f:
+                f.write(readme_content)
+
+        # 2. Generate challenge/NOTE.md (Workspace Guidelines)
+        challenge_note_path = os.path.join(challenge_sub_dir, "NOTE.md")
+        if not os.path.exists(challenge_note_path):
+            note_content = """# 📌 Quy Tắc Tổ Chức Thư Mục (Workspace Guidelines)
+
+- **`script/`**: Thư mục workspace nháp. Hãy viết toàn bộ script test, payload thử nghiệm, fuzzing, giải mã linh tinh tại đây để tránh làm rác thư mục gốc.
+- **`solver/`**: Khi script giải bài hoàn thiện và lấy được flag thành công, hãy chuyển/lưu script chính thức vào thư mục `solver/` (ví dụ `solver/solve.py`).
+- **`writeup/`**: Thư mục viết báo cáo, phân tích kỹ thuật và ghi lại Flag sau khi giải xong bài.
+"""
+            with open(challenge_note_path, "w", encoding="utf-8") as f:
+                f.write(note_content)
+
+        # 3. Generate writeup/README.md (Blank Writeup Template for after solving)
+        writeup_path = os.path.join(writeup_sub_dir, "README.md")
+        if not os.path.exists(writeup_path):
+            writeup_content = WorkspaceBuilder._generate_writeup_template(challenge)
+            with open(writeup_path, "w", encoding="utf-8") as f:
+                f.write(writeup_content)
 
         # 2. Generate metadata.json
         meta_data = {
@@ -56,12 +97,11 @@ class WorkspaceBuilder:
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta_data, f, indent=2, ensure_ascii=False)
 
-
-        # 3. Generate solve.py if requested and doesn't exist
-        solve_path = os.path.join(challenge_dir, "solve.py")
-        if create_solve_template and not os.path.exists(solve_path):
+        # 3. Generate solver/solve.py if requested and doesn't exist
+        solver_solve_path = os.path.join(solver_sub_dir, "solve.py")
+        if create_solve_template and not os.path.exists(solver_solve_path):
             solve_script = WorkspaceBuilder._generate_solve_template(challenge, connections)
-            with open(solve_path, "w", encoding="utf-8") as f:
+            with open(solver_solve_path, "w", encoding="utf-8") as f:
                 f.write(solve_script)
 
         return challenge_dir
@@ -248,3 +288,51 @@ def solve():
 if __name__ == '__main__':
     solve()
 '''
+
+    @staticmethod
+    def _generate_writeup_template(challenge: Challenge) -> str:
+        """
+        Generates a standardized writeup markdown template for the challenge.
+        """
+        return f"""# Writeup: {challenge.name}
+
+| Property | Value |
+| :--- | :--- |
+| **Category** | `{challenge.category}` |
+| **Points** | `{challenge.points}` |
+| **Author** | `{challenge.author or '-'}` |
+| **Solves** | `{challenge.solves_count or 0}` |
+
+---
+
+## 📝 Challenge Overview
+
+{challenge.description or 'No description provided.'}
+
+---
+
+## 🔍 Reconnaissance & Vulnerability Analysis
+
+- Target Connection: `{challenge.connection_info or '-'}`
+- Category: `{challenge.category}`
+- Key observations & vulnerability hypothesis:
+  *(Document reverse engineering, source code review, or protocol analysis here)*
+
+---
+
+## 💻 Exploitation Strategy & PoC
+
+Exploit script is located at [`../solver/solve.py`](../solver/solve.py).
+
+```bash
+python3 ../solver/solve.py
+```
+
+---
+
+## 🚩 Flag
+
+- Status: `- [ ] Solved`
+- Flag: `FLAG{{...}}`
+"""
+

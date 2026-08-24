@@ -64,7 +64,7 @@ class SummaryGenerator:
             clean_cat = sanitize_folder_name(cat, default="Misc")
             for c in challs:
                 clean_name = sanitize_folder_name(c.name, default=f"chall_{c.id}")
-                rel_path = f"{clean_cat}/{clean_name}/README.md"
+                rel_path = f"{clean_cat}/{clean_name}/writeup/README.md"
                 
                 c_files = all_results.get(c.id, [])
                 succ_files = sum(1 for f in c_files if f.get("success"))

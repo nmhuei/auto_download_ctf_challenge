@@ -112,9 +112,20 @@ Quick Examples:
     sub_parser.add_argument('-n', '--name', help='Target challenge name')
     sub_parser.add_argument('-f', '--flag', help='Flag string to submit')
     sub_parser.add_argument('--auto', action='store_true', help='Auto-scan workspace for filled flags and submit')
+    sub_parser.add_argument('--flag-format', dest='flag_format', help='Regex định dạng flag của giải (vd: "^PTITCTF\\{.+\\}$")')
+    sub_parser.add_argument('--force', action='store_true', help='Vượt blacklist flag sai để vẫn submit')
     sub_parser.add_argument('-i', '--interactive', action='store_true', help='Interactive submission wizard')
 
-    # 6. MENU / UI / INTERACTIVE
+    # 6. RANK / SCOREBOARD / LEADERBOARD
+    rank_parser = subparsers.add_parser('rank', aliases=['scoreboard', 'leaderboard'], help='Display live scoreboard standings and update ranking docs')
+    rank_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
+    rank_parser.add_argument('-u', '--url', help='Platform base URL')
+    rank_parser.add_argument('-c', '--cookie', help='Cookie string or path to cookie file')
+    rank_parser.add_argument('-t', '--token', help='API token or Bearer token')
+    rank_parser.add_argument('-n', '--top', type=int, default=15, help='Number of top teams to display (default: 15)')
+    rank_parser.add_argument('--no-docs', action='store_true', help='Do not write/update RANKING.md or SUMMARY.md')
+
+    # 7. MENU / UI / INTERACTIVE
     menu_parser = subparsers.add_parser('menu', aliases=['ui', 'console'], help='Launch full interactive CTF suite dashboard')
     menu_parser.add_argument('-w', '--workspace', default=None, help='CTF workspace directory')
     menu_parser.add_argument('-c', '--cookie', help='Cookie string or path to cookie file')
@@ -284,30 +295,50 @@ def handle_submit(args):
         url=args.url,
         cookie=cookie_val,
         token=token_val,
-        workspace_dir=args.workspace
+        workspace_dir=args.workspace,
+        flag_format=getattr(args, 'flag_format', None)
     )
 
     if args.auto:
-        submitter.auto_submit_all()
+        submitter.auto_submit_all(force=getattr(args, 'force', False))
         return
 
     chall_id = args.id or (args.target if args.target and args.target.isdigit() else None)
     chall_name = args.name or (args.target if args.target and not args.target.isdigit() else None)
     flag_value = args.flag or args.flag_val
+    force_flag = getattr(args, 'force', False)
 
     if args.interactive or (not chall_id and not chall_name and not flag_value):
-        submitter.interactive_submit()
+        submitter.interactive_submit(force=force_flag)
         return
 
     if not flag_value:
         Logger.error('Please specify the flag string with -f or as an argument.')
         sys.exit(1)
 
-    submitter.submit_single_flag(
+    success, message = submitter.submit_single_flag(
         challenge_id=chall_id,
         challenge_name=chall_name,
-        flag_value=flag_value
+        flag_value=flag_value,
+        force=force_flag
     )
+    if not success:
+        sys.exit(1)
+
+def handle_rank(args):
+    from .ranking import RankingManager
+    cookie_val, token_val = get_auth_for_workspace(args.workspace, args.cookie, args.token)
+    try:
+        mgr = RankingManager(
+            workspace_path=args.workspace,
+            url=args.url,
+            cookie=cookie_val,
+            token=token_val
+        )
+        mgr.display_and_update(top_n=args.top, update_docs=not args.no_docs)
+    except Exception as e:
+        Logger.error(f'Failed to fetch ranking: {e}')
+        sys.exit(1)
 
 def main():
     if len(sys.argv) == 1:
@@ -336,6 +367,8 @@ def main():
         handle_instance(args)
     elif cmd in ['submit', 'flag']:
         handle_submit(args)
+    elif cmd in ['rank', 'scoreboard', 'leaderboard']:
+        handle_rank(args)
     elif cmd in ['menu', 'ui', 'console']:
         launch_interactive_menu(workspace_path=args.workspace, cookie=args.cookie, token=args.token)
     else:

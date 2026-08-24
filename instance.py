@@ -21,21 +21,35 @@ def main():
     action_group.add_argument('--stop', action='store_true', help='Stop / destroy active container instance')
     action_group.add_argument('--extend', action='store_true', help='Extend container expiration countdown')
     action_group.add_argument('--status', action='store_true', help='Check status and active entry of container')
+    action_group.add_argument('--sync', action='store_true', help='Scan and synchronize all container statuses in workspace')
     action_group.add_argument('-l', '--list', action='store_true', help='List all container challenges in workspace')
     action_group.add_argument('-i', '--interactive', action='store_true', help='Launch interactive container manager')
 
     args = parser.parse_args()
 
-    cookie_val = args.cookie
-    if cookie_val and os.path.isfile(cookie_val):
-        with open(cookie_val, 'r', encoding='utf-8') as f:
-            cookie_val = f.read().strip()
+    from ctf_downloader.cli import get_auth_for_workspace
+    cookie_val, token_val = get_auth_for_workspace(args.workspace, args.cookie, args.token)
 
     try:
-        mgr = InstanceManager(args.workspace, cookie=cookie_val, token=args.token)
+        mgr = InstanceManager(args.workspace, cookie=cookie_val, token=token_val)
     except Exception as e:
         Logger.error(f'Initialization error: {e}')
         sys.exit(1)
+
+    # 1. Sync all containers action
+    if args.sync:
+        containers = mgr.list_containers()
+        Logger.info(f'Scanning and syncing {len(containers)} container challenges...')
+        active_count = 0
+        for c in containers:
+            cid = c.get('id')
+            cname = c.get('name')
+            st = mgr.get_status(cid)
+            if st.get('status') == 'running' or st.get('entry'):
+                active_count += 1
+                Logger.success(f"[RUNNING] ID {cid} ({cname}): [bold green]{st.get('entry')}[/bold green]")
+        Logger.info(f'Sync complete! Found {active_count} active running container(s).')
+        return
 
     # 1. List action
     if args.list:

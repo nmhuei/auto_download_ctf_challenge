@@ -251,19 +251,20 @@ class TestCTFDownloader(unittest.TestCase):
         )
 
         self.assertTrue(os.path.isdir(chall_dir))
-        self.assertTrue(os.path.isfile(os.path.join(chall_dir, "README.md")))
+        self.assertTrue(os.path.isfile(os.path.join(chall_dir, "writeup", "README.md")))
         self.assertTrue(os.path.isfile(os.path.join(chall_dir, "metadata.json")))
-        self.assertTrue(os.path.isfile(os.path.join(chall_dir, "solve.py")))
+        self.assertTrue(os.path.isfile(os.path.join(chall_dir, "solver", "solve.py")))
+        self.assertTrue(os.path.isdir(os.path.join(chall_dir, "challenge")))
 
         # Check README contents
-        with open(os.path.join(chall_dir, "README.md"), "r") as f:
+        with open(os.path.join(chall_dir, "writeup", "README.md"), "r") as f:
             readme = f.read()
             self.assertIn("Buffer Overflow 101", readme)
             self.assertIn("150", readme)
             self.assertIn("nc pwn.site.org 9999", readme)
 
         # Check solve.py template content for Pwn
-        with open(os.path.join(chall_dir, "solve.py"), "r") as f:
+        with open(os.path.join(chall_dir, "solver", "solve.py"), "r") as f:
             solve_content = f.read()
             self.assertIn("from pwn import *", solve_content)
             self.assertIn("pwn.site.org", solve_content)
@@ -304,6 +305,14 @@ class TestCTFDownloader(unittest.TestCase):
         cid2, name2 = submitter.resolve_challenge_id("Sanity Check")
         self.assertEqual(cid2, 101)
         self.assertEqual(name2, "Sanity Check")
+
+    def test_ranking_manager(self):
+        from ctf_downloader.ranking import RankingManager
+        
+        # Test initialization and ranking parsing
+        mgr = RankingManager(url="https://demo.ctfd.io", timeout=5)
+        self.assertEqual(mgr.url, "https://demo.ctfd.io")
+        self.assertIsNotNone(mgr.platform)
 
 if __name__ == "__main__":
     unittest.main()

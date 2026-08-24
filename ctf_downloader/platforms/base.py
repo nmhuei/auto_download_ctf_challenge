@@ -38,6 +38,8 @@ class BaseCTFPlatform(ABC):
         self.base_url = base_url.rstrip("/")
         self.session = session
         self.ctf_info = CTFInfo(url=self.base_url)
+        # Verdict chuẩn hoá của lần submit gần nhất: correct | incorrect | unknown | ratelimited
+        self.last_verdict: str = "unknown"
 
     @abstractmethod
     def authenticate(self) -> bool:
@@ -69,6 +71,13 @@ class BaseCTFPlatform(ABC):
         """
         pass
 
+    def fetch_rules(self) -> Optional[str]:
+        """
+        Fetches competition rules / flag-format description (raw text, HTML or markdown).
+        Returns None if unavailable. Must never raise.
+        """
+        return None
+
     def start_instance(self, challenge_id: Any) -> Tuple[bool, Dict[str, Any]]:
         """
         Spawns/starts a dynamic container instance for the challenge.
@@ -93,6 +102,21 @@ class BaseCTFPlatform(ABC):
         Gets current status of container instance for challenge.
         """
         return {"status": "unsupported", "entry": None, "time_left": None}
+
+    def fetch_scoreboard(self) -> Dict[str, Any]:
+        """
+        Fetches scoreboard and ranking standings from platform.
+        Returns dict containing standings, my_rank, my_score, etc.
+        """
+        return {
+            "title": "Scoreboard",
+            "my_team": self.ctf_info.team_name,
+            "my_user": self.ctf_info.user_name,
+            "my_rank": None,
+            "my_score": None,
+            "total_teams": 0,
+            "standings": []
+        }
 
 BasePlatform = BaseCTFPlatform
 

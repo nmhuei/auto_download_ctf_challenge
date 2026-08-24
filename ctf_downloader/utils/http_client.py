@@ -62,21 +62,25 @@ def create_session(
     session = requests.Session()
     
     # Setup retries
+    # Lưu ý: KHÔNG retry POST — tránh submit flag / khởi tạo container bị gửi trùng.
     retry_strategy = Retry(
         total=retries,
         backoff_factor=backoff_factor,
         status_forcelist=[429, 500, 502, 503, 504],
         raise_on_status=False,
-        allowed_methods=["HEAD", "GET", "OPTIONS", "POST"]
+        allowed_methods=frozenset(["HEAD", "GET", "OPTIONS"])
     )
     adapter = HTTPAdapter(max_retries=retry_strategy)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
-    
+
     # Headers
+    # - UA browser thực tế: nhiều host anon (catbox 412, 0x0.st 418) chặn UA của script.
+    # - Accept: application/json đứng đầu để CTFd trả lỗi JSON thay vì 302 redirect sang /login.
+    #   KHÔNG đặt Content-Type toàn cục vì sẽ phá các form login multipart/urlencoded.
     headers = {
         "User-Agent": DEFAULT_USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8,application/json",
+        "Accept": "application/json, text/html;q=0.9, application/xhtml+xml;q=0.8, */*;q=0.7",
         "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
     }
     if custom_headers:

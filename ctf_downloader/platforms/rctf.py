@@ -148,12 +148,22 @@ class RCTFPlatform(BasePlatform):
             return file_path
         return urllib.parse.urljoin(self.base_url, file_path)
 
+    def fetch_rules(self) -> Optional[str]:
+        """
+        rCTF render rules client-side và không có endpoint public cho rules
+        -> không thể fetch, trả về None.
+        """
+        return None
+
     def submit_flag(self, challenge_id: Any, flag: str) -> Tuple[bool, str]:
         """
         Submits a flag to rCTF platform (/api/v1/challs/{challenge_id}/submit).
+        Cập nhật self.last_verdict: correct | incorrect | unknown | ratelimited.
         """
         url = f"{self.base_url}/api/v1/challs/{challenge_id}/submit"
         payload = {"flag": flag.strip()}
+
+        self.last_verdict = "unknown"
 
         try:
             resp = self.session.post(url, json=payload, timeout=15)
@@ -166,23 +176,73 @@ class RCTFPlatform(BasePlatform):
             message = data.get("message", "")
 
             if kind == "goodFlag" or (resp.status_code == 200 and kind == "goodFlag"):
+                self.last_verdict = "correct"
                 return True, "🎉 Correct flag! Challenge solved!"
             elif kind == "alreadySolved":
+                self.last_verdict = "correct"
                 return True, "✅ You have already solved this challenge!"
             elif kind == "badFlag":
+                self.last_verdict = "incorrect"
                 return False, f"❌ Incorrect flag ({message or 'Bad Flag'})."
             elif kind == "badRateLimit" or resp.status_code == 429:
+                self.last_verdict = "ratelimited"
                 return False, f"⏳ Rate limited! {message or 'Please wait before submitting again.'}"
             elif kind == "badChallenge":
+                self.last_verdict = "unknown"
                 return False, f"⚠️ Challenge not found or unavailable ({message})."
             elif kind == "badToken":
+                self.last_verdict = "unknown"
                 return False, "🚫 Authentication expired or invalid token."
             else:
                 if resp.status_code == 200:
+                    self.last_verdict = "correct"
                     return True, f"✅ Submission received: {message or kind}"
+                self.last_verdict = "unknown"
                 return False, f"Server returned HTTP {resp.status_code}: {message or kind or resp.text[:100]}"
 
         except Exception as e:
+            self.last_verdict = "unknown"
             return False, f"Exception during submission: {str(e)}"
 
+    def fetch_scoreboard(self) -> Dict[str, Any]:
+        """
+        Fetches leaderboard standings from rCTF (/api/v1/leaderboard/now).
+        """
+        result = {
+            "title": self.ctf_info.title or "rCTF Leaderboard",
+            "my_team": self.ctf_info.team_name,
+            "my_user": self.ctf_info.user_name,
+            "my_rank": None,
+            "my_score": None,
+            "total_teams": 0,
+            "standings": []
+        }
+
+        url = f"{self.base_url}/api/v1/leaderboard/now"
+        try:
+            resp = self.session.get(url, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json() or {}
+                leaderboard = data.get("data", {}).get("leaderboard", []) if isinstance(data.get("data"), dict) else data.get("data", [])
+                result["total_teams"] = len(leaderboard)
+                standings = []
+                for idx, entry in enumerate(leaderboard, 1):
+                    name = entry.get("name")
+                    score = entry.get("score")
+                    pos = idx
+                    if (result["my_team"] and name == result["my_team"]) or (result["my_user"] and name == result["my_user"]):
+                        result["my_rank"] = f"{pos}th"
+                        result["my_score"] = score
+
+                    standings.append({
+                        "pos": pos,
+                        "name": name,
+                        "score": score,
+                        "raw": entry
+                    })
+                result["standings"] = standings
+        except Exception as e:
+            Logger.warning(f"Failed to fetch leaderboard from rCTF: {e}")
+
+        return result
 

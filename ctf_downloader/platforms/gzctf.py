@@ -1,4 +1,5 @@
 import re
+import time
 import urllib.parse
 import requests
 from typing import List, Dict, Any, Optional, Tuple
@@ -6,69 +7,98 @@ from .base import BasePlatform, Challenge, CTFInfo
 from ..utils.logger import Logger
 
 class GZCTFPlatform(BasePlatform):
+    # Số lần poll tối đa kết quả chấm của một submission
+    SUBMISSION_POLL_ATTEMPTS = 6
+    SUBMISSION_POLL_INTERVAL = 1.0  # giây
+
     def __init__(self, base_url: str, session: requests.Session):
         # Extract game_id from base_url if present (e.g., https://.../games/6/challenges)
         parsed = urllib.parse.urlparse(base_url)
         self.origin = f"{parsed.scheme}://{parsed.netloc}"
-        
-        game_match = re.search(r'/games?/(\d+)', parsed.path)
-        self.game_id = int(game_match.group(1)) if game_match else 1
-        
+
+        self.game_id: Optional[int] = None
+
+        # Ưu tiên 1: query ?gid=<id>
+        try:
+            qs = urllib.parse.parse_qs(parsed.query or "")
+            if "gid" in qs and qs["gid"]:
+                self.game_id = int(qs["gid"][0])
+        except (ValueError, TypeError):
+            self.game_id = None
+
+        # Ưu tiên 2: path /games/<id> hoặc /game/<id>
+        if self.game_id is None:
+            game_match = re.search(r'/games?/(\d+)', parsed.path)
+            if game_match:
+                self.game_id = int(game_match.group(1))
+
+        # KHÔNG brute-force probe id nữa — nếu không suy ra được từ URL thì để None.
+
         super().__init__(self.origin, session)
         self.ctf_info.platform_type = "gzctf"
 
     def authenticate(self) -> bool:
         """
         Validates authentication on GZCTF via /api/account/profile and /api/game/{id}.
+        Không dò (brute-force) game id — game_id phải suy ra được từ URL người dùng.
         """
         # 1. Check Profile
+        profile_ok = False
         try:
             resp = self.session.get(f"{self.origin}/api/account/profile", timeout=15)
             if resp.status_code == 200:
                 user_data = resp.json()
                 self.ctf_info.user_name = user_data.get("userName") or user_data.get("realName")
                 Logger.success(f"Authenticated to GZCTF as User: [bold cyan]{self.ctf_info.user_name}[/bold cyan] ({user_data.get('email')})")
+                profile_ok = True
         except Exception:
             pass
 
-        # 2. Check Game Info
-        try:
-            resp = self.session.get(f"{self.origin}/api/game/{self.game_id}", timeout=15)
-            if resp.status_code == 200:
-                game_data = resp.json()
-                self.ctf_info.title = game_data.get("title", f"Game {self.game_id}")
-                self.ctf_info.team_name = game_data.get("teamName")
-                if self.ctf_info.team_name:
-                    Logger.info(f"Team: [bold magenta]{self.ctf_info.team_name}[/bold magenta] | Competition: [bold yellow]{self.ctf_info.title}[/bold yellow]")
-                return True
-        except Exception as e:
-            Logger.warning(f"Could not fetch game {self.game_id} info: {e}")
-
-        # If game_id not found, probe other game IDs
-        for gid in range(1, 10):
-            if gid == self.game_id:
-                continue
+        # 2. Check Game Info (chỉ khi biết chắc game_id từ URL)
+        if self.game_id is not None:
             try:
-                resp = self.session.get(f"{self.origin}/api/game/{gid}", timeout=5)
+                resp = self.session.get(f"{self.origin}/api/game/{self.game_id}", timeout=15)
                 if resp.status_code == 200:
-                    self.game_id = gid
                     game_data = resp.json()
                     self.ctf_info.title = game_data.get("title", f"Game {self.game_id}")
-                    Logger.info(f"Auto-selected active Game ID: {gid} ({self.ctf_info.title})")
+                    self.ctf_info.team_name = game_data.get("teamName")
+                    if self.ctf_info.team_name:
+                        Logger.info(f"Team: [bold magenta]{self.ctf_info.team_name}[/bold magenta] | Competition: [bold yellow]{self.ctf_info.title}[/bold yellow]")
                     return True
-            except Exception:
-                pass
+            except Exception as e:
+                Logger.warning(f"Could not fetch game {self.game_id} info: {e}")
 
-        if self.ctf_info.user_name:
+        if profile_ok:
+            Logger.warning("Không xác định được game_id từ URL (vd: https://host/games/<id>/challenges). Một số tính năng sẽ bị giới hạn.")
             return True
 
         Logger.error("Failed to authenticate to GZCTF platform. Please verify GZCTF_Token cookie.")
         return False
 
+    def fetch_rules(self) -> Optional[str]:
+        """
+        Lấy rules / mô tả định dạng flag từ /api/game/{game_id} (field 'content', public).
+        Trả về None nếu không biết game_id hoặc request lỗi.
+        """
+        if not self.game_id:
+            return None
+        try:
+            resp = self.session.get(f"{self.origin}/api/game/{self.game_id}", timeout=15)
+            if resp.status_code == 200:
+                content = (resp.json() or {}).get("content")
+                if content and str(content).strip():
+                    return str(content)
+        except Exception as e:
+            Logger.warning(f"Could not fetch rules from game {self.game_id}: {e}")
+        return None
+
     def fetch_challenges(self) -> List[Challenge]:
         """
         Fetches all challenges and detailed metadata from GZCTF.
         """
+        if not self.game_id:
+            Logger.error("GZCTF: không xác định được game_id từ URL — bỏ qua fetch challenges.")
+            return []
         details_url = f"{self.origin}/api/game/{self.game_id}/details"
         try:
             resp = self.session.get(details_url, timeout=20)
@@ -85,6 +115,33 @@ class GZCTFPlatform(BasePlatform):
             total_count = sum(len(challs) for challs in raw_categories.values())
             Logger.info(f"Found {total_count} challenges across {len(raw_categories)} categories on GZCTF. Fetching details...")
 
+            # Fetch solved challenge IDs from scoreboard for current user/team
+            solved_chall_ids = set()
+            try:
+                sb_resp = self.session.get(f"{self.origin}/api/game/{self.game_id}/scoreboard", timeout=10)
+                if sb_resp.status_code == 200:
+                    sb_json = sb_resp.json()
+                    sb_items = sb_json.get("items", []) if isinstance(sb_json, dict) else sb_json
+                    for s_item in sb_items:
+                        is_my = False
+                        if self.ctf_info.team_name and s_item.get("name") == self.ctf_info.team_name:
+                            is_my = True
+                        elif self.ctf_info.user_name and s_item.get("name") == self.ctf_info.user_name:
+                            is_my = True
+                        elif self.ctf_info.user_name:
+                            for sol in s_item.get("solvedChallenges", []):
+                                if sol.get("userName") == self.ctf_info.user_name:
+                                    is_my = True
+                                    break
+                        if is_my:
+                            self.ctf_info.team_name = s_item.get("name")
+                            for sol in s_item.get("solvedChallenges", []):
+                                if sol.get("id"):
+                                    solved_chall_ids.add(sol.get("id"))
+                            break
+            except Exception:
+                pass
+
             detailed_challenges = []
 
             for category_name, chall_list in raw_categories.items():
@@ -93,6 +150,7 @@ class GZCTFPlatform(BasePlatform):
                     title = item.get("title", f"Challenge_{chall_id}").strip()
                     score = item.get("score", 0)
                     solved_count = item.get("solved", 0)
+                    is_solved = chall_id in solved_chall_ids
 
                     # Fetch individual challenge details: /api/game/{game_id}/challenges/{challenge_id}
                     single_url = f"{self.origin}/api/game/{self.game_id}/challenges/{chall_id}"
@@ -156,6 +214,7 @@ class GZCTFPlatform(BasePlatform):
                         tags=[chall_type] if chall_type else [],
                         hints=hints_list,
                         files=files_list,
+                        solved_by_me=is_solved,
                         solves_count=solved_count,
                         submit_endpoint=submit_endpoint,
                         instance_info=instance_info,
@@ -179,59 +238,67 @@ class GZCTFPlatform(BasePlatform):
     def submit_flag(self, challenge_id: Any, flag: str) -> Tuple[bool, str]:
         """
         Submits a flag to GZCTF platform (/api/game/{game_id}/challenges/{challenge_id}).
+
+        POST trả về submissionId -> poll GET .../Status/{submissionId}
+        đến khi ra 'Accepted' (đúng) hoặc 'WrongAnswer' (sai).
+        Cập nhật self.last_verdict: correct | incorrect | unknown | ratelimited.
         """
+        self.last_verdict = "unknown"
+
+        if not self.game_id:
+            return False, "GZCTF: không xác định được game_id từ URL."
+
         url = f"{self.origin}/api/game/{self.game_id}/challenges/{challenge_id}"
         payload = {"flag": flag.strip()}
 
         try:
-            # 1. Check pre-state
-            pre_bloods_count = 0
-            try:
-                pre_det = self.session.get(f"{self.origin}/api/game/{self.game_id}/details", timeout=5).json()
-                for cat, challs in pre_det.get("challenges", {}).items():
-                    for c in challs:
-                        if str(c.get("id")) == str(challenge_id):
-                            pre_bloods_count = len(c.get("bloods", []))
-            except Exception:
-                pass
-
             resp = self.session.post(url, json=payload, timeout=15)
-            
-            if resp.status_code == 200:
-                sub_id = resp.text.strip().strip('"')
-                
-                # 2. Check post-state
-                is_correct = False
-                try:
-                    post_det = self.session.get(f"{self.origin}/api/game/{self.game_id}/details", timeout=5).json()
-                    for cat, challs in post_det.get("challenges", {}).items():
-                        for c in challs:
-                            if str(c.get("id")) == str(challenge_id):
-                                post_bloods = c.get("bloods", [])
-                                # If bloods increased or my team is in bloods
-                                if len(post_bloods) > pre_bloods_count:
-                                    is_correct = True
-                                elif self.ctf_info.team_name and any(b.get("name") == self.ctf_info.team_name for b in post_bloods):
-                                    is_correct = True
-                except Exception:
-                    pass
 
-                if is_correct:
-                    return True, f"🎉 CORRECT FLAG! Challenge solved (Submission ID: {sub_id})!"
-                else:
-                    return False, f"❌ Incorrect flag (Submission ID: {sub_id})."
+            if resp.status_code == 200:
+                sub_id = str(resp.text or "").strip().strip('"').strip()
+                status_url = f"{url}/Status/{sub_id}"
+
+                # Poll kết quả chấm thay vì đoán qua số lượng bloods
+                for _attempt in range(self.SUBMISSION_POLL_ATTEMPTS):
+                    raw_status = ""
+                    try:
+                        st_resp = self.session.get(status_url, timeout=10)
+                        raw_status = str(st_resp.text or "").strip().strip('"').strip()
+                    except Exception:
+                        raw_status = ""
+                    status_low = raw_status.lower()
+
+                    if "accepted" in status_low:
+                        self.last_verdict = "correct"
+                        return True, f"🎉 CORRECT FLAG! Challenge solved (Submission ID: {sub_id})!"
+                    if "wronganswer" in status_low or "wrong_answer" in status_low or "wrong answer" in status_low:
+                        self.last_verdict = "incorrect"
+                        return False, f"❌ Incorrect flag (Submission ID: {sub_id})."
+
+                    time.sleep(self.SUBMISSION_POLL_INTERVAL)
+
+                self.last_verdict = "unknown"
+                return False, (
+                    f"⚠️ Không xác định được kết quả chấm (Submission ID: {sub_id}). "
+                    f"Hãy kiểm tra trang submissions của giải."
+                )
 
             elif resp.status_code == 400:
                 err_text = resp.text.strip().strip('"') or "Invalid Flag"
+                self.last_verdict = "incorrect"
                 return False, f"❌ Incorrect flag ({err_text})."
             elif resp.status_code == 403:
+                self.last_verdict = "unknown"
                 return False, "🚫 Access denied / Competition not active."
             elif resp.status_code == 429:
+                self.last_verdict = "ratelimited"
                 return False, "⏳ Rate limited. Please wait before submitting again."
             else:
+                self.last_verdict = "unknown"
                 return False, f"Server returned HTTP {resp.status_code}: {resp.text[:100]}"
 
         except Exception as e:
+            self.last_verdict = "unknown"
             return False, f"Exception during submission: {str(e)}"
 
     def start_instance(self, challenge_id: Any) -> Tuple[bool, Dict[str, Any]]:
@@ -306,6 +373,65 @@ class GZCTFPlatform(BasePlatform):
         except Exception:
             pass
         return {"status": "unknown", "entry": None, "close_time": None}
+
+    def fetch_scoreboard(self) -> Dict[str, Any]:
+        """
+        Fetches scoreboard and ranking standings from GZCTF.
+        """
+        result = {
+            "title": self.ctf_info.title or "GZCTF Scoreboard",
+            "my_team": self.ctf_info.team_name,
+            "my_user": self.ctf_info.user_name,
+            "my_rank": None,
+            "my_score": None,
+            "total_teams": 0,
+            "standings": []
+        }
+
+        if not self.game_id:
+            return result
+
+        url = f"{self.origin}/api/game/{self.game_id}/scoreboard"
+        try:
+            resp = self.session.get(url, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json() or {}
+                items = data.get("items", []) if isinstance(data, dict) else data
+                result["total_teams"] = len(items)
+                standings = []
+                for idx, entry in enumerate(items, 1):
+                    name = entry.get("name") or entry.get("teamName") or entry.get("userName")
+                    score = entry.get("score") or entry.get("totalScore") or 0
+                    rank = entry.get("rank") or idx
+                    
+                    # Check if my_user is part of this team
+                    is_my_team = False
+                    if result["my_team"] and name == result["my_team"]:
+                        is_my_team = True
+                    elif result["my_user"] and name == result["my_user"]:
+                        is_my_team = True
+                    elif result["my_user"]:
+                        for solved in entry.get("solvedChallenges", []):
+                            if solved.get("userName") == result["my_user"]:
+                                is_my_team = True
+                                break
+
+                    if is_my_team:
+                        result["my_team"] = name
+                        result["my_rank"] = f"{rank}th" if rank else f"{idx}th"
+                        result["my_score"] = score
+
+                    standings.append({
+                        "pos": rank,
+                        "name": name,
+                        "score": score,
+                        "raw": entry
+                    })
+                result["standings"] = standings
+        except Exception as e:
+            Logger.warning(f"Failed to fetch scoreboard from GZCTF: {e}")
+
+        return result
 
 
 

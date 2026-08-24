@@ -8,10 +8,25 @@ from ..utils.logger import Logger
 from ..utils.sanitize import sanitize_filename
 
 class CTFdPlatform(BasePlatform):
+    # Các slug trang public dùng để dò rules / flag format (Pages API là admin-only)
+    RULE_PAGE_SLUGS = [
+        "rules", "rule", "Rules", "faq", "about", "welcome",
+        "guide", "getting-started", "flag-format", "flag_format", "format"
+    ]
+
     def __init__(self, base_url: str, session: requests.Session):
         super().__init__(base_url, session)
         self.nonce: Optional[str] = None
         self.ctf_info.platform_type = "ctfd"
+        # Pitfall: khi dùng Authorization token, nếu thiếu Content-Type: application/json
+        # thì server CTFd bỏ qua header Authorization.
+        try:
+            auth_header = self.session.headers.get("Authorization", "") or ""
+            current_ct = (self.session.headers.get("Content-Type", "") or "")
+            if auth_header and "json" not in current_ct.lower():
+                self.session.headers["Content-Type"] = "application/json"
+        except Exception:
+            pass
 
     def _extract_nonce_and_config(self) -> None:
         """
@@ -215,6 +230,51 @@ class CTFdPlatform(BasePlatform):
             Logger.error(f"Error fetching CTFd challenges: {str(e)}")
             return []
 
+    def fetch_rules(self) -> Optional[str]:
+        """
+        Dò rules / flag format trên các trang public của CTFd (Pages API là admin-only).
+        Chấp nhận HTTP 200 và nội dung HTML không phải trang 404 của theme.
+        Trả về nội dung HTML đầu tiên tìm được, None nếu không có.
+        """
+        for slug in self.RULE_PAGE_SLUGS:
+            url = f"{self.base_url}/{slug}"
+            try:
+                resp = self.session.get(url, timeout=10)
+                if resp.status_code != 200:
+                    continue
+                try:
+                    ctype = (resp.headers or {}).get("content-type", "")
+                except Exception:
+                    ctype = ""
+                if ctype and not any(t in ctype.lower() for t in ("html", "text", "json")):
+                    continue
+                html = resp.text or ""
+            except Exception:
+                continue
+            if len(html.strip()) < 50 or self._looks_like_404(html):
+                continue
+            Logger.info(f"Fetched potential rules page: [bold cyan]/{slug}[/bold cyan]")
+            return html
+        return None
+
+    @staticmethod
+    def _looks_like_404(html: str) -> bool:
+        """
+        Phát hiện trang 404 của theme CTFd (trả HTTP 200 nhưng nội dung là 'not found').
+        """
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            title = soup.find("title")
+            title_text = (title.text or "").strip().lower() if title else ""
+            if "404" in title_text or "not found" in title_text:
+                return True
+            h1 = soup.find("h1")
+            if h1 and "404" in (h1.text or "").lower():
+                return True
+            return False
+        except Exception:
+            return False
+
     def get_full_file_url(self, file_path: str) -> str:
         """
         Resolves CTFd file relative paths to full URL.
@@ -226,10 +286,13 @@ class CTFdPlatform(BasePlatform):
     def submit_flag(self, challenge_id: Any, flag: str) -> Tuple[bool, str]:
         """
         Submits a flag to CTFd platform (/api/v1/challenges/attempt).
+        Cập nhật self.last_verdict theo kết quả chuẩn:
+        correct | incorrect | unknown | ratelimited.
         """
         if not self.nonce:
             self._extract_nonce_and_config()
 
+        self.last_verdict = "unknown"
         url = f"{self.base_url}/api/v1/challenges/attempt"
         payload = {
             "challenge_id": challenge_id,
@@ -251,24 +314,40 @@ class CTFdPlatform(BasePlatform):
             message = sub_data.get("message", "")
 
             if status == "correct":
+                self.last_verdict = "correct"
                 return True, "🎉 Correct flag! Challenge solved!"
             elif status == "already_solved":
+                self.last_verdict = "correct"
                 return True, "✅ You have already solved this challenge!"
             elif status == "incorrect":
+                self.last_verdict = "incorrect"
                 return False, "❌ Incorrect flag."
             elif status == "paused":
+                self.last_verdict = "unknown"
                 return False, "⏸️ CTF is currently paused."
             elif status == "ratelimited":
+                self.last_verdict = "ratelimited"
                 return False, "⏳ Rate limited! Please wait before submitting again."
             else:
+                self.last_verdict = "unknown"
                 return False, f"Status: {status} ({message})"
 
         except Exception as e:
-            return False, f"Exception during submission: {str(e)}"
+            self.last_verdict = "unknown"
+            return False, f"Exception during submission"
+
+    def _clean_user_access(self, val: Optional[str]) -> Optional[str]:
+        if not val:
+            return val
+        val_str = str(val).strip()
+        m = re.search(r'href=["\'](https?://[^"\']+)["\']', val_str)
+        if m:
+            return m.group(1)
+        return val_str
 
     def start_instance(self, challenge_id: Any) -> Tuple[bool, Dict[str, Any]]:
         """
-        Starts container instance on CTFd (supports CTFd-Whale and container plugins).
+        Spawns a dynamic container instance for the challenge (CTFd Whale / Docker plugin).
         """
         if not self.nonce:
             self._extract_nonce_and_config()
@@ -281,9 +360,9 @@ class CTFdPlatform(BasePlatform):
                 data = resp.json() or {}
                 if data.get("success"):
                     container_data = data.get("data", {})
-                    entry_point = container_data.get("user_access") or container_data.get("domain") or f"{container_data.get('host')}:{container_data.get('port')}"
+                    raw_entry = container_data.get("user_access") or container_data.get("domain") or f"{container_data.get('host')}:{container_data.get('port')}"
                     return True, {
-                        "entry": entry_point,
+                        "entry": self._clean_user_access(raw_entry),
                         "time_left": container_data.get("remaining_time"),
                         "raw": container_data
                     }
@@ -385,9 +464,10 @@ class CTFdPlatform(BasePlatform):
                 if data.get("success"):
                     cdata = data.get("data", {})
                     if cdata and cdata.get("remaining_time") is not None:
+                        raw_ent = cdata.get("user_access") or cdata.get("domain") or f"{cdata.get('host')}:{cdata.get('port')}"
                         return {
                             "status": "running",
-                            "entry": cdata.get("user_access") or cdata.get("domain") or f"{cdata.get('host')}:{cdata.get('port')}",
+                            "entry": self._clean_user_access(raw_ent),
                             "time_left": cdata.get("remaining_time")
                         }
                     else:
@@ -402,13 +482,87 @@ class CTFdPlatform(BasePlatform):
                 data = resp.json() or {}
                 if data.get("success"):
                     cdata = data.get("data", {})
+                    raw_ent = cdata.get("user_access") or cdata.get("domain") or f"{cdata.get('host')}:{cdata.get('port')}"
                     return {
                         "status": "running",
-                        "entry": cdata.get("user_access") or cdata.get("domain") or f"{cdata.get('host')}:{cdata.get('port')}",
+                        "entry": self._clean_user_access(raw_ent),
                         "time_left": cdata.get("remaining_time")
                     }
         except Exception:
             pass
         return {"status": "stopped", "entry": None, "time_left": None}
+
+    def fetch_scoreboard(self) -> Dict[str, Any]:
+        """
+        Fetches full live scoreboard standings and personal/team ranking from CTFd.
+        """
+        result = {
+            "title": self.ctf_info.title or "CTFd Scoreboard",
+            "my_team": None,
+            "my_user": self.ctf_info.user_name,
+            "my_rank": None,
+            "my_score": None,
+            "total_teams": 0,
+            "standings": []
+        }
+
+        # 1. Get current team / user rank
+        try:
+            r_team = self.session.get(f"{self.base_url}/api/v1/teams/me", timeout=10)
+            if r_team.status_code == 200:
+                tdata = (r_team.json() or {}).get("data", {})
+                if tdata:
+                    result["my_team"] = tdata.get("name")
+                    result["my_rank"] = tdata.get("place") or tdata.get("pos")
+                    result["my_score"] = tdata.get("score")
+        except Exception:
+            pass
+
+        if not result["my_team"] or not result["my_rank"]:
+            try:
+                r_user = self.session.get(f"{self.base_url}/api/v1/users/me", timeout=10)
+                if r_user.status_code == 200:
+                    udata = (r_user.json() or {}).get("data", {})
+                    if udata:
+                        result["my_user"] = udata.get("name")
+                        if not result["my_rank"]:
+                            result["my_rank"] = udata.get("place") or udata.get("pos")
+                        if result["my_score"] is None:
+                            result["my_score"] = udata.get("score")
+            except Exception:
+                pass
+
+        # 2. Get full scoreboard
+        try:
+            r_sb = self.session.get(f"{self.base_url}/api/v1/scoreboard", timeout=15)
+            if r_sb.status_code == 200:
+                sb_data = (r_sb.json() or {}).get("data", [])
+                result["total_teams"] = len(sb_data)
+                standings = []
+                for entry in sb_data:
+                    pos = entry.get("pos") or entry.get("place")
+                    name = entry.get("name") or entry.get("account_name")
+                    score = entry.get("score")
+                    account_id = entry.get("account_id")
+                    
+                    # If my_rank wasn't found via /me, check if name matches
+                    if not result["my_rank"] and (
+                        (result["my_team"] and name == result["my_team"]) or
+                        (result["my_user"] and name == result["my_user"])
+                    ):
+                        result["my_rank"] = f"{pos}th" if pos else "-"
+                        result["my_score"] = score
+
+                    standings.append({
+                        "pos": pos,
+                        "name": name,
+                        "score": score,
+                        "account_id": account_id
+                    })
+                result["standings"] = standings
+        except Exception as e:
+            Logger.warning(f"Failed to fetch scoreboard from CTFd: {e}")
+
+        return result
 
 

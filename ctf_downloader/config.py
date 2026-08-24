@@ -13,6 +13,9 @@ class DownloaderConfig:
     timeout: int = 30
     create_solve_template: bool = True
     force_redownload: bool = False
+    # Ngưỡng dung lượng file tối đa (bytes) trước khi hỏi consent người dùng.
+    # 0 = tắt gate (không bao giờ hỏi, tải mọi kích thước).
+    size_limit_bytes: int = 1073741824  # 1 GB
     categories: Optional[List[str]] = None
     exclude_categories: Optional[List[str]] = None
     custom_headers: Dict[str, str] = field(default_factory=dict)

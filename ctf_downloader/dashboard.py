@@ -28,23 +28,28 @@ class CTFDashboard:
                     with open(os.path.join(root, 'metadata.json'), 'r', encoding='utf-8') as f:
                         m = json.load(f)
                     
-                    # Check solved state from README.md or metadata
-                    readme_path = os.path.join(root, 'README.md')
+                    # Check solved state from writeup/README.md, README.md, or metadata
                     is_solved = bool(m.get('solved_by_me', False))
-                    if os.path.exists(readme_path):
-                        with open(readme_path, 'r', encoding='utf-8') as rf:
-                            rtxt = rf.read()
-                            if '- [x] Solved' in rtxt or '- [X] Solved' in rtxt or '✅ Solved' in rtxt or 'Status: ✅' in rtxt:
-                                is_solved = True
-                            elif not is_solved and '- [ ] Solved' in rtxt:
-                                is_solved = False
+                    for rp in [os.path.join(root, 'writeup', 'README.md'), os.path.join(root, 'README.md')]:
+                        if os.path.exists(rp):
+                            with open(rp, 'r', encoding='utf-8') as rf:
+                                rtxt = rf.read()
+                                if '- [x] Solved' in rtxt or '- [X] Solved' in rtxt or '✅ Solved' in rtxt or 'Status: ✅' in rtxt:
+                                    is_solved = True
+                                    break
+                                elif not is_solved and '- [ ] Solved' in rtxt:
+                                    is_solved = False
 
                     m['solved_by_me'] = is_solved
                     m['_folder'] = root
                     m['_rel_folder'] = os.path.relpath(root, self.workspace_path)
                     
-                    # Count local files
-                    local_files = [f for f in os.listdir(root) if f not in ['metadata.json', 'README.md', 'solve.py', '__pycache__']]
+                    # Count local files in challenge/ subdirectory or root
+                    c_subdir = os.path.join(root, 'challenge')
+                    if os.path.isdir(c_subdir):
+                        local_files = [f for f in os.listdir(c_subdir) if f not in ['__pycache__', '.git']]
+                    else:
+                        local_files = [f for f in os.listdir(root) if f not in ['metadata.json', 'README.md', 'solve.py', 'challenge', 'solver', 'writeup', 'script', 'scripts', '__pycache__']]
                     m['_local_files_count'] = len(local_files)
 
                     results.append(m)

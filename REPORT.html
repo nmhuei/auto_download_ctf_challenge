@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CTF Toolkit Audit</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --paper:#F2F4F7; --surface:#FFFFFF; --ink:#182230; --muted:#5A6577;
+  --line:#D9DFE8; --accent:#9A3B1E; --accent-ink:#7A2E15;
+  --high:#BE3425; --high-bg:#FBEAE7;
+  --med:#8F650A;  --med-bg:#FBF3DC;
+  --low:#2E7D4F;  --low-bg:#E7F3EC;
+  --code-bg:#E9EDF3;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#12161D; --surface:#1A212C; --ink:#E3E8EF; --muted:#96A1B2;
+    --line:#2C3542; --accent:#D0764C; --accent-ink:#E0946E;
+    --high:#EE8577; --high-bg:#33201D;
+    --med:#D9AC55;  --med-bg:#2E2617;
+    --low:#72BF92;  --low-bg:#1B2C22;
+    --code-bg:#232C39;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#12161D; --surface:#1A212C; --ink:#E3E8EF; --muted:#96A1B2;
+  --line:#2C3542; --accent:#D0764C; --accent-ink:#E0946E;
+  --high:#EE8577; --high-bg:#33201D;
+  --med:#D9AC55;  --med-bg:#2E2617;
+  --low:#72BF92;  --low-bg:#1B2C22;
+  --code-bg:#232C39;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:"IBM Plex Serif",Georgia,serif; font-size:16px; line-height:1.65;
+}
+.wrap{max-width:74rem;margin:0 auto;padding:0 clamp(1rem,4vw,3rem)}
+h1,h2,h3,.disp{font-family:"IBM Plex Sans Condensed","IBM Plex Sans",sans-serif;text-wrap:balance;line-height:1.15}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+code{font-family:"IBM Plex Mono",monospace;font-size:.82em;background:var(--code-bg);padding:.12em .38em;border-radius:4px}
+
+/* ── header ── */
+header{border-bottom:1px solid var(--line);padding:clamp(2rem,6vw,4.5rem) 0 2rem;margin-bottom:2rem}
+.eyebrow{font-family:"IBM Plex Mono",monospace;font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-bottom:.9rem}
+header h1{font-size:clamp(2.1rem,5.5vw,3.6rem);font-weight:700;letter-spacing:-.015em;max-width:20ch}
+.lede{margin-top:1rem;max-width:62ch;color:var(--muted);font-size:1.05rem}
+.meta-row{margin-top:1.6rem;display:flex;flex-wrap:wrap;gap:.5rem 2rem;font-family:"IBM Plex Mono",monospace;font-size:.75rem;color:var(--muted)}
+.meta-row b{color:var(--ink);font-weight:500}
+
+/* ── stat tiles ── */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);margin-bottom:2.5rem}
+.tile{background:var(--surface);padding:1.1rem 1.2rem}
+.tile .num{font-family:"IBM Plex Sans Condensed",sans-serif;font-weight:700;font-size:2rem;line-height:1}
+.tile .lbl{font-family:"IBM Plex Mono",monospace;font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-top:.45rem}
+.tile.hi .num{color:var(--high)}
+
+/* ── toc ── */
+nav.toc{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:.6rem;margin-bottom:3rem}
+nav.toc a{font-family:"IBM Plex Sans Condensed",sans-serif;font-weight:600;font-size:.95rem;border:1px solid var(--line);background:var(--surface);padding:.65rem .9rem;display:flex;gap:.7rem;align-items:baseline}
+nav.toc a span{font-family:"IBM Plex Mono",monospace;font-size:.7rem;color:var(--accent)}
+nav.toc a:hover{text-decoration:none;border-color:var(--accent)}
+
+/* ── sections ── */
+section{margin-bottom:3.5rem;scroll-margin-top:1rem}
+.sec-head{display:flex;align-items:baseline;gap:1rem;border-bottom:2px solid var(--ink);padding-bottom:.55rem;margin-bottom:1.4rem}
+.sec-head .no{font-family:"IBM Plex Mono",monospace;font-size:.78rem;color:var(--accent)}
+.sec-head h2{font-size:clamp(1.4rem,3vw,1.9rem);font-weight:600}
+section p{max-width:68ch;margin-bottom:.9rem}
+section ul{max-width:68ch;margin:0 0 1rem 1.2rem}
+section li{margin-bottom:.35rem}
+
+/* pre diagram */
+pre{font-family:"IBM Plex Mono",monospace;font-size:.78rem;line-height:1.55;background:var(--surface);border:1px solid var(--line);padding:1.1rem 1.25rem;overflow-x:auto;margin-bottom:1.2rem}
+pre code{background:none;padding:0;font-size:inherit}
+
+/* tables */
+.scroll{overflow-x:auto;border:1px solid var(--line);margin-bottom:1.2rem;background:var(--surface)}
+table{border-collapse:collapse;width:100%;min-width:640px;font-size:.88rem}
+th{font-family:"IBM Plex Sans Condensed",sans-serif;font-weight:600;text-align:left;font-size:.78rem;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);border-bottom:2px solid var(--ink);padding:.6rem .8rem;white-space:nowrap}
+td{border-bottom:1px solid var(--line);padding:.6rem .8rem;vertical-align:top}
+tr:last-child td{border-bottom:none}
+td code{white-space:nowrap}
+
+/* severity chips */
+.chip{display:inline-flex;align-items:center;gap:.4em;font-family:"IBM Plex Mono",monospace;font-size:.68rem;letter-spacing:.06em;text-transform:uppercase;padding:.18em .6em;border-radius:99px;white-space:nowrap}
+.chip::before{content:"";width:.5em;height:.5em;border-radius:50%;background:currentColor}
+.chip.high{color:var(--high);background:var(--high-bg)}
+.chip.med{color:var(--med);background:var(--med-bg)}
+.chip.low{color:var(--low);background:var(--low-bg)}
+tr.high-row td:first-child{box-shadow:inset 3px 0 0 var(--high)}
+.sev-group{margin-bottom:2rem}
+.sev-title{display:flex;align-items:center;gap:.8rem;margin-bottom:.9rem}
+.sev-title h3{font-size:1.2rem;font-weight:600}
+.sev-title .count{font-family:"IBM Plex Mono",monospace;font-size:.72rem;color:var(--muted)}
+
+/* recommendation blocks */
+.rec{border-left:3px solid var(--accent);background:var(--surface);padding:1rem 1.3rem;margin-bottom:1rem;max-width:none}
+.rec h3{font-size:1rem;font-weight:600;margin-bottom:.5rem}
+.rec ol{margin-left:1.2rem}
+.rec li{margin-bottom:.3rem}
+.p-tag{font-family:"IBM Plex Mono",monospace;font-size:.68rem;color:var(--accent);letter-spacing:.1em;text-transform:uppercase}
+
+/* conclusion */
+.concl{background:var(--surface);border:1px solid var(--line);padding:1.4rem 1.6rem}
+footer{border-top:1px solid var(--line);padding:1.5rem 0 3rem;color:var(--muted);font-family:"IBM Plex Mono",monospace;font-size:.72rem}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media(max-width:640px){.tiles{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">Báo cáo audit kỹ thuật · 24/08/2026</div>
+  <h1>CTF Toolkit — Audit toàn diện</h1>
+  <p class="lede">Phân tích chi tiết và kiểm thử thực tế toàn bộ repo <code>auto_download_ctf_challenge</code>: kiến trúc, 11 công cụ CLI khả thi, test suite, trạng thái git chưa commit và 46 vấn đề đã hợp nhất từ 5 luồng phân tích song song.</p>
+  <div class="meta-row">
+    <div>Repo: <b>/home/light/Workspace/Project/auto_download_ctf_challenge</b></div>
+    <div>Package: <b>ctf-toolkit</b></div>
+    <div>Nền tảng: <b>Kali Linux · Python 3.13.14</b></div>
+    <div>Phạm vi: <b>Linux-only</b></div>
+  </div>
+</header>
+
+<div class="tiles">
+  <div class="tile hi"><div class="num">46</div><div class="lbl">Phát hiện (7 cao)</div></div>
+  <div class="tile"><div class="num">10/10</div><div class="lbl">Test pass</div></div>
+  <div class="tile"><div class="num">28/28</div><div class="lbl">Module import OK</div></div>
+  <div class="tile"><div class="num">11</div><div class="lbl">Tool chạy thành công</div></div>
+  <div class="tile hi"><div class="num">16</div><div class="lbl">File chưa commit</div></div>
+</div>
+
+<nav class="toc">
+  <a href="#s1"><span>01</span>Tổng quan &amp; kiến trúc</a>
+  <a href="#s2"><span>02</span>Công cụ &amp; kiểm thử</a>
+  <a href="#s3"><span>03</span>Trạng thái git</a>
+  <a href="#s4"><span>04</span>Phát hiện vấn đề</a>
+  <a href="#s5"><span>05</span>Khuyến nghị ưu tiên</a>
+  <a href="#s6"><span>06</span>Kết luận</a>
+</nav>
+
+<section id="s1">
+  <div class="sec-head"><span class="no">01</span><h2>Tổng quan &amp; kiến trúc</h2></div>
+  <p>Bộ công cụ Python tự động hóa vòng đời thi CTF: tải challenge từ platform → dựng workspace chuẩn → quản lý container động → nộp flag → theo dõi tiến độ → xem bảng xếp hạng live. Pipeline chính: <code>URL + Cookie/Token → PlatformDetector → authenticate → fetch_challenges → tải song song → WorkspaceBuilder → SummaryGenerator (SUMMARY.md + challenges.json)</code>. File <code>challenges.json</code> là index trung tâm mà dashboard / submitter / instance / ranking đọc lại.</p>
+<pre><code>Entrypoints (wrapper + console_scripts)
+├── main.py / ctf.py ──────► cli:main            (CLI hợp nhất, 7 nhóm lệnh)
+├── submit.py ─────────────► FlagSubmitter       (nộp flag độc lập)
+├── manage.py ─────────────► CTFDashboard wizard (dashboard/quản lý)
+├── instance.py ───────────► InstanceManager     (container động, có --sync)
+└── rank.py ───────────────► RankingManager      (scoreboard live — mới)
+
+ctf_downloader/
+├── platforms/    base · detector · ctfd · gzctf · rctf · custom_rest · generic_html
+├── downloaders/  manager · http_downloader · gdrive · mediafire · dropbox
+├── extractors/   link_extractor · text_parser
+├── generator/    workspace_builder · summary_generator
+└── utils/        http_client · sanitize · logger</code></pre>
+
+<div class="scroll"><table>
+<thead><tr><th>Platform</th><th>Endpoints chính</th><th>Auth</th><th>Container</th><th>Scoreboard</th></tr></thead>
+<tbody>
+<tr><td><b>CTFd</b></td><td><code>/api/v1/challenges[/{id}]</code>, <code>/attempt</code>, whale plugin ×3 tầng fallback</td><td>Cookie session hoặc <code>Token ctfd_…</code> + CSRF nonce scrape</td><td>Có (whale)</td><td><code>/api/v1/scoreboard</code></td></tr>
+<tr><td><b>GZCTF</b></td><td><code>/api/account/profile</code>, <code>/api/game/{id}[/details|/challenges/{id}|/scoreboard]</code></td><td>Cookie <code>GZCTF_Token</code></td><td>Native DynamicContainer</td><td><code>/api/game/{id}/scoreboard</code></td></tr>
+<tr><td><b>rCTF</b></td><td><code>/api/v1/challs</code>, <code>/submit</code>, <code>/leaderboard/now</code></td><td>Bearer token (teamToken exchange)</td><td>Không</td><td><code>/api/v1/leaderboard/now</code></td></tr>
+<tr><td><b>Custom REST</b></td><td><code>/api/auth/me</code>, <code>/api/challenges[/{id}]/submit</code></td><td>Cookie Next.js</td><td>Không</td><td>Không</td></tr>
+<tr><td><b>Generic HTML</b></td><td>Scrape heuristic BeautifulSoup</td><td>Không</td><td>Không</td><td>Không</td></tr>
+</tbody></table></div>
+
+<p>Điểm cộng thiết kế: dataclass <code>Challenge</code> rõ ràng, ghi <code>.tmp</code> rồi move (atomic-ish), guard idempotent không ghi đè file có sẵn, exception theo-challenge không làm chết cả batch. Workspace mẫu <code>PTIT_CTF_2026/</code> chứng minh tool hoạt động thật: 35 challenge, 5 category (sinh bằng layout cũ phẳng).</p>
+</section>
+
+<section id="s2">
+  <div class="sec-head"><span class="no">02</span><h2>Công cụ khả thi &amp; kết quả kiểm thử</h2></div>
+  <p>Mọi entrypoint được chạy thử ở mức an toàn (help, offline, local-only). <b>11/11 lệnh exit 0</b>, không có lỗi nào thuộc về repo.</p>
+
+<div class="scroll"><table>
+<thead><tr><th>Lệnh</th><th>Exit</th><th>Kết quả</th></tr></thead>
+<tbody>
+<tr><td><code>main.py --help</code> (+ mọi subcommand help)</td><td class="mono">0</td><td>Usage đầy đủ 7 nhóm lệnh: pull/status/workspaces/instance/submit/rank/menu</td></tr>
+<tr><td><code>ctf.py --help</code></td><td class="mono">0</td><td>Giống hệt main.py (wrapper trùng lặp)</td></tr>
+<tr><td><code>ctf</code> / <code>ctfcli</code> / <code>ctf-tool --help</code></td><td class="mono">0</td><td>Cả 3 console script hoạt động</td></tr>
+<tr><td><code>submit.py --help</code> · <code>manage.py --help</code> · <code>instance.py --help</code> · <code>rank.py --help</code></td><td class="mono">0</td><td>Usage đúng tham số từng script độc lập</td></tr>
+<tr><td><code>main.py -v</code></td><td class="mono">0</td><td>In <code>ctf-toolkit 2.0.0</code></td></tr>
+<tr><td><code>main.py workspaces</code></td><td class="mono">0</td><td>Quét 14 workspace thật trong <code>~/Workspace/CTF</code></td></tr>
+<tr><td><code>main.py status -w PTIT_CTF_2026</code></td><td class="mono">0</td><td>Dashboard GZCTF: 35 challs, 1 solved, 5 category</td></tr>
+<tr><td><code>instance.py -w PTIT_CTF_2026 -l</code></td><td class="mono">0</td><td>Liệt kê 22 dynamic container (offline)</td></tr>
+</tbody></table></div>
+
+<p>Chức năng offline đều chính xác: sanitize bỏ dấu tiếng Việt (<code>Tiger Bạc → Tiger_Bac</code>), chống path traversal (<code>../../etc/passwd?.png → _.._etc_passwd</code>), html→markdown, phân loại link gdrive/direct, sinh đúng cấu trúc workspace vào /tmp.</p>
+<p><b>Test suite:</b> 10/10 PASSED (unittest + pytest, thuần mock, ~7 giây). <b>Import module:</b> 28/28 thành công. Tuy nhiên coverage lệch: RankingManager — tính năng mới nhất — chỉ được test khởi tạo; rCTF, InstanceManager, auto-submit flow và downloader thật chưa có test nào; không có CI config.</p>
+</section>
+
+<section id="s3">
+  <div class="sec-head"><span class="no">03</span><h2>Trạng thái git chưa commit</h2></div>
+  <p>Branch <code>main</code>, một commit duy nhất (<code>0f0439e</code>). Working tree chứa <b>14 file modified (~588+/82−) + 2 untracked</b> — tức trọn hai cụm tính năng chưa commit:</p>
+  <ul>
+    <li><b>Live Ranking/Scoreboard:</b> <code>rank.py</code>, <code>ranking.py</code>, <code>fetch_scoreboard()</code> trên cả 3 platform, subcommand <code>rank</code>.</li>
+    <li><b>Refactor layout workspace:</b> per-challenge chuyển sang <code>challenge/ · script/ · solver/ · writeup/</code> kèm vá tương thích lan toả (dashboard, submitter, summary, core, instance sync).</li>
+  </ul>
+  <p>Rủi ro: hai file untracked dễ mất khi <code>git clean</code>; diff trộn 2 concern khó review/revert riêng; workspace cũ sẽ lẫn lộn hai thế hệ layout nếu chạy lại tool; test cho ranking gần như rỗng trong khi đó là feature mới nhất.</p>
+
+<div class="scroll"><table>
+<thead><tr><th>File</th><th>Loại</th><th>Nội dung chính</th></tr></thead>
+<tbody>
+<tr class="high-row"><td><code>rank.py</code> ★<br><code>ctf_downloader/ranking.py</code> ★</td><td>Mới</td><td>RankingManager + CLI: fetch scoreboard, render panel rich, ghi RANKING.md top-30, patch Live Rank vào SUMMARY.md</td></tr>
+<tr><td><code>generator/workspace_builder.py</code></td><td>Refactor lớn</td><td>Layout mới 4 thư mục con, copy attachment vào <code>challenge/</code>, NOTE.md, template writeup mới</td></tr>
+<tr><td><code>instance_manager.py</code></td><td>Feature lớn</td><td>Sync instance 2 chiều: metadata.json, writeup README, regex HOST/PORT trong solve.py, challenges.json; poll status; <code>--sync</code></td></tr>
+<tr><td><code>platforms/{ctfd,gzctf,rctf}.py</code> · <code>base.py</code></td><td>Feature/API</td><td><code>fetch_scoreboard()</code> cả 3 platform; helper clean user_access (whale)</td></tr>
+<tr><td><code>core.py</code> · <code>summary_generator.py</code> · <code>dashboard.py</code> · <code>submitter.py</code></td><td>Compat/refactor</td><td>Download vào <code>challenge/</code>; link writeup/README.md; đọc solved-state 2 layout; scan flag thêm challenge/README.md</td></tr>
+<tr><td><code>cli.py</code> · <code>instance.py</code> · <code>README.md</code> · <code>test_suite.py</code></td><td>Wiring/doc/test</td><td>Subcommand rank; cờ --sync; README vẽ lại cây layout mới; thêm test_ranking_manager</td></tr>
+</tbody></table></div>
+<p style="font-family:'IBM Plex Mono',monospace;font-size:.75rem;color:var(--muted)">★ = untracked</p>
+</section>
+
+<section id="s4">
+  <div class="sec-head"><span class="no">04</span><h2>Phát hiện vấn đề</h2></div>
+  <p>Hợp nhất từ 5 luồng phân tích, đã khử trùng lặp. Vị trí dạng <code>file:line</code>.</p>
+
+  <div class="sev-group">
+    <div class="sev-title"><span class="chip high">Nghiêm trọng</span><h3>7 finding</h3></div>
+<div class="scroll"><table>
+<thead><tr><th>#</th><th>Vấn đề</th><th>Vị trí</th></tr></thead>
+<tbody>
+<tr class="high-row"><td>H1</td><td><b>Auto-submit spam flag rác lên platform</b> — regex flag có nhánh <code>[a-zA-Z0-9_-]+\{...\}</code> khớp mọi chuỗi word{...}; auto-submit mọi candidate, không dedupe, không giới hạn số lần sai → nguy cơ bị trừ điểm/khoá tài khoản</td><td><code>submitter.py:164,205</code></td></tr>
+<tr class="high-row"><td>H2</td><td><b>Credentials plaintext</b> — cookie/token lưu thô vào <code>~/.config/ctf_toolkit/config.json</code>, menu [9] in nguyên secret ra console; mọi CLI nhận cookie/token qua argv (lộ history, <code>ps</code>)</td><td><code>interactive_menu.py:249,445</code></td></tr>
+<tr class="high-row"><td>H3</td><td><b>Bug thuộc tính vô hiệu hoá tính năng</b> — <code>dl.output_dir</code> không tồn tại (thật là <code>dl.config.output_dir</code>): sau khi tải xong, workspace mới không bao giờ được auto-active, báo "tải thất bại" sai sự thật</td><td><code>interactive_menu.py:186</code></td></tr>
+<tr class="high-row"><td>H4</td><td><b>Resubmit vô hạn</b> — <code>_update_local_workspace</code> nuốt exception; flag đã submit trên platform nhưng local vẫn unsolved → lần scan sau submit lại mãi</td><td><code>submitter.py:252</code></td></tr>
+<tr class="high-row"><td>H5</td><td><b>Nuốt exception im lặng toàn bộ downloaders</b> — http/gdrive/mediafire/dropbox đều <code>except: return None</code>, không thể biết fail vì DNS/403/disk full</td><td>4 file downloaders</td></tr>
+<tr class="high-row"><td>H6</td><td><b>Link Mega chết âm thầm</b> — classify gắn <code>is_downloadable=True</code> nhưng manager không có handler mega → đi nhánh HTTP thường, lưu nhầm HTML hoặc fail</td><td><code>link_extractor.py:117</code> vs <code>manager.py:66</code></td></tr>
+<tr class="high-row"><td>H7</td><td><b>Session/credential leak qua stdout</b> — logger không redaction/file/level; log <code>resp.text</code> server thô, username/email; redirect output = lộ session</td><td><code>utils/logger.py</code>, platforms</td></tr>
+</tbody></table></div>
+  </div>
+
+  <div class="sev-group">
+    <div class="sev-title"><span class="chip med">Trung bình</span><h3>20 finding</h3></div>
+<div class="scroll"><table>
+<thead><tr><th>#</th><th>Vấn đề</th><th>Vị trí</th></tr></thead>
+<tbody>
+<tr><td>M1</td><td>Retry cả POST trong urllib3 Retry → nguy cơ submit flag trùng khi 500/429</td><td><code>http_client.py:70</code></td></tr>
+<tr><td>M2</td><td>GZCTF xác định đúng/sai flag bằng so sánh số bloods trước/sau — race, dễ kết quả sai</td><td><code>gzctf.py:216–251</code></td></tr>
+<tr><td>M3</td><td>Detector fallback luôn trả CTFdPlatform; GenericHTMLPlatform tồn tại nhưng không bao giờ được chọn</td><td><code>detector.py:118</code></td></tr>
+<tr><td>M4</td><td>GZCTF brute-force probe game id 1..9 khi thiếu game_id — 8 request thừa, nguy cơ gắn nhầm game</td><td><code>gzctf.py:48–60</code></td></tr>
+<tr><td>M5</td><td>Thiếu action khi truyền <code>--id</code> → âm thầm START container (side effect tốn kém)</td><td><code>instance.py:130</code>, <code>cli.py:276</code></td></tr>
+<tr><td>M6</td><td>Read-modify-write metadata/challenges/SUMMARY/solve.py không lock, không atomic → mất cập nhật khi 2 process xen kẽ</td><td><code>instance_manager.py:190–279</code></td></tr>
+<tr><td>M7</td><td>Crash tiềm ẩn khi <code>"raw": null</code> trong metadata.json</td><td><code>dashboard.py:128,151</code></td></tr>
+<tr><td>M8</td><td>Resolve challenge bằng partial substring match → nhập "web" có thể submit flag cho sai challenge</td><td><code>submitter.py:117–119</code></td></tr>
+<tr><td>M9</td><td>Regex patch <code>PORT = \d+</code> / Target Connection thay MỌI occurrence trong solve.py/README</td><td><code>instance_manager.py:227,245</code></td></tr>
+<tr><td>M10</td><td>Parse entry <code>host:port</code> bằng split(':') — vỡ với IPv6; một chỗ nuốt im lặng khiến solve.py không cập nhật</td><td><code>instance_manager.py:117,244</code></td></tr>
+<tr><td>M11</td><td><code>validate()</code> rebuild URL từ scheme+netloc+path — xoá sạch query string ngoài <code>token=</code></td><td><code>config.py:47</code></td></tr>
+<tr><td>M12</td><td>Một requests.Session dùng chung giữa các thread ThreadPoolExecutor — thread-safety không bảo đảm</td><td><code>core.py:21–26,136</code></td></tr>
+<tr><td>M13</td><td>Auth lỗi bị nuốt: ranking vẫn fetch scoreboard sau authenticate() raise; submitter không check return</td><td><code>ranking.py:52–55</code></td></tr>
+<tr><td>M14</td><td>Deps lệch nhau: gdown chỉ có ở setup.py, urllib3 chỉ có ở requirements.txt, rich ≥13 vs ≥12</td><td>setup.py vs requirements.txt</td></tr>
+<tr><td>M15</td><td>Version lệch: __init__.py = 1.0.0, setup.py/CLI = 2.0.0</td><td><code>__init__.py:5</code></td></tr>
+<tr><td>M16</td><td>Trùng lặp logic quy mô lớn: instance.py ≈ cli.handle_instance (kèm wizard), quét workspace nhân bản ×3 → hành vi đã lệch</td><td><code>instance.py</code> vs <code>cli.py:206–287</code></td></tr>
+<tr><td>M17</td><td>CTFd submit_flag mất nguyên nhân lỗi (<code>except Exception as e</code> không dùng e)</td><td><code>ctfd.py:266–267</code></td></tr>
+<tr><td>M18</td><td>Gap tới #1 tính theo standings[0] — nếu chưa sort thì gap âm, in <code>--5 pts</code></td><td><code>ranking.py:115–116</code></td></tr>
+<tr><td>M19</td><td>File chunked không content-length → check skip-if-exists vô dụng, re-download mỗi lần; .tmp sót khi crash</td><td><code>http_downloader.py</code></td></tr>
+<tr><td>M20</td><td>Coverage test lệch nghiêm trọng so với risk: ranking gần như 0 test; rCTF / InstanceManager / auto-submit / downloader thật = 0 test</td><td><code>test_suite.py</code></td></tr>
+</tbody></table></div>
+  </div>
+
+  <div class="sev-group">
+    <div class="sev-title"><span class="chip low">Thấp</span><h3>19 finding</h3></div>
+<div class="scroll"><table>
+<thead><tr><th>#</th><th>Vấn đề</th><th>Vị trí</th></tr></thead>
+<tbody>
+<tr><td>L1</td><td>Hardcode context cá nhân: URL <code>jeo.infosecptit.org/games/6</code>, prefix PTITCTF, <code>~/Workspace/CTF</code> rải rác</td><td><code>submit.py:52,68</code>…</td></tr>
+<tr><td>L2</td><td>Tên thư mục giữ emoji/comma/! (🪟) — chấp nhận được trong phạm vi Linux-only của tool; chỉ thành vấn đề nếu sau này mở rộng sang Windows/macOS</td><td><code>sanitize_folder_name</code></td></tr>
+<tr><td>L3</td><td>Dead code: unreachable sau return, if luôn True, else không tới, import thừa nhiều file</td><td>nhiều nơi</td></tr>
+<tr><td>L4</td><td>Placeholder mismatch: submitter thay literal <code>FLAG{...}</code>, template sinh ra là <code>FLAG{{...}}</code> → không bao giờ được thay</td><td><code>submitter.py:244</code> vs builder:336</td></tr>
+<tr><td>L5</td><td>Copy attachment flatten basename — trùng tên thì file thứ 2 bị skip im lặng</td><td><code>workspace_builder.py:42–49</code></td></tr>
+<tr><td>L6</td><td><code>points=None</code> gây TypeError khi cộng tổng điểm; category=None tạo key lạ</td><td><code>summary_generator.py:28,54</code></td></tr>
+<tr><td>L7</td><td><code>my_rank</code> gắn hậu tố th cứng → "1th/2th/3th"</td><td>3 platform</td></tr>
+<tr><td>L8</td><td>Timestamp datetime.now() không timezone</td><td><code>ranking.py:138</code>…</td></tr>
+<tr><td>L9</td><td>Template injection nhẹ: tên challenge chứa '''/newline làm skeleton solve.py lỗi cú pháp</td><td><code>workspace_builder.py:219+</code></td></tr>
+<tr><td>L10</td><td>Generic HTML regex points bắt số đầu tiên bất kỳ ("Top 1 of 200 teams" → points=1)</td><td><code>generic_html.py:74</code></td></tr>
+<tr><td>L11</td><td>Pattern host:port quá rộng — sinh connection info giả từ URL mất scheme</td><td><code>link_extractor.py:255</code></td></tr>
+<tr><td>L12</td><td>Token heuristic "chứa chữ token" → mong manh với platform khác</td><td><code>http_client.py</code></td></tr>
+<tr><td>L13</td><td>Đánh dấu solved "giả thành công" khi README không chứa marker</td><td><code>manage.py:124–131</code></td></tr>
+<tr><td>L14</td><td><code>get_auth_for_workspace</code> bất đối xứng: truyền -c thì bỏ qua token đã lưu</td><td><code>cli.py:16–20</code></td></tr>
+<tr><td>L15</td><td>ID challenge trùng số thứ tự menu → chọn nhầm theo index</td><td><code>interactive_menu.py:338</code></td></tr>
+<tr><td>L16</td><td>Dashboard dùng print() thuần trong khi package có rich — UI không nhất quán</td><td><code>dashboard.py</code></td></tr>
+<tr><td>L17</td><td>Progress bar overflow nếu completion rate &gt;100%</td><td><code>manage.py:31</code>, <code>cli.py:201</code></td></tr>
+<tr><td>L18</td><td>README thiếu GZCTF ở mục đa nền tảng, cờ --sync, script/+NOTE.md, schema JSON; không CHANGELOG/license</td><td><code>README.md</code></td></tr>
+<tr><td>L19</td><td>Dashboard logic solved thừa/no-op; metadata thắng marker README do break sớm</td><td><code>dashboard.py:40–41</code></td></tr>
+</tbody></table></div>
+  </div>
+</section>
+
+<section id="s5">
+  <div class="sec-head"><span class="no">05</span><h2>Khuyến nghị ưu tiên</h2></div>
+
+  <div class="rec">
+    <span class="p-tag">P0 — trước khi commit</span>
+    <ol>
+      <li>Sửa H3: <code>dl.output_dir</code> → <code>dl.config.output_dir</code> — 1 dòng, khôi phục cả một luồng tính năng.</li>
+      <li>Siết auto-submit (H1): loại nhánh <code>[a-zA-Z0-9_-]+\{</code> khỏi regex, thêm confirm/dry-run và giới hạn số flag mỗi lần chạy.</li>
+      <li>Bỏ POST khỏi retry allowed_methods (M1); sửa placeholder <code>FLAG{{...}}</code> (L4).</li>
+      <li>Tách working tree thành 2 commit theo concern (ranking / layout refactor), commit sớm để không mất 2 file untracked.</li>
+    </ol>
+  </div>
+  <div class="rec">
+    <span class="p-tag">P1 — tuần này</span>
+    <ol>
+      <li>Thay <code>except Exception: pass</code> bằng log warning ở downloaders + submitter (H4/H5); đánh dấu "đã submit" bền vững.</li>
+      <li>Chuyển secret khỏi argv/config plaintext → env var hoặc keyring; redact token khi log (H2/H7).</li>
+      <li>Bổ sung test RankingManager (fetch_scoreboard mock ×3 platform), InstanceManager sync, auto-submit filter.</li>
+      <li>Thêm handler Mega hoặc loại khỏi downloadable list (H6); detector fallback sang GenericHTML (M3).</li>
+    </ol>
+  </div>
+  <div class="rec">
+    <span class="p-tag">P2 — dọn dẹp</span>
+    <ol>
+      <li>Xoá wrapper trùng (main.py/ctf.py), gộp logic instance/workspace-scan vào 1 module.</li>
+      <li>Đồng bộ deps/version setup.py ↔ requirements.txt ↔ __init__.py.</li>
+      <li>Atomic write + lock cho metadata.json/challenges.json; parse host:port hỗ trợ IPv6.</li>
+    </ol>
+  </div>
+</section>
+
+<section id="s6">
+  <div class="sec-head"><span class="no">06</span><h2>Kết luận</h2></div>
+  <div class="concl">
+    <p style="max-width:none;margin-bottom:.8rem">Repo đang ở tình trạng <b>hoạt động thực tế đã được chứng minh</b>: workspace 35 bài trên GZCTF, 14 workspace local, 10/10 test pass, 28/28 module import sạch, 11/11 công cụ chạy đúng. Kiến trúc phân lớp hợp lý, tài liệu khá đầy đủ.</p>
+    <p style="max-width:none;margin-bottom:0">Điểm yếu xuyên suốt cần xử lý: (a) xử lý lỗi kiểu nuốt-im-lặng, (b) sync file bằng regex thay vì cấu trúc, (c) quản lý secret thô sơ, (d) auto-submit thiếu van an toàn. Hai cụm tính năng trong working tree nên được commit sớm sau khi vá nhóm P0.</p>
+  </div>
+</section>
+
+<footer>Báo cáo sinh 24/08/2026 · tổng hợp từ 5 agent phân tích song song · REPORT.md / REPORT.html</footer>
+
+</div>
+</body>
+</html>

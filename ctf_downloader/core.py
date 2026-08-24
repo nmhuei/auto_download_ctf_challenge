@@ -27,7 +27,8 @@ class CTFDownloader:
         self.download_manager = DownloadManager(
             session=self.session,
             timeout=config.timeout,
-            force=config.force_redownload
+            force=config.force_redownload,
+            size_limit_bytes=config.size_limit_bytes
         )
 
     def run(self) -> bool:
@@ -109,12 +110,14 @@ class CTFDownloader:
                 clean_category = sanitize_folder_name(chall.category, default="Misc")
                 clean_name = sanitize_folder_name(chall.name, default=f"chall_{chall.id}")
                 chall_dest_dir = os.path.join(self.config.output_dir, clean_category, clean_name)
+                challenge_sub_dir = os.path.join(chall_dest_dir, "challenge")
+                os.makedirs(challenge_sub_dir, exist_ok=True)
 
-                # Download files
+                # Download files directly into challenge/ subdirectory
                 dl_results = self.download_manager.download_challenge_files(
                     files=chall.files,
                     extracted_links=extracted_links,
-                    dest_dir=chall_dest_dir,
+                    dest_dir=challenge_sub_dir,
                     download_third_party=self.config.download_third_party
                 )
 

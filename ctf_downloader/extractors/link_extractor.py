@@ -113,14 +113,21 @@ class LinkExtractor:
                 is_downloadable=True
             )
 
-        # Mega.nz
+        # Mega.nz — chỉ đánh dấu downloadable khi có megatools (megadl/mega-get);
+        # DownloadManager dựa trên flag này để quyết định có thử tải hay không.
         if "mega.nz" in netloc or "mega.co.nz" in netloc:
+            try:
+                # Import lười để tránh phụ thuộc vòng extractors <-> downloaders
+                from ..downloaders.mega import MegaDownloader
+                has_mega_tool = MegaDownloader.available_tool() is not None
+            except Exception:
+                has_mega_tool = False
             return ExtractedLink(
                 url=url,
                 link_type="mega",
                 filename_hint=title,
                 title=title,
-                is_downloadable=True
+                is_downloadable=bool(has_mega_tool)
             )
 
         # Dropbox

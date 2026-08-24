@@ -39,12 +39,14 @@ Examples:
     parser.add_argument("--id", type=int, help="Target challenge ID")
     parser.add_argument("-n", "--name", type=str, help="Target challenge name")
     parser.add_argument("-f", "--flag", type=str, help="Flag string to submit")
+    parser.add_argument("--flag-format", dest="flag_format", type=str, help="Regex định dạng flag của giải (vd: \"^PTITCTF\\\\{.+\\\\}$\")")
+    parser.add_argument("--force", action="store_true", help="Vượt blacklist flag sai để vẫn submit")
     parser.add_argument("--auto", action="store_true", help="Auto-scan workspace for filled flags and submit them")
     parser.add_argument("-i", "--interactive", action="store_true", help="Launch interactive guided prompt")
 
     return parser.parse_args()
 
-def interactive_wizard():
+def interactive_wizard(flag_format: str = None):
     Logger.banner()
     console.print("[bold yellow]🚩 Interactive Flag Submitter[/bold yellow]\n")
 
@@ -71,12 +73,12 @@ def interactive_wizard():
         with open(cookie, "r", encoding="utf-8") as f:
             cookie = f.read().strip()
 
-    submitter = FlagSubmitter(url=url, cookie=cookie, workspace_dir=workspace)
+    submitter = FlagSubmitter(url=url, cookie=cookie, workspace_dir=workspace, flag_format=flag_format)
 
     console.print("\n[dim]Choose Action:[/dim]")
     console.print(" [bold green]1[/bold green]. Submit flag for a specific challenge")
     console.print(" [bold green]2[/bold green]. Auto-scan workspace and submit all filled flags")
-    
+
     choice = Prompt.ask("[bold cyan]Select action[/bold cyan]", choices=["1", "2"], default="1")
 
     if choice == "1":
@@ -90,7 +92,7 @@ def main():
     args = parse_args()
 
     if args.interactive or (not args.flag and not args.auto and not args.url):
-        interactive_wizard()
+        interactive_wizard(flag_format=args.flag_format)
         return
 
     # Check url from workspace if not provided
@@ -116,17 +118,18 @@ def main():
         url=url,
         cookie=cookie,
         token=args.token,
-        workspace_dir=args.workspace
+        workspace_dir=args.workspace,
+        flag_format=args.flag_format
     )
 
     if args.auto:
-        submitter.auto_scan_and_submit()
+        submitter.auto_scan_and_submit(force=args.force)
     elif args.flag:
         chall = args.id if args.id is not None else args.name
         if not chall:
             Logger.error("Please specify target challenge with --id <ID> or --name <NAME>.")
             sys.exit(1)
-        succ, _ = submitter.submit(chall, args.flag)
+        succ, msg = submitter.submit(chall, args.flag, force=args.force)
         if not succ:
             sys.exit(1)
     else:

@@ -109,6 +109,38 @@ python main.py -u https://ctf.example.com -c "session=..." --no-third-party
 
 ---
 
+### 3. Cập nhật Bảng xếp hạng & Ranking Live (`rank.py`)
+```bash
+# Xem bảng xếp hạng hiện tại và vị trí của đội bạn:
+python3 rank.py -w ./my_ctf
+
+# Xem top 30 đội đứng đầu và tự động ghi vào RANKING.md:
+python3 main.py rank -w ./my_ctf -n 30
+```
+
+### 4. Quản lý Dynamic Container / Instance (`instance.py`)
+```bash
+# Khởi động instance mới (tự động nạp URL vào metadata.json):
+python3 instance.py -w ./my_ctf --id <CHALL_ID> --start
+
+# Kiểm tra trạng thái và URL hiện tại:
+python3 instance.py -w ./my_ctf --id <CHALL_ID> --status
+
+# Gia hạn thời gian sống của container:
+python3 instance.py -w ./my_ctf --id <CHALL_ID> --extend
+```
+
+### 5. Nộp Flag Tự Động & Chấm điểm (`submit.py`)
+```bash
+# Quét toàn bộ workspace và nộp các flag mới tìm được:
+python3 submit.py -w ./my_ctf --auto
+
+# Nộp flag cho một bài cụ thể:
+python3 submit.py -w ./my_ctf --id <CHALL_ID> -f "FLAG{...}"
+```
+
+---
+
 ## 📂 Cấu trúc thư mục được tạo ra
 
 ```text
@@ -118,20 +150,26 @@ my_ctf/
 │
 ├── Web/                             # Thư mục thể loại Web
 │   ├── Super_Secure_Login/
-│   │   ├── README.md                # Đề bài, gợi ý, author, points, connection url
-│   │   ├── metadata.json            # Dữ liệu metadata chi tiết
-│   │   ├── solve.py                 # File exploit template có sẵn requests/session
-│   │   ├── src.zip                  # Source code đính kèm (hoặc tải từ GDrive)
-│   │   └── Dockerfile
+│   │   ├── challenge/               # 📦 Source code, file đính kèm, attachments (src.zip, Dockerfile...)
+│   │   │   ├── src.zip
+│   │   │   └── Dockerfile
+│   │   ├── solver/                  # 💻 Script exploit & giải tự động
+│   │   │   └── solve.py
+│   │   ├── writeup/                 # 📄 Writeup, phân tích kỹ thuật & PoC
+│   │   │   └── README.md
+│   │   └── metadata.json            # ⚙️ Metadata đồng bộ từ platform
 │   └── ...
 │
 ├── Pwn/                             # Thư mục thể loại Pwn
 │   ├── Ret2Libc_Easy/
-│   │   ├── README.md                # Đề bài & câu lệnh `nc target.ctf.org 9001`
-│   │   ├── metadata.json
-│   │   ├── solve.py                 # File exploit template có sẵn pwntools kết nối target
-│   │   ├── vuln                     # Binary thực thi
-│   │   └── libc.so.6
+│   │   ├── challenge/               # 📦 Binaries, libc, challenge assets
+│   │   │   ├── vuln
+│   │   │   └── libc.so.6
+│   │   ├── solver/                  # 💻 Script exploit pwntools
+│   │   │   └── solve.py
+│   │   ├── writeup/                 # 📄 Writeup hướng dẫn khai thác
+│   │   │   └── README.md
+│   │   └── metadata.json
 │   └── ...
 │
 ├── Crypto/
