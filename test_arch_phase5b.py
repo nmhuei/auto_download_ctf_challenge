@@ -101,8 +101,10 @@ class TestThrottleRegistryDriven(_SubmitCase):
 
     def test_ctfd_uses_registry_gap_6(self):
         waited = self._two_submit_wait("ctfd")
-        self.assertGreater(waited, 0)
-        self.assertLess(waited, 7)  # gap 6s, không phải fallback 5s cũ
+        # Siết: phải > 5.5s để phân biệt rõ gap 6.0 của registry với
+        # fallback 5.0 (fallback sẽ cho waited ≈ 5.0 - overhead < 5.5).
+        self.assertGreater(waited, 5.5)
+        self.assertLess(waited, 7)
 
     def test_gzctf_uses_registry_gap_2_not_old_default(self):
         waited = self._two_submit_wait("gzctf")

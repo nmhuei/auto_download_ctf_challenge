@@ -268,6 +268,17 @@ class TestPatchSummaryLiveRank(WorkspaceCase):
         (self.root / "SUMMARY.md").write_text("no anchor here\n", encoding="utf-8")
         self.assertFalse(self.repo.patch_summary_live_rank("- **Live Rank**: `#1`"))
 
+    def test_patch_rank_line_with_backslash_team(self):
+        """Carry item: team chứa ký tự ``\\`` — với repl là chuỗi thuần,
+        re.sub từng coi ``\\x`` là escape và vỡ output. Sau khi đổi sang
+        lambda repl, rank_line phải được chèn NGUYÊN VĂN."""
+        self._make_summary()
+        rank_line = "- **Live Rank**: `#2` / `20` (Team: `team\\slash`)"
+        self.assertTrue(self.repo.patch_summary_live_rank(rank_line))
+        text = self._summary_path().read_text(encoding="utf-8")
+        self.assertEqual(text.count("- **Live Rank**:"), 1)
+        self.assertIn("(Team: `team\\slash`)", text)
+
 
 # ---------------------------------------------------------------------------
 # Carry item: test multiprocess lockfile của fileio — file duy nhất trong
@@ -530,10 +541,6 @@ class TestRegistryThrottlePins(unittest.TestCase):
         self.assertEqual(get_spec("rctf").throttle, 5.0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 # ---------------------------------------------------------------------------
 # Task 8 — Characterization tests: StatusService + PullService
 # ---------------------------------------------------------------------------
@@ -711,6 +718,67 @@ class TestPullServiceRun(unittest.TestCase):
             stats = dash.get_summary_stats()
         self.assertEqual(stats["total_challenges"], 1)
         self.assertGreaterEqual(spy.call_count, 1)
+
+
+# ---------------------------------------------------------------------------
+# Task 12 — Characterization test: render_tree(only_container=True)
+# ---------------------------------------------------------------------------
+
+class TestRenderTreeOnlyContainer(unittest.TestCase):
+    """Chỉ challenge có dấu hiệu container (raw.type=dynamic_docker) được in."""
+
+    def setUp(self):
+        import contextlib
+        import io
+
+        self._ctxlib = contextlib
+        self._io = io
+        self._tmp = tempfile.mkdtemp(prefix="arch12_tree_")
+        root = pathlib.Path(self._tmp) / "ws_ctf_tree"
+        (root / "Web" / "dyn").mkdir(parents=True)
+        (root / "Web" / "static").mkdir(parents=True)
+        (root / "challenges.json").write_text(json.dumps({
+            "ctf_info": {"title": "TreeCTF", "url": "https://tree.example.com",
+                         "platform": "gzctf"},
+            "challenges": [
+                {"id": 1, "name": "Dyn", "category": "Web", "points": 100},
+                {"id": 2, "name": "Static", "category": "Web", "points": 100},
+            ],
+        }), encoding="utf-8")
+        (root / "Web" / "dyn" / "metadata.json").write_text(json.dumps(
+            {"id": 1, "name": "Dyn", "category": "Web", "points": 100,
+             "raw": {"type": "dynamic_docker"}}), encoding="utf-8")
+        (root / "Web" / "static" / "metadata.json").write_text(json.dumps(
+            {"id": 2, "name": "Static", "category": "Web", "points": 100}),
+            encoding="utf-8")
+        self.root = root
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _render(self, **kw) -> str:
+        from ctf_downloader.services.status_service import StatusService
+
+        buf = self._io.StringIO()
+        with self._ctxlib.redirect_stdout(buf):
+            StatusService.render_tree(WorkspaceRepo(self.root), **kw)
+        return buf.getvalue()
+
+    def test_only_container_filters_out_non_container_challenges(self):
+        full = self._render()
+        cont_only = self._render(only_container=True)
+
+        # Full tree: cả 2 challenge đều xuất hiện; container được gắn tag
+        self.assertIn("Dyn", full)
+        self.assertIn("Static", full)
+        self.assertIn("[🐳 Container]", full)
+
+        # only_container=True: chỉ Dyn còn lại, Static bị lọc bỏ;
+        # header workspace vẫn được in đầy đủ.
+        self.assertIn("Dyn", cont_only)
+        self.assertNotIn("Static", cont_only)
+        self.assertIn("CTF WORKSPACE: TreeCTF [GZCTF]", cont_only)
+        self.assertIn("[🐳 Container]", cont_only)
 
 
 if __name__ == "__main__":

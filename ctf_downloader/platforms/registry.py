@@ -22,7 +22,8 @@ class PlatformSpec:
     key: str                              # "gzctf"
     label: str                            # "GZ::CTF" (hiển thị dashboard/workspace)
     cls: Type                             # class adapter (con của BasePlatform)
-    throttle: float = 2.0                 # giây nghỉ tối thiểu giữa 2 lần submit
+    throttle: float = 5.0                 # giây nghỉ tối thiểu giữa 2 lần submit
+                                          # (khớp DEFAULT_THROTTLE của submit_service)
     html_markers: Tuple[str, ...] = ()    # chuỗi nhận diện tầng 1 (HTML);
                                           # tiền tố "regex:" = mẫu regex trên HTML gốc
     cookie_hints: Tuple[str, ...] = ()    # tên cookie tầng 2

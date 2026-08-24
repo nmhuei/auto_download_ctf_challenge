@@ -265,7 +265,10 @@ class WorkspaceRepo:
             return False
 
         if LIVE_RANK_PREFIX in text:
-            new_text = re.sub(r"-\s*\*\*Live Rank\*\*:[^\n]+", rank_line, text)
+            # repl dạng lambda: rank_line được chèn NGUYÊN VĂN. Nếu truyền
+            # rank_line làm replacement chuỗi, re.sub sẽ coi `\` là escape
+            # (tên team chứa backslash làm hỏng/vỡ output).
+            new_text = re.sub(r"-\s*\*\*Live Rank\*\*:[^\n]+", lambda m: rank_line, text)
         elif SUMMARY_FILES_LINE_PREFIX in text:
             new_text = text.replace(
                 SUMMARY_FILES_LINE_PREFIX, f"{rank_line}\n{SUMMARY_FILES_LINE_PREFIX}", 1

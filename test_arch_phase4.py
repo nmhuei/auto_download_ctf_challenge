@@ -277,5 +277,100 @@ class TestDetectionRegistryDriven(unittest.TestCase):
             object.__setattr__(spec, "html_markers", original_markers)
 
 
+# --------------------------------------------------------------------- #
+# Task 12 — Fixture DoD: "Thêm platform mới = 1 file"
+# --------------------------------------------------------------------- #
+class TestOneFilePlatformFixture(unittest.TestCase):
+    """Chứng minh: để thêm 1 platform mới, chỉ cần ĐÚNG 1 module chứa
+    ``@register(...)`` ngay tại định nghĩa class — không phải sửa registry,
+    capabilities hay bất kỳ danh sách hardcode nào.
+
+    Module test này chính là "1 file" đó. Sau khi decorator chạy:
+      - registry biết key (get_spec / spec.cls / throttle),
+      - capabilities.PLATFORM_TYPES tự sinh ra key,
+      - PlatformResolver dựng adapter khi workspace khai báo platform,
+      - pipeline detection nhận diện qua marker đọc từ spec (chỉ cần key
+        xuất hiện trong tuple ưu tiên tầng 1 `_MARKER_PRIORITY` của
+        detection — chính sách thứ tự, không phải dữ liệu nhận diện).
+    """
+
+    FAKE_KEY = "zz_one_file_fixture"
+
+    @classmethod
+    def setUpClass(cls):
+        key = cls.FAKE_KEY
+
+        @register(key, label="One-File Fixture", throttle=7.5,
+                  html_markers=("ONEFILEFIXTURE2026",), supports_container=True)
+        class OneFilePlatform(GenericHTMLPlatform):
+            # Một platform file thật tự khai báo platform_type của mình
+            # (như GZCTFPlatform gán "gzctf") để detection phản chiếu đúng.
+            def __init__(self, base_url, session):
+                super().__init__(base_url, session)
+                self.ctf_info.platform_type = key
+
+        cls.platform_cls = OneFilePlatform
+
+    @classmethod
+    def tearDownClass(cls):
+        del PLATFORMS[cls.FAKE_KEY]
+        # Reload lại capabilities sau khi xoá key -> snapshot trở về 5 platform thật
+        import importlib
+        importlib.reload(capabilities)
+
+    def test_registry_knows_new_key(self):
+        spec = get_spec(self.FAKE_KEY)
+        self.assertIs(spec.cls, self.platform_cls)
+        self.assertIs(self.platform_cls.spec, spec)
+        self.assertEqual(spec.throttle, 7.5)
+        self.assertEqual(spec.label, "One-File Fixture")
+
+    def test_capabilities_auto_includes_new_key(self):
+        """PLATFORM_TYPES sinh tự từ registry LÚC IMPORT (không hardcode):
+        đăng ký xong, chỉ cần reload capabilities là key mới xuất hiện."""
+        import importlib
+
+        # Snapshot cũ (trước khi module platform này được import thật) chưa có key
+        self.assertNotIn(self.FAKE_KEY, set(capabilities.PLATFORM_TYPES))
+
+        importlib.reload(capabilities)
+        self.assertIn(self.FAKE_KEY, set(capabilities.PLATFORM_TYPES))
+        # Khôi phục trong tearDownClass (sau khi xoá key khỏi PLATFORMS)
+
+    def test_resolver_builds_declared_platform_without_network(self):
+        """Workspace khai báo `ctf_info.platform` = key mới -> adapter được
+        dựng thẳng từ registry, KHÔNG gọi mạng (session không route nào)."""
+        from unittest.mock import patch as _patch
+
+        from ctf_downloader.services.platform_resolver import PlatformResolver
+
+        repo = FakeWorkspaceRepo(
+            {"platform": self.FAKE_KEY}, "https://onefile.example.com")
+        with _patch("ctf_downloader.services.platform_resolver.create_session",
+                    return_value=RoutingSession()):
+            _, platform, info = PlatformResolver.for_workspace(repo)
+
+        self.assertIsInstance(platform, self.platform_cls)
+        self.assertEqual(info.platform_type, self.FAKE_KEY)
+
+    def test_detection_tier1_matches_marker_from_spec(self):
+        """Marker tầng 1 đọc từ spec vừa đăng ký — chỉ cần key có trong tuple
+        ưu tiên là detection nhận diện, KHÔNG sửa thêm dữ liệu nào."""
+        from unittest.mock import patch as _patch
+
+        from ctf_downloader.platforms import detection
+
+        session = RoutingSession(routes={
+            "*": FakeResponse(text="<body>welcome ONEFILEFIXTURE2026</body>")})
+        with _patch.object(detection, "_MARKER_PRIORITY",
+                           (self.FAKE_KEY,) + detection._MARKER_PRIORITY):
+            platform, info = detection.detect_platform_info(
+                "https://onefile.example.com/", session)
+
+        self.assertIsInstance(platform, self.platform_cls)
+        self.assertEqual(info.platform_type, self.FAKE_KEY)
+        self.assertEqual(info.confidence, "high")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

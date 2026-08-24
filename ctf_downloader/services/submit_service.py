@@ -15,7 +15,7 @@ from ..services.session_factory import create_session
 from ..utils.flag_format import extract_flag_format, validate_flag
 from ..platforms.detector import PlatformDetector
 from ..platforms.base import BasePlatform  # noqa: F401  (giữ kiểu tham chiếu cũ)
-from ..platforms.registry import get_spec
+from ..platforms.registry import UnknownPlatformError, get_spec
 from ..storage.workspace_repo import WorkspaceRepo
 
 NO_FORMAT_MESSAGE = (
@@ -265,7 +265,9 @@ class SubmitService:
         ptype = self._platform_type()
         try:
             return float(get_spec(ptype).throttle), ptype
-        except Exception:
+        except UnknownPlatformError:
+            # Chỉ fallback khi platform type không có trong registry; lỗi khác
+            # (bug thật) phải lan lên thay vì bị nuốt thành throttle mặc định.
             return DEFAULT_THROTTLE, ptype
 
     def _throttle(self):

@@ -225,6 +225,100 @@ python3 submit.py -i
 
 ---
 
+## 🏗️ Kiến trúc source code (`ctf_downloader/`)
+
+Toàn bộ business logic sống trong **services** (use-case) và **storage** (đọc/ghi
+workspace). Các module ở tầng ngoài (CLI, entrypoint script, facade) chỉ là lớp
+mỏng delegate xuống — không chứa logic nhân bản.
+
+```text
+ctf_downloader/
+├── cli.py                  # Parser + dispatch (không input(), không logic)
+├── cli_commands.py         # Handler mỏng: parse → service → render → exit code
+├── cli_legacy.py           # argparse nguyên văn của submit/manage/instance/rank.py cũ
+├── config.py               # DownloaderConfig + validate (urlnorm)
+├── core.py                 # Facade CTFDownloader → PullService
+├── dashboard.py            # Facade CTFDashboard → StatusService
+├── instance_manager.py     # Facade InstanceManager → InstanceService
+├── ranking.py              # Facade RankingManager → RankService
+├── submitter.py            # Facade FlagSubmitter → SubmitService
+├── interactive_menu.py     # Wizard tương tác (gọi services)
+│
+├── services/               # 💡 Toàn bộ use-case (logic duy nhất của từng việc)
+│   ├── pull_service.py     #    Pull/download toàn bộ giải
+│   ├── status_service.py   #    Scan workspace + stats + render cây challenge + scan-all
+│   ├── submit_service.py   #    Submit flag: format gate, blacklist, throttle theo registry
+│   ├── rank_service.py     #    Live scoreboard + ghi RANKING.md / SUMMARY.md
+│   ├── instance_service.py #    Container: list/start/stop/extend/sync + interactive_pick
+│   ├── auth_service.py     #    Resolve cookie/token cho một workspace
+│   ├── platform_resolver.py#    Chọn adapter platform (khai báo rõ hoặc auto-detect)
+│   └── session_factory.py  #    Tạo requests session có auth
+│
+├── storage/                # 💾 Đọc/ghi workspace & config (atomic + lockfile)
+│   ├── workspace_repo.py   #    challenges.json, metadata.json, RANKING/SUMMARY patch...
+│   ├── fileio.py           #    Ghi atomic (.tmp + rename), locked_update_json
+│   ├── global_config.py    #    Config toàn cục (~/.ctf_downloader)
+│   └── constants.py        #    Hằng số chia sẻ (LIVE_RANK_PREFIX, anchor SUMMARY...)
+│
+├── platforms/              # 🔌 Adapter nền tảng CTF — đăng ký bằng 1 decorator
+│   ├── registry.py         #    Nguồn chân lý: PlatformSpec (throttle, markers, probes...)
+│   ├── base.py             #    BasePlatform: authenticate/fetch_challenges/submit_flag...
+│   ├── detection.py        #    Pipeline auto-detect 4 tầng (marker→cookie→probe→fallback)
+│   ├── detector.py         #    Wrapper tương thích ngược
+│   ├── capabilities.py     #    PlatformInfo + PLATFORM_TYPES (sinh tự từ registry)
+│   ├── gzctf.py ctfd.py rctf.py custom_rest.py generic_html.py
+│
+├── downloaders/            # Tải file (http, gdrive, dropbox, mediafire, mega...) + manager
+├── extractors/             # Trích xuất link bên thứ 3 từ đề bài
+├── generator/              # Dựng workspace: README/metadata/solve.py/SUMMARY
+└── utils/                  # logger, sanitize, urlnorm, flag_format, http_client
+
+main.py / ctf.py / submit.py / manage.py / instance.py / rank.py   # shim ≤10 dòng
+```
+
+### ➕ Thêm một platform mới = 1 file mới (+ 1 dòng import)
+
+Registry là nguồn dữ liệu duy nhất — bạn **không cần sửa** danh sách hardcode nào.
+Tạo `ctf_downloader/platforms/my_platform.py`:
+
+```python
+from .base import BasePlatform
+from .registry import register
+
+
+def probe_api(origin, session, info, done):
+    """Probe tầng 3 (tuỳ chọn): nhận diện qua API đặc trưng."""
+    ...
+
+
+@register("my_platform", label="My Platform", throttle=5.0,
+          html_markers=("Powered by MyPlatform",),   # tầng 1: chuỗi trong HTML
+          cookie_hints=("MP_Token",),                # tầng 2: tên cookie
+          probes=(probe_api,),                       # tầng 3: probe API
+          supports_container=True, supports_scoreboard=True)
+class MyPlatform(BasePlatform):
+    def authenticate(self): ...
+    def fetch_challenges(self): ...
+    def submit_flag(self, challenge_id, flag): ...
+```
+
+Rồi thêm 1 dòng import để kích hoạt decorator trong
+`ctf_downloader/platforms/registry.py`:
+
+```python
+from . import ctfd, custom_rest, generic_html, gzctf, my_platform, rctf
+```
+
+Xong. Ngay lập tức platform mới:
+- xuất hiện trong `capabilities.PLATFORM_TYPES` (sinh tự từ registry),
+- có throttle riêng đọc bởi `submit_service` (mặc định 5.0s nếu không khai báo),
+- được pipeline auto-detect dùng markers/cookie_hints/probes của chính nó,
+- dựng được adapter theo tên khi workspace khai báo `"platform": "my_platform"`.
+
+> Fixture kiểm chứng hành vi này: `test_arch_phase4.py::TestOneFilePlatformFixture`.
+
+---
+
 ## 🧪 Kiểm thử (Unit Tests)
 
 Chạy bộ test suite tích hợp để kiểm tra mọi tính năng:
