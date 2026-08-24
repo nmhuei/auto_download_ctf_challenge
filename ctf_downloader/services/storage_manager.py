@@ -37,6 +37,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from rich.markup import escape
+
 from ..platforms.base import normalize_epoch_to_utc
 from ..storage.workspace_repo import WorkspaceRepo
 
@@ -222,7 +224,10 @@ class StorageManager:
         """Bảng rich-ready: workspace sắp theo size giảm dần + dòng tổng.
 
         Cột: icon 📦📦📄🖥️ cho breakdown, 💾 cho tổng. ⚠️ đánh dấu workspace
-        vượt ``threshold_mb``, 🏁 đánh dấu workspace đã ended.
+        vượt ``threshold_mb``, 🏁 đánh dấu workspace đã ended. Cột 💾 Total
+        được bọc markup màu theo ngưỡng (markup semantic của ui.style.PALETTE,
+        resolve khi caller in qua rich console): xanh < 50% ngưỡng, vàng
+        < 100%, đỏ vượt ngưỡng. Dòng TOTAL in đậm.
         """
         threshold_bytes = int(threshold_mb) * 1024 * 1024
         rows = sorted(usages, key=lambda u: u.total_bytes, reverse=True)
@@ -232,15 +237,31 @@ class StorageManager:
             + [len(StorageManager._display_name(u)) for u in rows]
         )
         headers = ["Workspace", "📦 Attach", "📄 Writeup", "🖥️ Solver", "💾 Total"]
-        col_ws = [
+        # Giá trị THÔ dùng để tính độ rộng cột (markup không ăn vào padding).
+        col_raw = [
             [human_size(u.breakdown.get("attachments", 0)) for u in rows],
             [human_size(u.breakdown.get("writeups", 0)) for u in rows],
             [human_size(u.breakdown.get("solvers", 0)) for u in rows],
             [human_size(u.total_bytes) for u in rows],
         ]
+
+        def _total_markup(total_bytes: int) -> str:
+            if threshold_bytes <= 0:
+                return human_size(total_bytes)
+            ratio = total_bytes / threshold_bytes
+            tone = ("success" if ratio < 0.5
+                    else "warning" if ratio < 1.0 else "error")
+            return f"[{tone}]{human_size(total_bytes)}[/{tone}]"
+
+        col_cells = [
+            list(col)
+            for col in col_raw[:-1]
+        ] + [
+            [_total_markup(u.total_bytes) for u in rows]
+        ]
         size_w = [
             max([len(h)] + [len(v) for v in col]) if rows else len(h)
-            for h, col in zip(headers[1:], col_ws)
+            for h, col in zip(headers[1:], col_raw)
         ]
 
         lines: List[str] = []
@@ -261,21 +282,31 @@ class StorageManager:
                 notes.append("🏁")
             note_s = " ".join(notes)
             cells = "  ".join(
-                f"{col[idx]:>{w}}" for col, w in zip(col_ws, size_w)
+                f"{StorageManager._pad_rich(col_cells[c][idx], size_w[c])}"
+                for c in range(len(col_cells))
             )
             lines.append(
-                f"{StorageManager._display_name(usage):<{name_w}}  {cells}"
+                f"{escape(StorageManager._display_name(usage)):<{name_w}}  {cells}"
                 f"  {usage.challenge_count:>6}  {note_s}"
             )
         lines.append("-" * len(header))
-        lines.append(
+        total_line = (
             f"{'💾 TOTAL':<{name_w}}  "
             + "  ".join(" " * w for w in size_w[:-1])
             + f"{human_size(grand):>{size_w[-1]}}"
         )
+        lines.append(f"[bold]{total_line}[/bold]")
         if not rows:
             lines.append("(không có workspace nào)")
         return "\n".join(lines)
+
+    @staticmethod
+    def _pad_rich(markup_cell: str, width: int) -> str:
+        """Căn phải một cell có thể chứa markup rich theo độ rộng HIỂN THỊ
+        (độ dài chuỗi trừ các tag ``[...]``)."""
+        visible = len(_re.sub(r"\[/?[a-z]+\]", "", markup_cell))
+        pad = " " * max(0, width - visible)
+        return pad + markup_cell
 
     @staticmethod
     def _display_name(usage: WorkspaceUsage) -> str:

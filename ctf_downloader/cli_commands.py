@@ -678,7 +678,13 @@ def handle_storage(args):
         return
 
     usages = StorageManager.scan_usage(args.base_dir)
-    print(StorageManager.format_report(usages, threshold_mb=args.threshold_mb))
+    # format_report trả markup rich-ready (cột Total màu theo ngưỡng, dòng
+    # TOTAL đậm) — in qua rich console để resolve, không print() thô.
+    # soft_wrap=True: bảng rộng không bị ngắt dòng giữa các cột ở terminal
+    # hẹp (giữ hành vi print() cũ).
+    console.print(
+        StorageManager.format_report(usages, threshold_mb=args.threshold_mb),
+        soft_wrap=True)
 
     suggestions = StorageManager.suggest_actions(
         args.base_dir, threshold_mb=args.threshold_mb

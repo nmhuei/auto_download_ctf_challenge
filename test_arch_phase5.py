@@ -14,6 +14,7 @@ import unittest
 from unittest import mock
 
 from ctf_downloader.generator.summary_generator import SummaryGenerator
+from ctf_downloader.storage.constants import STATUS_ICONS
 from ctf_downloader.storage.fileio import atomic_write_json, locked_update_json
 from ctf_downloader.storage.workspace_repo import WorkspaceRepo
 
@@ -581,7 +582,9 @@ class TestStatusServiceSummaryStats(unittest.TestCase):
         with redirect_stdout(buf):
             rows = StatusService.scan_all_workspaces(self._tmp)
         out = buf.getvalue()
-        self.assertIn("SCANNING ALL CTF WORKSPACES", out)
+        # UI redesign: header "==== SCANNING ALL CTF WORKSPACES ====" thay bằng
+        # dòng Logger.info "Scanning all CTF workspaces in ..." + rich Table.
+        self.assertIn("Scanning all CTF workspaces", out)
         self.assertIn("TestCTF", out)
         self.assertIn("GZCTF", out)
         self.assertIn("0/1", out)
@@ -769,17 +772,19 @@ class TestRenderTreeOnlyContainer(unittest.TestCase):
         full = self._render()
         cont_only = self._render(only_container=True)
 
-        # Full tree: cả 2 challenge đều xuất hiện; container được gắn tag
+        # Full tree: cả 2 challenge đều xuất hiện; container có badge trục
+        # [🐳⏸] (UI redesign: bỏ tag cuối dòng "[🐳 Container]" trùng lặp).
         self.assertIn("Dyn", full)
         self.assertIn("Static", full)
-        self.assertIn("[🐳 Container]", full)
+        self.assertIn(STATUS_ICONS["container"]["stopped"], full)
 
         # only_container=True: chỉ Dyn còn lại, Static bị lọc bỏ;
-        # header workspace vẫn được in đầy đủ.
+        # header workspace vẫn được in đầy đủ (Panel title + platform badge).
         self.assertIn("Dyn", cont_only)
         self.assertNotIn("Static", cont_only)
-        self.assertIn("CTF WORKSPACE: TreeCTF [GZCTF]", cont_only)
-        self.assertIn("[🐳 Container]", cont_only)
+        self.assertIn("┌ 🏆 TreeCTF ┐", cont_only)
+        self.assertIn("[GZCTF]", cont_only)
+        self.assertIn(STATUS_ICONS["container"]["stopped"], cont_only)
 
 
 # ======================================================================

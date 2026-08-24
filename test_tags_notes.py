@@ -181,7 +181,9 @@ class TagsNotesCase(unittest.TestCase):
         self._tag_fixture()
         out = self._render_capture(self.repo)
         self.assertIn("🏷️ hard,todo", out)
-        self.assertIn('└─ 📝 "đã thử SSTI, bị chặn"', out)
+        # UI redesign: note chuyển từ dòng phụ "└─ 📝 ..." thành cột cuối
+        # của bảng challenge (vẫn giữ ngoặc kép).
+        self.assertIn('"đã thử SSTI, bị chặn"', out)
 
     def test_render_without_notes_labels_unchanged_lines(self):
         # Không note/label → không in dòng 📝/🏷️ nào (smoke output giữ nguyên).

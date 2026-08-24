@@ -805,7 +805,10 @@ class TestStatusSmokePTIT(unittest.TestCase):
             [sys.executable, "main.py", "status", "-w", "PTIT_CTF_2026"],
             cwd=str(repo_root), capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("CTF WORKSPACE", result.stdout)
+        # UI redesign: header cũ "🏆 CTF WORKSPACE: <tên>" (divider ====) được
+        # thay bằng Panel bo tròn title "┌ 🏆 <tên giải> ┐" — assert trên
+        # trophy marker của panel title thay vì chuỗi "CTF WORKSPACE".
+        self.assertIn("🏆", result.stdout)
 
 
 # ----------------------------------------------------------------------

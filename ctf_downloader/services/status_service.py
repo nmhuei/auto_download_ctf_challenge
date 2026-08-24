@@ -11,13 +11,25 @@ import shutil
 import sys
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from rich import box
+from rich.cells import cell_len
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
 from ..storage.constants import CATEGORY_ICONS, FLAG_PLACEHOLDER, STATUS_ICONS
 from ..storage.workspace_repo import WorkspaceRepo
-from ..ui.console import out_console
+from ..ui.theme import load_theme
 from ..utils.logger import Logger
 from ..utils.writeup_assessor import assess_writeup
+
+#: Console render cho toàn bộ surface status/workspaces: ghi ra stdout (giữ
+#: hợp đồng test redirect_stdout + pipe), mang theme semantic của ui.theme
+#: (div_line / hi_fg / title / solved / unsolved ...) — KHÔNG hardcode màu
+#: ngoài widget meter (widget nhận RGB thuần theo thiết kế btop).
+#: Console resolve ``sys.stdout`` lúc in nên vẫn hoạt động dưới redirect_stdout.
+_status_console = Console(theme=load_theme(None))
 
 # Thứ bậc trục writeup cho nguyên tắc "chỉ nâng không hạ" khi áp heuristic
 # (spec status-model §5: heuristic CHỈ ghi đè khi writeup_auto=True).
@@ -467,7 +479,7 @@ class StatusService:
         }
 
     # ------------------------------------------------------------------ #
-    # Progress bar (btop meter gradient)
+    # Render primitives (btop box aesthetic qua rich)
     # ------------------------------------------------------------------ #
     @staticmethod
     def _gradient_enabled() -> bool:
@@ -481,40 +493,143 @@ class StatusService:
             return False
 
     @classmethod
-    def _progress_line(cls, rate: float, width: int,
-                       prefix: str = "", suffix: str = "") -> Union[str, Text]:
-        """Dòng progress bar cho dashboard:
+    def _tty_columns(cls) -> int:
+        """Số cột terminal cho logic degrade; non-TTY trả số lớn (pipe phải
+        GIỮ ĐẦY ĐỦ thông tin — không ẩn cột khi redirect)."""
+        try:
+            if not sys.stdout.isatty():
+                return 10 ** 6
+            return shutil.get_terminal_size().columns
+        except Exception:
+            return 80
 
-        - TTY đủ rộng → ``ui.widgets.meter`` gradient per-cell (xanh→vàng→đỏ
-          theo % hoàn thành), trả ``rich.text.Text``.
-        - Terminal hẹp (<60 cols) hoặc non-TTY → fallback bar cũ plain
-          ``'█' * n + '░'``.
+    @classmethod
+    def _meter_only(cls, rate: float, width: int) -> Text:
+        """Meter gradient thuần (không prefix/suffix) dạng ``rich.text.Text``.
+
+        - TTY đủ rộng → ``ui.widgets.meter`` per-cell gradient (xanh→vàng→đỏ).
+        - Terminal hẹp / non-TTY → bar plain ``'█' * n + '░'`` (vẫn Text để
+          caller không bị rich parse markup nhầm dấu ``[``).
         """
         if cls._gradient_enabled():
             from ..ui.widgets import gradient, meter
             ramp = gradient(METER_RAMP_START, METER_RAMP_MID, METER_RAMP_END)
-            text = Text(prefix)
-            text.append_text(meter(rate, width, ramp))
-            text.append(suffix)
-            return text
-        filled_len = int(width * rate // 100)
-        return f"{prefix}{'█' * filled_len}{'░' * (width - filled_len)}{suffix}"
+            return meter(rate, width, ramp)
+        filled = int(width * rate // 100)
+        return Text("█" * filled + "░" * max(0, width - filled))
 
     @staticmethod
-    def _emit_progress(line: Union[str, Text]) -> None:
-        """In dòng progress: str → print(); rich Text → out_console để giữ
-        màu ANSI của gradient (out_console resolve sys.stdout lúc in nên vẫn
-        hoạt động khi caller redirect_stdout trong test)."""
+    def _emit(line: Union[str, Text, Table, Panel]) -> None:
+        """In một dòng/widget qua console status.
+
+        str được bọc trong ``Text`` (không bao giờ parse markup — tên
+        challenge/note có thể chứa ``[...]``), và in với soft_wrap để dòng dài
+        không bị ngắt giữa các cột ở terminal hẹp.
+        """
         if isinstance(line, str):
-            print(line)
-        else:
-            out_console.print(line)
+            line = Text(line)
+        _status_console.print(line, soft_wrap=True)
 
     # ------------------------------------------------------------------ #
     # Render cây challenge
     # ------------------------------------------------------------------ #
     @staticmethod
-    def render_tree(repo: WorkspaceRepo,
+    def _header_panel(repo: WorkspaceRepo, stats: Dict[str, Any]) -> Panel:
+        """Panel bo tròn (btop box) tổng quan giải: grid 2 cột —
+
+        trái: 👤 user/team · 📊 progress meter · 💰 points;
+        phải: 🏴 hoarded · 📝 drafts · 📦 files · ⏱️ window.
+        Hai cột khi vừa khít chiều rộng render; không thì tự xếp dọc.
+        """
+        # --- Trái ---
+        who = []
+        if stats['user']:
+            who.append(f"👤 User: {stats['user']}")
+        if stats['team']:
+            who.append(f"👥 Team: {stats['team']}")
+        user_cell = Text(" ".join(who)) if who else Text()
+
+        rate = stats['completion_rate']
+        progress_cell = Text("📊 Progress: ")
+        progress_cell.append(f"{stats['solved_challenges']}/{stats['total_challenges']} ")
+        progress_cell.append_text(StatusService._meter_only(rate, 20))
+        progress_cell.append(f" {rate:.1f}%", style="dim")
+
+        points_cell = Text("💰 Points: ")
+        points_cell.append(str(stats['earned_points']), style="bold")
+        points_cell.append(f"/{stats['total_points']}", style="dim")
+
+        # --- Phải ---
+        hoarded_cell = Text("🏴 Hoarded: ")
+        hoarded_cell.append(str(stats.get('hoarded_flags', 0)), style="hi_fg")
+        drafts_cell = Text("📝 Drafts: ")
+        drafts_cell.append(str(stats.get('writeup_drafts', 0)), style="hint")
+        files_cell = Text("📦 Files: ")
+        files_cell.append(str(stats.get('local_files', 0)))
+
+        window_str = StatusService._render_window(repo)
+        left_cells: List[Text] = [user_cell, progress_cell, points_cell]
+        right_cells: List[Text] = [hoarded_cell, drafts_cell, files_cell]
+        if window_str:
+            win_cell = Text("⏱️ Window: ", style="dim")
+            win_style = ("error" if window_str.startswith("🔴")
+                         else "warning" if window_str.startswith("⏳")
+                         else "success")
+            win_cell.append(window_str, style=win_style)
+            right_cells.append(win_cell)
+
+        # Degrade theo chiều rộng render thật: nếu 2 cột không khít (panel
+        # trừ viền/padding), xếp dọc 1 cột để KHÔNG bao giờ truncate dữ liệu
+        # (rich sẽ cắt "…" khi grid tràn — mất thông tin mốc giờ window).
+        from rich.cells import cell_len as _cell_len
+        left_w = max(_cell_len(t.plain) for t in left_cells)
+        right_w = max(_cell_len(t.plain) for t in right_cells)
+        avail = max(24, _status_console.width - 6)
+
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(justify="left", no_wrap=True)
+        if left_w + right_w + 2 <= avail:
+            grid.add_column(justify="left", no_wrap=True)
+            n_rows = max(len(left_cells), len(right_cells))
+            for i in range(n_rows):
+                l = left_cells[i] if i < len(left_cells) else Text()
+                r = right_cells[i] if i < len(right_cells) else Text()
+                grid.add_row(l, r)
+        else:
+            for t in (*left_cells, *right_cells):
+                grid.add_row(t)
+
+        title_text = Text(f"┌ 🏆 {stats['title']} ┐", style="title")
+        subtitle_text = Text(f"[{str(stats['platform']).upper()}]", style="hi_fg")
+        return Panel(
+            grid,
+            box=box.ROUNDED,
+            border_style="div_line",
+            title=title_text,
+            subtitle=subtitle_text,
+            expand=False,
+            padding=(0, 1),
+        )
+
+    @staticmethod
+    def _category_heading(cat_icon: str, cat: str,
+                          solved: int, total: int) -> Text:
+        """Heading category: ``📁 🔐 Crypto ───────── 0/7 [meter10]``
+        (tên dim, gạch nối div_line, đếm dim, meter gradient)."""
+        head = Text()
+        head.append("📁 ")
+        head.append(f"{cat_icon} {cat}", style="dim")
+        label_w = 2 + len(cat_icon) + 1 + len(cat)  # xấp xỉ độ rộng hiển thị
+        dashes = max(2, 40 - label_w)
+        head.append(" " + "─" * dashes + " ", style="div_line")
+        head.append(f"{solved}/{total}", style="dim")
+        head.append(" ")
+        head.append_text(StatusService._meter_only(
+            (solved / total * 100) if total > 0 else 0, 10))
+        return head
+
+    @classmethod
+    def render_tree(cls, repo: WorkspaceRepo,
                     stats: Optional[Dict[str, Any]] = None,
                     filter_cat: Optional[List[str]] = None,
                     only_unsolved: bool = False,
@@ -525,29 +640,10 @@ class StatusService:
         if stats is None:
             stats = StatusService.summary_stats(repo)
 
-        title = stats['title']
-        platform = stats['platform'].upper()
-        rate = stats['completion_rate']
+        narrow = cls._tty_columns() < 80
 
-        print('=' * 85)
-        print(f" 🏆 CTF WORKSPACE: {title} [{platform}]")
-        if stats['user'] or stats['team']:
-            team_str = f" | Team: {stats['team']}" if stats['team'] else ''
-            print(f" 👤 User: {stats['user']}{team_str}")
-        print(f" 📊 Progress: {stats['solved_challenges']}/{stats['total_challenges']} Solved ({rate:.1f}%)")
-        print(f" 💰 Points: {stats['earned_points']}/{stats['total_points']}"
-              f" | 🏴 Hoarded: {stats.get('hoarded_flags', 0)}"
-              f" | 📝 Drafts: {stats.get('writeup_drafts', 0)}"
-              f" | 📦 Files: {stats.get('local_files', 0)}")
-        window_str = StatusService._render_window(repo)
-        if window_str:
-            print(f" ⏱️ Window: {window_str}")
-
-        bar_len = 30
-        StatusService._emit_progress(
-            StatusService._progress_line(rate, bar_len,
-                                         prefix="    [", suffix=f"] {rate:.1f}%"))
-        print('=' * 85)
+        cls._emit(cls._header_panel(repo, stats))
+        cls._emit(Text())
 
         categories = stats['categories']
         for cat, data in sorted(categories.items()):
@@ -586,51 +682,128 @@ class StatusService:
                 continue
 
             cat_icon = CATEGORY_ICONS.get(str(cat).lower(), '📁')
-            c_rate = (data['solved'] / data['total'] * 100) if data['total'] > 0 else 0
-            StatusService._emit_progress(StatusService._progress_line(
-                c_rate, 10,
-                prefix=f"\n📁 {cat_icon} {cat} ({len(c_list)} challs, {data['points']} pts) [",
-                suffix=f"] {data['solved']}/{data['total']}"))
+            cls._emit(cls._category_heading(
+                cat_icon, cat, data['solved'], data['total']))
+            for line in cls._challenge_rows(repo, c_list, narrow=narrow):
+                indented = Text("  ")
+                indented.append_text(line)
+                cls._emit(indented)
+            cls._emit(Text())
 
-            for idx, c in enumerate(c_list):
-                is_last = (idx == len(c_list) - 1)
-                prefix = '└── ' if is_last else '├── '
+    @staticmethod
+    def _aligned_grid(rows: List[List[Text]],
+                      aligns: List[str],
+                      gap: str = "  ") -> List[Text]:
+        """Grid ẩn viền căn cột THẲNG HÀNG kiểu btop: mỗi cột rộng bằng cell
+        dài nhất, đệm bằng khoảng trắng (không dùng rich Table để bảng KHÔNG
+        bị nén/truncate theo chiều rộng console — terminal hẹp tự overflow
+        giữ nguyên thông tin, đúng hành vi print() cũ).
 
-                status = c.get('_status') or {}
-                solve = status.get('solve', 'unsolved')
-                flag_state = (status.get('flag') or {}).get('state', 'none')
-                writeup = status.get('writeup', 'none')
-                container = StatusService._effective_container(repo, c, status)
+        ``aligns[i]`` là 'left' | 'right'; độ rộng đo bằng ``cell_len``.
+        """
+        if not rows:
+            return []
+        n_cols = max(len(r) for r in rows)
+        widths = [0] * n_cols
+        for r in rows:
+            for i, cell in enumerate(r):
+                widths[i] = max(widths[i], cell_len(cell.plain))
+        lines: List[Text] = []
+        for r in rows:
+            line = Text()
+            for i, cell in enumerate(r):
+                pad = " " * (widths[i] - cell_len(cell.plain))
+                if aligns[i] == 'right':
+                    line.append(pad)
+                    line.append_text(cell)
+                else:
+                    line.append_text(cell)
+                    line.append(pad)
+                if i < len(r) - 1:
+                    line.append(gap)
+            line.rstrip()  # rich cũ: mutate tại chỗ (trả None)
+            lines.append(line)
+        return lines
 
-                badge = (
-                    f"[{STATUS_ICONS['solve'].get(solve, '·')}]"
-                    f"[{STATUS_ICONS['flag'].get(flag_state, '∅')}]"
-                    f"[{STATUS_ICONS['writeup'].get(writeup, '-')}]"
-                )
-                if container:
-                    badge += f"[{STATUS_ICONS['container'][container]}]"
+    @classmethod
+    def _challenge_rows(cls, repo: WorkspaceRepo,
+                        c_list: List[Dict[str, Any]], *,
+                        narrow: bool) -> List[Text]:
+        """Các dòng challenge đã căn cột:
 
-                labels = [str(x) for x in (status.get('labels') or [])]
-                labels_str = f" 🏷️ {','.join(labels)}" if labels else ''
+        badge | # | tên (+🏷️ labels) | pts | solves* | files* | note
+        (*: cột ẩn khi terminal hẹp < 80 cols; non-TTY giữ đầy đủ.)
+        """
+        solve_styles = {
+            'unsolved': 'unsolved', 'working': 'warning',
+            'solved_by_me': 'solved', 'solved_by_team': 'solved',
+            'solved_other': 'solved',
+        }
+        flag_styles = {
+            'found_unverified': 'warning', 'hoarded': 'success',
+            'submitted_correct': 'success', 'submitted_wrong': 'error',
+        }
+        writeup_styles = {'skeleton': 'unsolved', 'draft': 'hint',
+                          'complete': 'hint'}
 
-                c_id = c.get('id', '?')
-                c_name = c.get('name', 'Unknown')
-                c_pts = c.get('points', 0)
-                solves = c.get('solves_count', c.get('solves', '-'))
-                files_count = c.get('_local_files_count', 0)
+        rows: List[List[Text]] = []
+        for c in c_list:
+            status = c.get('_status') or {}
+            solve = status.get('solve', 'unsolved')
+            flag_state = (status.get('flag') or {}).get('state', 'none')
+            writeup = status.get('writeup', 'none')
+            container = StatusService._effective_container(repo, c, status)
 
-                # Check container tag
-                is_cont = repo.is_container(c)
-                cont_str = ' [🐳 Container]' if is_cont else ''
-                files_str = f' [{files_count} file(s)]' if files_count > 0 else ''
+            badge = Text()
+            badge.append(
+                f"[{STATUS_ICONS['solve'].get(solve, '·')}]",
+                style=solve_styles.get(solve))
+            badge.append(
+                f"[{STATUS_ICONS['flag'].get(flag_state, '∅')}]",
+                style=flag_styles.get(flag_state))
+            badge.append(
+                f"[{STATUS_ICONS['writeup'].get(writeup, '-')}]",
+                style=writeup_styles.get(writeup))
+            if container:
+                badge.append(
+                    f"[{STATUS_ICONS['container'][container]}]",
+                    style='success' if container == 'running' else 'unsolved')
 
-                print(f"  {prefix}{badge} {c_id:>3}. {c_name:<32} ({c_pts:>4} pts) - {str(solves):>3} solves{cont_str}{files_str}{labels_str}")
+            labels = [str(x) for x in (status.get('labels') or [])]
+            name_cell = Text(str(c.get('name', 'Unknown')))
+            if labels:
+                name_cell.append(" 🏷️ " + ",".join(labels),
+                                 style="hi_fg")
 
-                notes = str(status.get('notes') or '').strip()
-                if notes:
-                    print(f"       └─ 📝 \"{notes}\"")
+            notes = str(status.get('notes') or '').strip()
+            note_cell = Text(f'"{notes}"') if notes else Text()
 
-        print('\n' + '=' * 85)
+            solves = c.get('solves_count', c.get('solves', '-'))
+            files_count = c.get('_local_files_count', 0)
+
+            row = [
+                badge,
+                Text(str(c.get('id', '?'))),
+                name_cell,
+                Text(f"{c.get('points', 0)} pts"),
+            ]
+            if not narrow:
+                row += [
+                    Text(f"{solves} solves"),
+                    Text(f"[{files_count} file]" if files_count > 0 else ""),
+                ]
+            row.append(note_cell)
+            rows.append(row)
+
+        aligns = ['left'] * len(rows[0]) if rows else []
+        # Cột id + pts căn phải cho dễ soát mắt (solves/files đã ẩn khi hẹp).
+        if aligns:
+            aligns[1] = 'right'   # id
+            aligns[3] = 'right'   # pts
+            if not narrow:
+                aligns[4] = 'right'   # solves
+                aligns[5] = 'right'   # files
+        return StatusService._aligned_grid(rows, aligns)
 
     # ------------------------------------------------------------------ #
     # Helpers render đa chiều
@@ -699,37 +872,77 @@ class StatusService:
     # ------------------------------------------------------------------ #
     @staticmethod
     def scan_all_workspaces(base_dir: str) -> List[Dict[str, Any]]:
-        """In bảng tổng quát mọi workspace trong ``base_dir``.
+        """Bảng rich mọi workspace trong ``base_dir`` (thay divider ``====`` +
+        padding tay): Workspace | Platform | Progress meter | Challs.
 
+        - Hàng workspace đã kết thúc (Event Window) thêm marker 🏁.
+        - Footer dim tổng kết: số workspace / challs solved-toàn-cục.
         Trả về danh sách stats của các workspace có ít nhất 1 challenge.
         """
+        from ..platforms.base import normalize_epoch_to_utc
         from ..utils.logger import Logger
 
         base_dir = os.path.abspath(os.path.expanduser(base_dir))
-        collected: List[Dict[str, Any]] = []
-        print('=' * 85)
-        print(f' 📁 SCANNING ALL CTF WORKSPACES IN: {base_dir}')
-        print('=' * 85)
-        print(f'{"CTF Competition":<35} | {"Platform":<10} | {"Solved/Total":<14} | {"Progress":<15}')
-        print('=' * 85)
+        Logger.info(f'📁 Scanning all CTF workspaces in [cyan]{base_dir}[/]')
 
         if not os.path.exists(base_dir):
             Logger.warning(f'Directory {base_dir} does not exist.')
-            return collected
+            return []
 
+        collected: List[Dict[str, Any]] = []
+        now = _utcnow()
         for entry in sorted(os.listdir(base_dir)):
             full_p = os.path.join(base_dir, entry)
-            if os.path.isdir(full_p):
-                repo = WorkspaceRepo(full_p)
-                stats = StatusService.summary_stats(repo)
-                if stats['total_challenges'] > 0:
-                    collected.append(stats)
-                    title = stats['title'][:35]
-                    plat = stats['platform'][:10].upper()
-                    solv_str = f"{stats['solved_challenges']}/{stats['total_challenges']}"
-                    rate = stats['completion_rate']
-                    bar = '█' * int(8 * rate // 100) + '░' * (8 - int(8 * rate // 100))
-                    prog_str = f'[{bar}] {rate:.0f}%'
-                    print(f'{title:<35} | {plat:<10} | {solv_str:<14} | {prog_str:<15}')
-        print('=' * 85)
+            if not os.path.isdir(full_p):
+                continue
+            repo = WorkspaceRepo(full_p)
+            stats = StatusService.summary_stats(repo)
+            if stats['total_challenges'] > 0:
+                stats['_ended'] = False
+                try:
+                    win = ((repo.read_challenges().get('ctf_info') or {})
+                           .get('event_window') or {})
+                    end = normalize_epoch_to_utc(win.get('end'))
+                    stats['_ended'] = end is not None and end <= now
+                except Exception:
+                    stats['_ended'] = False
+                collected.append(stats)
+
+        table = Table(
+            box=box.ROUNDED, border_style="div_line",
+            header_style="title", padding=(0, 1))
+        table.add_column("Workspace", no_wrap=True)
+        table.add_column("Platform", no_wrap=True)
+        table.add_column("Progress", no_wrap=True)
+        table.add_column("Challs", justify="right", no_wrap=True)
+
+        total_solved = 0
+        total_challs = 0
+        for stats in collected:
+            total_solved += stats['solved_challenges']
+            total_challs += stats['total_challenges']
+            name_cell = Text(str(stats['title'])[:35])
+            if stats['_ended']:
+                name_cell = Text("🏁 ") + name_cell
+
+            rate = stats['completion_rate']
+            progress_cell = StatusService._meter_only(rate, 10)
+            progress_cell.append(f" {rate:.0f}%", style="dim")
+
+            challs_cell = Text()
+            challs_cell.append(str(stats['solved_challenges']), style="solved")
+            challs_cell.append(f"/{stats['total_challenges']}", style="dim")
+
+            table.add_row(
+                name_cell,
+                Text(str(stats['platform'])[:10].upper(), style="hi_fg"),
+                progress_cell,
+                challs_cell,
+            )
+
+        StatusService._emit(table)
+        footer = Text(
+            f"{len(collected)} workspaces · {total_solved}/{total_challs} "
+            f"challs solved", style="dim")
+        StatusService._emit(footer)
         return collected

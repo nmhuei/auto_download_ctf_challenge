@@ -85,7 +85,9 @@ class TestMeterGradientPath(MeterTestCase):
              patch("ctf_downloader.ui.widgets.gradient",
                    return_value=[(0, 200, 83)] * 101):
             self._render(buf)
-        self.assertIn((100.0, 30), calls)   # bar tổng workspace
+        # UI redesign: bar tổng workspace chuyển vào Panel header, meter
+        # gradient width 30 → 20 (category giữ nguyên 10).
+        self.assertIn((100.0, 20), calls)   # bar tổng workspace (trong Panel)
         self.assertIn((100.0, 10), calls)   # bar từng category
         out = buf.getvalue()
         self.assertIn("█", out)             # output chứa ký tự block
@@ -102,8 +104,11 @@ class TestFallbackPlain(MeterTestCase):
         self.assertEqual(calls, [])         # meter KHÔNG được gọi
         out = buf.getvalue()
         self.assertIn("░", out)             # ký tự block phần rỗng
-        # Bar tổng 30 ô với 0% tiến độ: toàn ░
-        self.assertIn("[" + "░" * 30 + "] 0.0%", out)
+        # UI redesign: bar tổng 30 ô đứng riêng thành dòng "[███...]" cũ không
+        # còn; bar plain 20 ô nằm trong ô 📊 Progress của Panel header.
+        self.assertIn("░" * 20, out)
+        self.assertIn("0/1", out)
+        self.assertIn("0.0%", out)
 
     def test_narrow_tty_falls_back_to_plain_bar(self):
         calls: List[tuple] = []
@@ -113,7 +118,9 @@ class TestFallbackPlain(MeterTestCase):
              patch("ctf_downloader.ui.widgets.meter", fake_meter_recorder(calls)):
             self._render(buf)
         self.assertEqual(calls, [])
-        self.assertIn("[" + "░" * 30 + "] 0.0%", buf.getvalue())
+        # UI redesign: bar plain 20 ô nằm trong ô 📊 Progress của Panel header.
+        self.assertIn("░" * 20, buf.getvalue())
+        self.assertIn("0.0%", buf.getvalue())
 
 
 if __name__ == "__main__":

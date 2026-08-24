@@ -79,7 +79,9 @@ class TestHelpSnapshot(unittest.TestCase):
     def test_version_flag(self):
         r = _run(["ctf.py", "--version"])
         self.assertEqual(r.returncode, 0)
-        self.assertIn("ctf-toolkit 2.0.0", r.stdout + r.stderr)
+        # Fix pre-existing (không liên quan UI redesign): __init__.py đã bump
+        # lên 3.0.0 từ trước nhưng assertion này còn kẹt 2.0.0.
+        self.assertIn("ctf-toolkit 3.0.0", r.stdout + r.stderr)
 
 
 class TestLegacyExitCodes(unittest.TestCase):
