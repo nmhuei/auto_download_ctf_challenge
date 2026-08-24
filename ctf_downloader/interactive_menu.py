@@ -1,8 +1,7 @@
 import os
 import sys
-import json
 import glob
-from typing import Optional, Dict, Any, List
+from typing import Optional
 from rich.prompt import Prompt, Confirm
 from .dashboard import CTFDashboard
 from .instance_manager import InstanceManager
@@ -11,25 +10,12 @@ from .core import CTFDownloader
 from .config import DownloaderConfig
 from .utils.logger import Logger, console
 
-CONFIG_DIR = os.path.expanduser('~/.config/ctf_toolkit')
-GLOBAL_CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
-
-def load_global_config() -> Dict[str, Any]:
-    if os.path.exists(GLOBAL_CONFIG_FILE):
-        try:
-            with open(GLOBAL_CONFIG_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {'workspaces': {}, 'default_workspace': None, 'auth': {}}
-
-def save_global_config(cfg: Dict[str, Any]):
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    try:
-        with open(GLOBAL_CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(cfg, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        Logger.warning(f'Could not save config: {e}')
+from .storage.global_config import (  # noqa: F401 — re-export để giữ tương thích
+    CONFIG_DIR,
+    GLOBAL_CONFIG_FILE,
+    load_global_config,
+    save_global_config,
+)
 
 class CTFInteractiveConsole:
     def __init__(self, workspace_path: Optional[str] = None, cookie: Optional[str] = None, token: Optional[str] = None):

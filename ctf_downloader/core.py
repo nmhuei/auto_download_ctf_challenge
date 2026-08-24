@@ -6,7 +6,7 @@ from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeEl
 
 from .config import DownloaderConfig
 from .utils.logger import Logger, console
-from .utils.http_client import create_session
+from .services.session_factory import create_session
 from .platforms.detector import PlatformDetector
 from .platforms.base import Challenge, CTFInfo
 from .extractors.link_extractor import LinkExtractor

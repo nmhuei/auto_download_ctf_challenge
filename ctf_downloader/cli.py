@@ -9,23 +9,12 @@ from .core import CTFDownloader
 from .submitter import FlagSubmitter
 from .instance_manager import InstanceManager
 from .dashboard import CTFDashboard
-from .interactive_menu import launch_interactive_menu, load_global_config
+from .interactive_menu import launch_interactive_menu
+from .services.auth_service import AuthService
 from .utils.logger import Logger, console
 
 def get_auth_for_workspace(ws_path: str, cookie_arg: Optional[str], token_arg: Optional[str]):
-    if cookie_arg:
-        if os.path.isfile(cookie_arg):
-            with open(cookie_arg, 'r', encoding='utf-8') as f:
-                return f.read().strip(), token_arg
-        return cookie_arg, token_arg
-
-    abs_ws = os.path.abspath(ws_path)
-    cfg = load_global_config()
-    auth_map = cfg.get('auth', {})
-    if abs_ws in auth_map:
-        saved = auth_map[abs_ws]
-        return saved.get('cookie'), token_arg or saved.get('token')
-    return None, token_arg
+    return AuthService.resolve(ws_path, cookie_arg=cookie_arg, token_arg=token_arg)
 
 def build_unified_parser():
     parser = argparse.ArgumentParser(
