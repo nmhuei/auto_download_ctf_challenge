@@ -3,9 +3,56 @@ import time
 import urllib.parse
 import requests
 from typing import List, Dict, Any, Optional, Tuple
-from .base import BasePlatform, Challenge, CTFInfo
+from .base import BasePlatform, Challenge, CTFInfo, safe_get_json
 from ..utils.logger import Logger
+from .registry import register
 
+# Bộ field đặc trưng của GZCTF ClientConfig (GET /api/config)
+_GZCTF_CONFIG_FIELDS = ("Title", "Slogan", "PortMapping", "DefaultLifetime")
+
+
+def probe_api_config(origin: str, session, info, done: set) -> bool:
+    """/api/config (ClientConfig): xác nhận GZCTF + làm giàu capabilities."""
+    if "gzctf_config" in done:
+        return False
+    done.add("gzctf_config")
+    data, status = safe_get_json(session, f"{origin}/api/config")
+    if isinstance(data, dict) and all(f in data for f in _GZCTF_CONFIG_FIELDS):
+        caps = info.capabilities
+        info.version_hints["title"] = data.get("Title")
+        caps["rules_via_api"] = bool(data.get("Rules"))
+        public_key = data.get("ApiPublicKey")
+        caps["api_encryption"] = bool(public_key)
+        caps["port_mapping_proxy"] = data.get("PortMapping") == "PlatformProxy"
+        info.add_signal(
+            f"/api/config khớp ClientConfig GZCTF "
+            f"(ApiPublicKey={'có' if public_key else 'null'}, "
+            f"PortMapping={data.get('PortMapping')!r})"
+        )
+        return True
+    info.add_signal(f"GET /api/config -> không khớp GZCTF (HTTP {status})")
+    return False
+
+
+def probe_game_recent(origin: str, session, info, done: set) -> bool:
+    """/api/game/recent|/api/game (ArrayResponse {data, length, total})."""
+    if "gzctf_games" in done:
+        return False
+    done.add("gzctf_games")
+    for endpoint in ("/api/game/recent", "/api/game"):
+        data, _status = safe_get_json(session, f"{origin}{endpoint}")
+        if isinstance(data, dict) and "data" in data and ("length" in data or "total" in data):
+            info.add_signal(f"GET {endpoint} -> ArrayResponse GZCTF {{data, length, total}}")
+            return True
+    info.add_signal("GET /api/game/recent|/api/game -> không khớp GZCTF")
+    return False
+
+
+@register("gzctf", label="GZ::CTF", throttle=2.0,
+          html_markers=("GZCTF", "GZ::CTF"),
+          cookie_hints=("GZCTF_Token",),
+          probes=(probe_api_config, probe_game_recent),
+          supports_container=True, supports_scoreboard=True, rules_via_api=True)
 class GZCTFPlatform(BasePlatform):
     # Số lần poll tối đa kết quả chấm của một submission
     SUBMISSION_POLL_ATTEMPTS = 6

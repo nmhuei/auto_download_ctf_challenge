@@ -1,12 +1,43 @@
+import json
 import re
 import urllib.parse
 import requests
 from typing import List, Dict, Any, Optional, Tuple
 from bs4 import BeautifulSoup
-from .base import BasePlatform, Challenge, CTFInfo
+from .base import BasePlatform, Challenge, CTFInfo, safe_get_json
 from ..utils.logger import Logger
 from ..utils.sanitize import sanitize_filename
+from .registry import register
 
+
+def probe_ctfd_challenges(origin: str, session, info, done: set) -> bool:
+    """/api/v1/challenges -> envelope {"success": ...}; phát hiện plugin whale."""
+    if "ctfd_challs" in done:
+        return False
+    done.add("ctfd_challs")
+    data, status = safe_get_json(session, f"{origin}/api/v1/challenges",
+                                 statuses=(200, 401, 403))
+    if isinstance(data, dict) and "success" in data:
+        try:
+            dumped = json.dumps(data)
+        except Exception:
+            dumped = ""
+        if "ctfd-whale" in dumped:
+            info.capabilities["container"] = True
+            info.version_hints["whale_fork"] = "frankli0324/ctfd-whale"
+            info.add_signal("/api/v1/challenges có template/script /plugins/ctfd-whale/ "
+                            "-> hỗ trợ container động (whale fork)")
+        info.add_signal('GET /api/v1/challenges -> envelope {"success": ...} của CTFd')
+        return True
+    info.add_signal(f"GET /api/v1/challenges -> không khớp CTFd (HTTP {status})")
+    return False
+
+
+@register("ctfd", label="CTFd", throttle=6.0,
+          html_markers=("csrfNonce'", "window.init", "Powered by CTFd", "/themes/core/"),
+          cookie_hints=("session",),
+          probes=(probe_ctfd_challenges,),
+          supports_scoreboard=True)
 class CTFdPlatform(BasePlatform):
     # Các slug trang public dùng để dò rules / flag format (Pages API là admin-only)
     RULE_PAGE_SLUGS = [

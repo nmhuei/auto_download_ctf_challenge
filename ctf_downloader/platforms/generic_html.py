@@ -6,7 +6,11 @@ from bs4 import BeautifulSoup
 from .base import BasePlatform, Challenge, CTFInfo
 from ..utils.logger import Logger
 from ..extractors.link_extractor import KNOWN_FILE_EXTENSIONS
+from .registry import register
 
+
+@register("generic_html", label="Generic HTML", throttle=5.0,
+          supports_scoreboard=False)
 class GenericHTMLPlatform(BasePlatform):
     def __init__(self, base_url: str, session: requests.Session):
         super().__init__(base_url, session)

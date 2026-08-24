@@ -6,7 +6,10 @@ from bs4 import BeautifulSoup
 from .base import BasePlatform, Challenge, CTFInfo
 from ..utils.logger import Logger
 from ..utils.sanitize import sanitize_filename
+from .registry import register
 
+
+@register("custom_rest", label="Custom REST / Next.js CTF", throttle=5.0)
 class CustomRESTPlatform(BasePlatform):
     """
     Integration for modern Next.js / Node / REST CTF platforms (such as TamilCTF / CTF-Platform).

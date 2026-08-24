@@ -9,8 +9,10 @@ Object này có thể serialize (`to_dict()`) vào metadata/challenges.json sau 
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
-# Các giá trị hợp lệ của platform_type
-PLATFORM_TYPES = ("gzctf", "ctfd", "rctf", "custom_rest", "generic_html", "unknown")
+from .registry import PLATFORMS
+
+# Các giá trị hợp lệ của platform_type — sinh tự từ registry (giữ legacy "unknown")
+PLATFORM_TYPES = ("unknown", *sorted(PLATFORMS))
 
 
 @dataclass

@@ -3,6 +3,29 @@ from typing import List, Dict, Any, Optional, Tuple
 
 from ..models import Challenge, CTFInfo, Verdict  # noqa: F401
 
+
+# --------------------------------------------------------------------------- #
+# Tiện ích HTTP an toàn dùng chung (detector/probe đều gọi qua đây)
+# --------------------------------------------------------------------------- #
+def safe_get(session: Any, url: str, timeout: int = 5):
+    """GET an toàn: trả response hoặc None (mọi exception bị nuốt)."""
+    try:
+        return session.get(url, timeout=timeout)
+    except Exception:
+        return None
+
+
+def safe_get_json(session: Any, url: str, statuses=(200,)):
+    """GET và parse JSON. Trả (data|None, status_code|None)."""
+    resp = safe_get(session, url)
+    status = getattr(resp, "status_code", None)
+    if resp is None or status not in statuses:
+        return None, status
+    try:
+        return resp.json(), status
+    except Exception:
+        return None, status
+
 class BaseCTFPlatform(ABC):
     def __init__(self, base_url: str, session: Any):
         self.base_url = base_url.rstrip("/")

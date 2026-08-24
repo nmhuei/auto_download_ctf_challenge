@@ -1,10 +1,37 @@
+import re
 import urllib.parse
 import requests
 from typing import List, Dict, Any, Optional, Tuple
 from bs4 import BeautifulSoup
-from .base import BasePlatform, Challenge, CTFInfo
+from .base import BasePlatform, Challenge, CTFInfo, safe_get_json
 from ..utils.logger import Logger
+from .registry import register
 
+# Envelope JSON đặc trưng của rCTF: {"kind": "...", "message": ..., "data": ...}
+_RCTF_KIND_RE = re.compile(r"^(good|bad|unauth)")
+
+
+def probe_rctf_challs(origin: str, session, info, done: set) -> bool:
+    """/api/v1/challs -> envelope {kind, message, data}; badEndpoint cũng là dấu hiệu rCTF."""
+    if "rctf_challs" in done:
+        return False
+    done.add("rctf_challs")
+    data, status = safe_get_json(session, f"{origin}/api/v1/challs",
+                                 statuses=(200, 401, 403))
+    kind = data.get("kind") if isinstance(data, dict) else None
+    if isinstance(kind, str) and _RCTF_KIND_RE.match(kind):
+        info.capabilities["scoreboard"] = True
+        info.add_signal(f"GET /api/v1/challs -> envelope rCTF kind={kind}")
+        return True
+    info.add_signal(f"GET /api/v1/challs -> không khớp rCTF (HTTP {status})")
+    return False
+
+
+@register("rctf", label="rCTF", throttle=5.0,
+          html_markers=('name="rctf-config"', r'regex:"kind"\s*:\s*"'),
+          cookie_hints=(),
+          probes=(probe_rctf_challs,),
+          supports_scoreboard=True)
 class RCTFPlatform(BasePlatform):
     def __init__(self, base_url: str, session: requests.Session):
         super().__init__(base_url, session)
