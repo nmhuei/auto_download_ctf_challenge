@@ -70,10 +70,10 @@ def handle_pull(args):
         if not result.get('ok'):
             sys.exit(1)
     except KeyboardInterrupt:
-        console.print("[bold red][!] Download aborted by user.[/bold red]")
+        console.print("[bold red][!] Download đã bị huỷ bởi người dùng.[/bold red]")
         sys.exit(130)
     except Exception as e:
-        Logger.error(f'Fatal error during pull: {e}')
+        Logger.error(f'Lỗi nghiêm trọng khi pull: {e}')
         sys.exit(1)
 
 
@@ -137,7 +137,7 @@ def handle_workspaces(args):
             Logger.error(f'Không scan được workspace: {e}')
             sys.exit(1)
     if not rows and not os.path.exists(base_dir):
-        Logger.warning(f'Directory {base_dir} does not exist.')
+        Logger.warning(f'Thư mục không tồn tại: {base_dir}')
         return
 
     ws_console = Console(theme=load_theme(None))
@@ -163,7 +163,7 @@ def handle_workspaces(args):
 
         name_cell = _Text(str(stats['title'])[:35], style="fg.base")
         if stats.get('_ended'):
-            name_cell.append(" · ended", style=_MUTED_COLOR)
+            name_cell.append(" · kết thúc", style=_MUTED_COLOR)
 
         rate = stats['completion_rate']
         progress_cell = StatusService._meter_only(rate, 10)
@@ -188,8 +188,8 @@ def handle_workspaces(args):
 
     ws_console.print(table)
     footer = _Text(
-        f"{len(rows)} workspaces · {total_solved}/{total_challs} "
-        f"challs solved", style=_MUTED_COLOR)
+        f"{len(rows)} workspace · {total_solved}/{total_challs} "
+        f"challs đã solve", style=_MUTED_COLOR)
     ws_console.print(footer)
     ws_console.print()
 
@@ -200,7 +200,7 @@ def handle_instance(args):
     try:
         svc = InstanceService(args.workspace, cookie=cookie_val, token=token_val)
     except Exception as e:
-        Logger.error(f'Initialization error: {e}')
+        Logger.error(f'Khởi tạo thất bại: {e}')
         sys.exit(1)
 
     # 0. Keep-alive foreground (spec event-window §9):
@@ -222,11 +222,11 @@ def handle_instance(args):
     if args.action == 'list' or args.list:
         containers = svc.list_containers()
         if not containers:
-            Logger.info('No dynamic container challenges found in workspace.')
+            Logger.info('Không có challenge container động nào trong workspace.')
             return
-        Logger.info(f'Found {len(containers)} dynamic container challenges:')
+        Logger.info(f'Tìm thấy {len(containers)} challenge container động:')
         print('='*75)
-        print(f'{"ID":<8} | {"Category":<12} | {"Name":<30} | {"Solves":<8}')
+        print(f'{"ID":<8} | {"Thể loại":<12} | {"Tên":<30} | {"Solves":<8}')
         print('='*75)
         for c in containers:
             solves = c.get('solves_count', c.get('solves', '-'))
@@ -246,7 +246,7 @@ def handle_instance(args):
     # 3. Direct action
     target_chall = svc.find_challenge(challenge_id=args.id, challenge_name=args.name)
     if not target_chall:
-        Logger.error(f'Challenge not found for ID={args.id}, Name={args.name}')
+        Logger.error(f'Không tìm thấy challenge với ID={args.id}, Name={args.name}')
         sys.exit(1)
     cid = target_chall.get('id')
 
@@ -260,7 +260,7 @@ def handle_instance(args):
         svc.extend_instance(cid)
     elif act == 'status':
         st = svc.get_status(cid)
-        Logger.info(f'Status for ID {cid}:')
+        Logger.info(f'Trạng thái của ID {cid}:')
         for k, v in st.items():
             print(f'  {k}: {v}')
 
@@ -290,7 +290,7 @@ def handle_submit(args):
         return
 
     if not flag_value:
-        Logger.error('Please specify the flag string with -f or as an argument.')
+        Logger.error('Vui lòng chỉ định flag bằng -f hoặc làm đối số.')
         sys.exit(1)
 
     success, message = svc.submit_single_flag(
@@ -324,7 +324,7 @@ def handle_hoard(args):
     try:
         svc = SubmitService(workspace_dir=args.workspace)
     except Exception as e:
-        Logger.error(f'Initialization error: {e}')
+        Logger.error(f'Khởi tạo thất bại: {e}')
         sys.exit(1)
 
     ok, message = svc.hoard_flag(identifier, flag_value)
@@ -519,7 +519,7 @@ def handle_doctor(args):
             workspace=getattr(args, 'workspace', None),
         )
     except Exception as e:
-        Logger.error(f'Doctor failed unexpectedly: {e}')
+        Logger.error(f'Doctor gặp lỗi bất ngờ: {e}')
         sys.exit(1)
     report.render()
     if report.passed == 0:
@@ -537,7 +537,7 @@ def handle_rank(args):
         )
         svc.display_and_update(top_n=args.top, update_docs=not args.no_docs)
     except Exception as e:
-        Logger.error(f'Failed to fetch ranking: {e}')
+        Logger.error(f'Không lấy được ranking: {e}')
         sys.exit(1)
 
 
@@ -558,7 +558,7 @@ def handle_sync(args):
         _session, platform, _info = PlatformResolver.for_workspace(
             repo, cookie=cookie_val, token=token_val)
     except Exception as e:
-        Logger.error(f'Cannot resolve platform for workspace '
+        Logger.error(f'Không resolve được platform cho workspace '
                      f"'{args.workspace}': {e}")
         sys.exit(1)
 
@@ -571,7 +571,7 @@ def handle_sync(args):
         Logger.info('👋 Sync dừng.')
         sys.exit(130)
     except Exception as e:
-        Logger.error(f'Sync failed: {e}')
+        Logger.error(f'Sync thất bại: {e}')
         sys.exit(1)
     if not result.get('ok'):
         sys.exit(1)
@@ -585,12 +585,12 @@ def _render_verify_drift(verdict):
                        'mà local còn unsolved.')
         return
     rows = [[f"{d.get('name')} ({d.get('category')})",
-             'me' if d.get('by_me') else 'team',
+             'tôi' if d.get('by_me') else 'team',
              ', '.join(d.get('solver_names') or []) or '(không rõ)']
             for d in drift]
     Logger.print_table(
-        'Verify — unsolved locally, solved remotely',
-        ['Challenge', 'By', 'Solvers'], rows)
+        'Verify — local chưa solve, server đã solve',
+        ['Challenge', 'Ai', 'Người solve'], rows)
     Logger.warning("⚠️ KHÔNG tự đổi trạng thái — user quyết định qua "
                    "'status set' hoặc submit flag.")
 
@@ -605,7 +605,7 @@ def handle_export_pack(args):
         exporter = WriteupExporter(args.workspace)
         entries = exporter.collect()
     except Exception as e:
-        Logger.error(f'Export failed: {e}')
+        Logger.error(f'Export thất bại: {e}')
         sys.exit(1)
 
     # escape(): cảnh báo chứa tên challenge/category dạng [tag] không được
@@ -620,7 +620,7 @@ def handle_export_pack(args):
         Logger.error(str(e))
         sys.exit(1)
     except Exception as e:
-        Logger.error(f'Export failed: {e}')
+        Logger.error(f'Export thất bại: {e}')
         sys.exit(1)
     Logger.success(f'📦 Đã export writeup pack: {pack_dir}.zip')
 
@@ -732,7 +732,7 @@ def handle_history(args):
         shown = flag if show_all else _redact_flag(flag)
         rows.append([e.get('timestamp') or '-', str(name),
                      f"{icon} {e.get('result') or 'unknown'}", shown])
-    Logger.print_table('Submit History',
+    Logger.print_table('Lịch sử submit',
                        ['Thời gian (UTC)', 'Challenge', 'Kết quả', 'Flag'],
                        rows)
     if not show_all:
@@ -755,7 +755,7 @@ def handle_sniper(args):
         submitter = SubmitService(cookie=cookie_val, token=token_val,
                                   workspace_dir=args.workspace)
     except Exception as e:
-        Logger.error(f'Initialization error: {e}')
+        Logger.error(f'Khởi tạo thất bại: {e}')
         sys.exit(1)
 
     svc = SniperService(WorkspaceRepo(args.workspace), submitter)
