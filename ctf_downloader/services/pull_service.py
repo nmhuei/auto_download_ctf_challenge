@@ -650,3 +650,220 @@ class PullService:
             repo.update_metadata(meta_path, _mut)
         except Exception:
             pass
+
+    # ------------------------------------------------------------------ #
+    # Sync 2 chiều (backlog P2-1): re-fetch metadata từ platform GIỮ NGUYÊN
+    # local state + verify drift solve. KHÔNG wire CLI trong backlog này —
+    # xem docstring ``sync_workspace`` cho cách gọi sau khi cli.py sẵn sàng.
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def sync_workspace(repo: Any, platform: Any) -> Dict[str, Any]:
+        """Đồng bộ 2 chiều giữa workspace local và platform (backlog P2-1).
+
+        Nguyên tắc: LOCAL STATE LÀ CHỦ. Với mỗi challenge đã có local, chỉ
+        merge metadata ĐỘNG từ server (points/solves_count/connection_info/
+        submit_endpoint/instance_info) + stamp ``status.synced_at``; giữ nguyên
+        TUYỆT ĐỐI block ``status`` (trừ synced_at), ``submitted_flag`` và mọi
+        file trong ``challenge/``, ``solver/``, ``writeup/`` (không tải lại,
+        không dựng lại gì).
+
+        - Challenge MỚI trên server: chỉ liệt kê vào ``new_on_server`` —
+          KHÔNG tự tạo workspace (user chạy ``--update`` để pull tăng dần).
+        - Drift solve (server báo solved mà local chưa): KHÔNG tự đổi trạng
+          thái — ``PullService.verify`` liệt kê kèm tên người giải để user
+          tự quyết.
+
+        Cách gọi sau khi CLI được wire (cli.py do agent khác sở hữu)::
+
+            from ctf_downloader.storage.workspace_repo import WorkspaceRepo
+            repo = WorkspaceRepo(output_dir)
+            result = PullService.sync_workspace(repo, platform)
+            # result: {"ok", "updated", "new", "new_on_server", "drift",
+            #          "unsolved_locally_solved_remotely", "total_local",
+            #          "total_server"} — drift == unsolved_locally_solved_
+            #          remotely (danh sách chi tiết từng bài lệch solve).
+
+        Kết quả được in dạng bảng: updated=N · new=X · drift=Y (+ chi tiết
+        từng bài drift).
+        """
+        fetcher = getattr(platform, "fetch_challenges", None)
+        challenges: List[Any] = []
+        if callable(fetcher):
+            try:
+                challenges = list(fetcher() or [])
+            except Exception:
+                challenges = []
+        if not challenges:
+            return {"ok": False, "updated": 0, "new": 0, "new_on_server": [],
+                    "drift": [], "unsolved_locally_solved_remotely": [],
+                    "total_local": 0, "total_server": 0}
+
+        local_index: Dict[str, tuple] = {}
+        for meta_path in repo.iter_challenges():
+            m = repo.read_metadata(meta_path)
+            cid = m.get("id")
+            if cid is not None:
+                local_index.setdefault(str(cid), (meta_path, m))
+
+        now_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        new_on_server: List[Dict[str, Any]] = []
+        updated = 0
+
+        for chall in challenges:
+            entry = local_index.get(str(chall.id))
+            if entry is None:
+                # Challenge mới trên server: KHÔNG tạo gì — để --update xử lý.
+                new_on_server.append({"id": chall.id, "name": chall.name,
+                                      "category": chall.category})
+                continue
+            meta_path, _snapshot = entry
+            if PullService._merge_dynamic_metadata(repo, meta_path, chall):
+                updated += 1
+            # Stamp synced_at — field DUY NHẤT của block status bị đụng tới;
+            # solve/flag/notes/labels/writeup giữ nguyên.
+            try:
+                repo.update_status(
+                    meta_path, lambda st: {**st, "synced_at": now_str})
+            except Exception:
+                pass
+
+        verdict = PullService.verify(repo, platform)
+        drift = verdict["unsolved_locally_solved_remotely"]
+
+        result = {
+            "ok": True,
+            "updated": updated,
+            "new": len(new_on_server),
+            "new_on_server": new_on_server,
+            "drift": drift,
+            "unsolved_locally_solved_remotely": drift,
+            "total_local": len(local_index),
+            "total_server": len(challenges),
+        }
+
+        # Bảng kết quả: updated=N · new=X · drift=Y (+ chi tiết drift).
+        Logger.print_table("Workspace Sync", ["Metric", "Count"],
+                           [["updated", str(updated)],
+                            ["new", str(len(new_on_server))],
+                            ["drift", str(len(drift))]])
+        if new_on_server:
+            Logger.info("🆕 Challenge mới trên server (chạy --update để tải): "
+                        + ", ".join(str(c["name"]) for c in new_on_server))
+        if drift:
+            d_rows = [[f"{d.get('name')} ({d.get('category')})",
+                       "me" if d["by_me"] else "team",
+                       ", ".join(d["solver_names"]) or "(không rõ)"]
+                      for d in drift]
+            Logger.print_table("Drift — solved trên server, local chưa",
+                               ["Challenge", "By", "Solvers"], d_rows)
+            Logger.warning("⚠️ KHÔNG tự đổi trạng thái — user quyết định qua "
+                           "'status set' hoặc submit flag.")
+        return result
+
+    @staticmethod
+    def verify(repo: Any, platform: Any) -> Dict[str, Any]:
+        """So trạng thái solved-local vs server attribution (spec §4, P2-1).
+
+        Challenge server báo đã giải (``by_me``/``by_team``) mà local còn ở
+        mức dưới ``solved_other`` (unsolved/working) → liệt kê vào
+        ``unsolved_locally_solved_remotely`` kèm tên người giải lấy từ
+        ``SolveAttribution.solver_names``. KHÔNG BAO GIỜ tự sửa trạng thái —
+        user quyết. Platform không hỗ trợ ``fetch_solve_attribution`` → rỗng.
+
+        Returns:
+            {"ok", "checked", "unsolved_locally_solved_remotely": [
+                {"id", "name", "category", "by_me", "by_team",
+                 "solver_names", "local_solve", "path"}]}
+        """
+        empty = {"ok": True, "checked": 0, "unsolved_locally_solved_remotely": []}
+        metas: List[tuple] = []
+        for meta_path in repo.iter_challenges():
+            m = repo.read_metadata(meta_path)
+            if m and m.get("id") is not None:
+                metas.append((meta_path, m))
+        if not metas:
+            return empty
+
+        attr_map = PullService._fetch_attribution_map(
+            platform, [m.get("id") for _p, m in metas])
+        if not attr_map:
+            return {"ok": True, "checked": len(metas),
+                    "unsolved_locally_solved_remotely": []}
+
+        threshold = SOLVE_RANK.get("solved_other", 2)
+        drift: List[Dict[str, Any]] = []
+        for meta_path, m in metas:
+            raw = attr_map.get(m.get("id"))
+            if raw is None:
+                continue
+            if isinstance(raw, dict):
+                attr = {"by_me": bool(raw.get("by_me")),
+                        "by_team": bool(raw.get("by_team")),
+                        "solver_names": list(raw.get("solver_names") or [])}
+            else:
+                # SolveAttribution dataclass (hoặc obj tương đương) → dict
+                attr = {"by_me": bool(getattr(raw, "by_me", False)),
+                        "by_team": bool(getattr(raw, "by_team", False)),
+                        "solver_names": list(getattr(raw, "solver_names", None) or [])}
+            if not (attr["by_me"] or attr["by_team"]):
+                continue
+            try:
+                st = repo.read_status(meta_path)
+            except Exception:
+                continue
+            if SOLVE_RANK.get(st.get("solve"), 0) >= threshold:
+                continue   # local đã biết là solved (self/team/other) — không drift
+            drift.append({"id": m.get("id"), "name": m.get("name"),
+                          "category": m.get("category"),
+                          "by_me": attr["by_me"], "by_team": attr["by_team"],
+                          "solver_names": attr["solver_names"],
+                          "local_solve": st.get("solve"),
+                          "path": str(meta_path)})
+
+        return {"ok": True, "checked": len(metas),
+                "unsolved_locally_solved_remotely": drift}
+
+    @staticmethod
+    def _merge_dynamic_metadata(repo: Any, meta_path: Any, chall: Challenge) -> bool:
+        """Merge metadata ĐỘNG của một challenge đã có (P2-1): points/
+        solves_count/connection_info/submit_endpoint + instance_info (bỏ qua
+        các key local-owned) qua ``repo.update_metadata`` (atomic + flock).
+        KHÔNG đụng block ``status``, ``submitted_flag`` hay bất kỳ file nào.
+        Trả về True nếu có gì thực sự thay đổi."""
+        changed = [False]
+
+        def _mut(meta: dict) -> dict:
+            meta = dict(meta or {})
+            for k, v in (("points", chall.points),
+                         ("solves_count", chall.solves_count),
+                         ("connection_info", chall.connection_info),
+                         ("submit_endpoint", chall.submit_endpoint)):
+                if meta.get(k) != v:
+                    meta[k] = v
+                    changed[0] = True
+            # instance_info: merge key platform nhưng GIỮ trạng thái container
+            # do instance_service quản trên địa.
+            plat_inst = chall.instance_info if isinstance(chall.instance_info, dict) else {}
+            inst = dict(meta.get("instance_info") or {})
+            for k, v in plat_inst.items():
+                if k in PullService._LOCAL_INSTANCE_KEYS:
+                    continue
+                if inst.get(k) != v:
+                    inst[k] = v
+                    changed[0] = True
+            if inst:
+                meta["instance_info"] = inst
+            # Challenge trở lại server sau khi từng mark removed → gỡ flag.
+            if meta.pop("removed_from_server", None) is not None:
+                changed[0] = True
+            st = meta.get("status")
+            if isinstance(st, dict) and st.pop("removed_from_server", None) is not None:
+                meta["status"] = st
+                changed[0] = True
+            return meta
+
+        try:
+            repo.update_metadata(meta_path, _mut)
+        except Exception:
+            return False
+        return changed[0]
