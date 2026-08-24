@@ -3,6 +3,7 @@ SP2 — Large-file consent + hạ tầng download.
 Chạy: python3 -m unittest test_sp2_download.py -v
 Toàn bộ test dùng mock, KHÔNG gọi mạng tới server thật.
 """
+import json
 import os
 import shutil
 import types
@@ -866,6 +867,91 @@ class TestWave4MediafireLocaleAndDecoy(unittest.TestCase):
             "https://www.mediafire.com/file/abc123/p.rar/file", session, timeout=5
         )
         self.assertIsNone(resp)
+
+
+
+class TestBuilderMetadataJsonGuard(unittest.TestCase):
+    """Deferred-minor: raw_data không serializable (vd chứa set()) không được
+    làm crash create_challenge_workspace -> fallback default=str kèm warning."""
+
+    def tearDown(self):
+        import glob
+        for d in glob.glob("/tmp/meta_guard_ws_*"):
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_raw_data_with_set_no_crash_and_metadata_written(self):
+        import tempfile
+        from ctf_downloader.generator.workspace_builder import WorkspaceBuilder
+        from ctf_downloader.models import Challenge
+
+        ch = Challenge(
+            id=9, name="Meta Guard", category="Web",
+            raw_data={"weird": {1, 2}, "ok": "fine"},
+        )
+        out = tempfile.mkdtemp(prefix="meta_guard_ws_")
+        path = WorkspaceBuilder.create_challenge_workspace(out, ch, [], [], [], True)
+        meta_path = os.path.join(path, "metadata.json")
+        self.assertTrue(os.path.exists(meta_path))
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)  # phải là JSON hợp lệ
+        self.assertEqual(meta["name"], "Meta Guard")
+        self.assertIn("weird", meta["raw"])
+
+
+class TestWave4Resume416ContentRange(unittest.TestCase):
+    """416 kèm Content-Range */<total> khi .part đã đủ total bytes ->
+    rename .part thành file cuối NGAY, không GET lại (file đã hoàn chỉnh)."""
+
+    def setUp(self):
+        self.tmp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_sp2_tmp_416cr")
+        os.makedirs(self.tmp_dir, exist_ok=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_416_content_range_total_matches_part_renames_without_get(self):
+        part_path = os.path.join(self.tmp_dir, "full.bin.part")
+        body = b"A" * 1000
+        with open(part_path, "wb") as f:
+            f.write(body)
+
+        resp416 = FakeResponse(status_code=416, headers={"Content-Range": "bytes */1000"})
+        session = MagicMock()
+        session.head.side_effect = requests.ConnectionError("no head support")
+        session.get.return_value = resp416  # nếu có GET lần nào nữa là fail
+
+        saved = HttpDownloader.download_file(
+            "https://host.com/full.bin", self.tmp_dir, session, max_size=0,
+            preferred_filename="full.bin",
+        )
+
+        self.assertIsNotNone(saved)
+        target = os.path.join(self.tmp_dir, "full.bin")
+        self.assertTrue(os.path.exists(target))
+        self.assertFalse(os.path.exists(part_path))
+        with open(target, "rb") as f:
+            self.assertEqual(f.read(), body)
+        # KHÔNG được tải lại: đúng 1 request duy nhất
+        self.assertEqual(session.get.call_count, 1)
+
+    def test_416_without_content_range_keeps_reset_behavior(self):
+        part_path = os.path.join(self.tmp_dir, "blob.bin.part")
+        with open(part_path, "wb") as f:
+            f.write(b"STALE" * 10)
+
+        session = MagicMock()
+        session.head.side_effect = requests.ConnectionError("no head support")
+        session.get.side_effect = [
+            FakeResponse(status_code=416, headers={}),
+            FakeResponse(status_code=200, headers=BINARY_HEADERS, chunks=(b"OK",)),
+        ]
+
+        saved = HttpDownloader.download_file(
+            "https://host.com/blob.bin", self.tmp_dir, session, max_size=0,
+            preferred_filename="blob.bin",
+        )
+        self.assertIsNotNone(saved)
+        self.assertEqual(session.get.call_count, 2)
 
 
 if __name__ == "__main__":

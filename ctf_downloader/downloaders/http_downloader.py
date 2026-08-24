@@ -138,11 +138,28 @@ class HttpDownloader:
                     if ("cdn.discordapp.com" in host or "media.discordapp.net" in host) and status in (403, 404):
                         raise DownloadFailed("Link Discord hết hạn (~24h), hãy lấy link mới")
 
-                    # 416 khi đang resume: offset của .part vượt kích thước thật
-                    # trên server (vd .part corrupt/lớn hơn file) -> server sẽ
-                    # trả 416 MÃI MÃI nếu giữ nguyên .part => download chết
-                    # vĩnh viễn. Coi .part là corrupt: xoá và tải lại từ đầu.
+                    # 416 khi đang resume: có thể file .part đã tải ĐỦ (server
+                    # trả 416 dù offset == content-length, file hoàn chỉnh) —
+                    # nếu Content-Range khai báo total `*/<total>` khớp đúng
+                    # kích thước .part thì rename thành file cuối luôn, không
+                    # tải lại. Không có/không đọc được Content-Range: coi .part
+                    # là corrupt (offset vượt size thật -> server trả 416 MÃI
+                    # MÃI nếu giữ nguyên) -> xoá và tải lại từ đầu.
                     if status == 416 and req_headers.get("Range"):
+                        content_range = resp.headers.get("Content-Range") or ""
+                        cr_total = content_range.rsplit("/", 1)[-1].strip() if "/" in content_range else ""
+                        if (
+                            cr_total.isdigit()
+                            and target_path and part_path
+                            and os.path.exists(part_path)
+                            and int(cr_total) == os.path.getsize(part_path)
+                        ):
+                            Logger.info(
+                                f"Server trả 416 nhưng .part ({offset} bytes) đã đủ "
+                                f"tổng {cr_total} bytes theo Content-Range -> hoàn tất {url} không cần tải lại."
+                            )
+                            shutil.move(part_path, target_path)
+                            return target_path
                         attempt += 1
                         Logger.warning(
                             f"Server trả 416 khi resume {url} từ byte {offset}: "

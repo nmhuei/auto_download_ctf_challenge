@@ -147,8 +147,20 @@ class WorkspaceBuilder:
             "raw": challenge.raw_data
         }
         meta_path = os.path.join(challenge_dir, "metadata.json")
+        # Guard: raw_data dị dạng (vd chứa set()) không được làm crash việc
+        # tạo workspace -> serialize ra chuỗi trước; nếu không serializable
+        # thì fallback ép kiểu string (default=str) kèm warning.
+        try:
+            payload = json.dumps(meta_data, indent=2, ensure_ascii=False)
+        except (TypeError, ValueError) as e:
+            Logger.warning(
+                f"metadata.json chứa dữ liệu không serializable "
+                f"(challenge '{challenge.name}'): {type(e).__name__}: {str(e)[:120]} "
+                f"-> fallback default=str."
+            )
+            payload = json.dumps(meta_data, indent=2, ensure_ascii=False, default=str)
         with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(meta_data, f, indent=2, ensure_ascii=False)
+            f.write(payload)
 
         # 3. Generate solver/solve.py if requested and doesn't exist
         solver_solve_path = os.path.join(solver_sub_dir, "solve.py")

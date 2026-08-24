@@ -776,7 +776,22 @@ class CTFdPlatform(BasePlatform):
         anchor = re.search(r"window\.init\s*=\s*\{", html)
         if not anchor:
             return None
-        block = html[anchor.end():anchor.end() + 8000]
+        # Scan tới dấu '}' đóng object tương ứng (brace matching đơn giản) thay
+        # vì cắt cứng một cửa sổ cố định: theme có thể chèn nhiều field trước
+        # start/end khiến cửa sổ cứng bị miss.
+        depth = 0
+        block_end: Optional[int] = None
+        for i in range(anchor.end() - 1, len(html)):
+            ch = html[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    block_end = i + 1
+                    break
+        # Object không đóng (HTML hỏng) -> fallback lấy phần còn lại của trang
+        block = html[anchor.end():block_end] if block_end else html[anchor.end():]
         m = re.search(rf"['\"]{re.escape(key)}['\"]\s*:\s*(null|['\"]?\d+['\"]?)",
                       block)
         if not m or m.group(1) == "null":

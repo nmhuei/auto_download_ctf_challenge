@@ -1051,5 +1051,45 @@ class TestSymlinkWritePreserved(unittest.TestCase):
         self.assertIn("- [x] Solved", outside.read_text(encoding="utf-8"))
 
 
+
+class TestCTFdWindowInitBraceMatch(unittest.TestCase):
+    """Deferred-minor: _window_init_value phải scan tới dấu '}' đóng object
+    window.init (brace matching) thay vì cắt cứng 8000 ký tự — theme chèn
+    nhiều field trước start/end vẫn phải parse được."""
+
+    def _html_with_many_fields(self, n_fields: int) -> str:
+        fields = "\n".join(
+            f'  field{i}: "{chr(120) * 450}({i}),",' for i in range(n_fields)
+        )
+        return (
+            "<html><head><script>"
+            "window.init = {\n" + fields + '\n'
+            '  "start": "1700000000",\n'
+            '  "end": "1700100000"\n'
+            "};"
+            "</script></head><body></body></html>"
+        )
+
+    def test_window_init_scanned_past_8000_chars(self):
+        from ctf_downloader.platforms.ctfd import CTFdPlatform as CTFd
+
+        # ~20 field x padding đủ dài để vượt mốc 8000 ký tự cũ
+        html = self._html_with_many_fields(20)
+        self.assertGreaterEqual(len(html), 8000 + 200)
+        self.assertEqual(CTFd._window_init_value(html, "start"), "1700000000")
+        self.assertEqual(CTFd._window_init_value(html, "end"), "1700100000")
+
+    def test_window_init_stops_at_closing_brace(self):
+        from ctf_downloader.platforms.ctfd import CTFdPlatform as CTFd
+
+        # Sau '}' của window.init có thêm text chứa pattern start giả ->
+        # brace matching phải dừng đúng ở cuối object, không ăn nhầm.
+        html = (
+            '<script>window.init = { "start": "1111111111" };</script>'
+            '<div>"start": "9999999999"</div>'
+        )
+        self.assertEqual(CTFd._window_init_value(html, "start"), "1111111111")
+
+
 if __name__ == "__main__":
     unittest.main()
