@@ -1091,5 +1091,199 @@ class TestCTFdWindowInitBraceMatch(unittest.TestCase):
         self.assertEqual(CTFd._window_init_value(html, "start"), "1111111111")
 
 
+# ---------------------------------------------------------------------------
+# Phase 5 (UI layer refactor) — PullService output discipline:
+# transient fetch spinner + ok_summary, Diagnostic cho lỗi nghiêm trọng,
+# tổng kết diff `+ name` / `- name` trong --update.
+# ---------------------------------------------------------------------------
+class TestPullServiceUIDiscipline(unittest.TestCase):
+    def setUp(self):
+        import io
+
+        from ctf_downloader.services import pull_service
+        self.pull_service = pull_service
+        self.stderr_buf = io.StringIO()
+        # Console ghi vào buffer, width cố định để assert không bị wrap.
+        # Patch CẢ bản ở pull_service lẫn bản mà ui.diagnostics.render dùng.
+        import rich.console
+
+        from ctf_downloader.ui import diagnostics as ui_diag
+
+        fake_console = rich.console.Console(file=self.stderr_buf, width=200)
+        err_patch = mock.patch.object(pull_service, "err_console", fake_console)
+        diag_patch = mock.patch.object(ui_diag, "err_console", fake_console)
+        err_patch.start()
+        diag_patch.start()
+        self.addCleanup(err_patch.stop)
+        self.addCleanup(diag_patch.stop)
+        self._tmp = tempfile.mkdtemp(prefix="arch5_pull_ui_")
+        self.out_dir = os.path.join(self._tmp, "out")
+
+    def _stub_dm(self):
+        """DownloadManager giả: không mạng, trả danh sách kết quả rỗng."""
+        parent = self.pull_service.DownloadManager
+
+        class _StubDM(parent):
+            def download_challenge_files(self, *args, **kwargs):
+                return []
+
+        return mock.patch.object(self.pull_service, "DownloadManager", _StubDM)
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _config(self, threads=2):
+        from ctf_downloader.config import DownloaderConfig
+
+        return DownloaderConfig(
+            url="https://pull.example.com",
+            cookie="session=abc",
+            output_dir=self.out_dir,
+            threads=threads,
+        )
+
+    def _fake_platform(self, n_challenges=2, auth_ok=True):
+        from ctf_downloader.models import Challenge, CTFInfo
+
+        plat = mock.MagicMock()
+        plat.authenticate.return_value = auth_ok
+        plat.ctf_info = CTFInfo(title="PullCTF", url="https://pull.example.com")
+        plat.fetch_challenges.return_value = [
+            Challenge(id=i + 1, name=f"Chall {chr(65 + i)}", category="Web",
+                      points=100)
+            for i in range(n_challenges)
+        ]
+        return plat
+
+    # ---- 1. Fetch phase: spinner transient -> chỉ còn ok_summary ----
+
+    def test_fetch_phase_prints_ok_summary_not_logger_success(self):
+        fake_platform = self._fake_platform(n_challenges=2)
+
+        with mock.patch.object(self.pull_service.PlatformDetector,
+                               "detect_platform",
+                               return_value=fake_platform), \
+             self._stub_dm():
+            result = self.pull_service.PullService.run(self._config())
+
+        self.assertTrue(result["ok"])
+        out = self.stderr_buf.getvalue()
+        # ok_summary: "Đã tải 2 challenges trong X.XXs" (markup đã render)
+        self.assertIn("Đã tải 2 challenges", out.replace("[bold]", "")
+                                                 .replace("[/]", ""))
+        # Log cũ của phase fetch phải biến mất
+        self.assertNotIn("Successfully retrieved", out)
+        self.assertNotIn("Fetching challenge lists", out)
+
+    def test_fetch_phase_no_challenges_renders_diagnostic(self):
+        fake_platform = self._fake_platform(n_challenges=0)
+
+        with mock.patch.object(self.pull_service.PlatformDetector,
+                               "detect_platform",
+                               return_value=fake_platform):
+            result = self.pull_service.PullService.run(self._config())
+
+        self.assertFalse(result["ok"])
+        out = self.stderr_buf.getvalue()
+        self.assertIn("error:", out)
+        self.assertIn("hint:", out)
+        self.assertIn("ctf doctor -u <url>", out)
+
+    def test_detect_failure_renders_diagnostic(self):
+        from ctf_downloader.platforms.detector import PlatformDetector
+
+        with mock.patch.object(
+                PlatformDetector, "detect_platform",
+                side_effect=ValueError("unrecognized url")):
+            result = self.pull_service.PullService.run(self._config())
+
+        self.assertFalse(result["ok"])
+        out = self.stderr_buf.getvalue()
+        self.assertIn("error:", out)
+        self.assertIn("Không phát hiện được nền tảng CTF", out)
+        self.assertIn("unrecognized url", out)          # cause
+        self.assertIn("hint:", out)
+        self.assertIn("ctf doctor -u <url>", out)       # hint cụ thể
+
+    def test_auth_failure_renders_warning_diagnostic_and_proceeds(self):
+        fake_platform = self._fake_platform(n_challenges=1, auth_ok=False)
+
+        with mock.patch.object(self.pull_service.PlatformDetector,
+                               "detect_platform",
+                               return_value=fake_platform), \
+             self._stub_dm():
+            result = self.pull_service.PullService.run(self._config())
+
+        # Pipeline giữ nguyên hành vi: tiếp tục với tư cách guest
+        self.assertTrue(result["ok"])
+        out = self.stderr_buf.getvalue()
+        self.assertIn("warning:", out)
+        self.assertIn("hint:", out)
+        self.assertIn("ctf doctor -u <url>", out)
+
+    # ---- 2. Incremental update: diff summary +name/-name sorted ----
+
+    def _seed_workspace(self):
+        """Full pull nền móng với Alpha/Beta rồi trả platform API chỉ còn delta."""
+        from ctf_downloader.models import CTFInfo, Challenge
+
+        base = mock.MagicMock()
+        base.authenticate.return_value = True
+        base.ctf_info = CTFInfo(title="PullCTF", url="https://pull.example.com")
+        base.fetch_challenges.return_value = [
+            Challenge(id=1, name="Beta", category="Web"),
+            Challenge(id=2, name="Alpha", category="Pwn"),
+        ]
+        with mock.patch.object(self.pull_service.PlatformDetector,
+                               "detect_platform", return_value=base), \
+             self._stub_dm():
+            r1 = self.pull_service.PullService.run(self._config())
+        self.assertTrue(r1["ok"])
+
+        api = mock.MagicMock()
+        api.authenticate.return_value = True
+        api.ctf_info = CTFInfo(title="PullCTF", url="https://pull.example.com")
+        api.ctf_info.challenges = [Challenge(id=3, name="delta", category="Web")]
+        api.fetch_challenges.return_value = api.ctf_info.challenges
+        return api
+
+    def test_update_diff_summary_sorted_plus_minus(self):
+        api = self._seed_workspace()
+
+        with mock.patch.object(self.pull_service.PlatformDetector,
+                               "detect_platform", return_value=api), \
+             self._stub_dm():
+            result = self.pull_service.PullService.run_update(self._config())
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["new"], 1)
+        self.assertEqual(result["missing"], 2)
+
+        lines = [ln.strip() for ln in self.stderr_buf.getvalue().splitlines()
+                 if ln.strip().startswith(("+", "-"))]
+        # Alphabetical (case-insensitive): Alpha(-), Beta(-), delta(+)
+        self.assertEqual(lines, ["- Alpha", "- Beta", "+ delta"])
+
+    def test_update_diff_summary_empty_prints_nothing(self):
+        from ctf_downloader.models import Challenge
+
+        api = self._seed_workspace()
+        # API trả lại đúng bộ cũ → không có +/- nào
+        api.fetch_challenges.return_value = [
+            Challenge(id=1, name="Beta", category="Web"),
+            Challenge(id=2, name="Alpha", category="Pwn"),
+        ]
+
+        with mock.patch.object(self.pull_service.PlatformDetector,
+                               "detect_platform", return_value=api), \
+             self._stub_dm():
+            result = self.pull_service.PullService.run_update(self._config())
+
+        self.assertTrue(result["ok"])
+        lines = [ln.strip() for ln in self.stderr_buf.getvalue().splitlines()
+                 if ln.strip().startswith(("+", "-"))]
+        self.assertEqual(lines, [])
+
+
 if __name__ == "__main__":
     unittest.main()

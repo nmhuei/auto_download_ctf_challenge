@@ -12,10 +12,14 @@ import time
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, MofNCompleteColumn
+from rich.progress import (Progress, ProgressColumn, BarColumn, TextColumn,
+                           TimeElapsedColumn, MofNCompleteColumn)
+from rich.text import Text
 
 from ..config import DownloaderConfig
-from ..utils.logger import Logger, console
+from ..utils.logger import Logger
+from ..ui import SPINNER, err_console, ok_summary
+from ..ui.diagnostics import Diagnostic, render as render_diagnostic
 from ..platforms.detector import PlatformDetector
 from ..platforms.base import Challenge
 from ..storage.constants import SOLVE_RANK
@@ -26,7 +30,82 @@ from ..generator.summary_generator import SummaryGenerator
 from .session_factory import create_session, thread_local_sessions
 
 
+class _BrailleSpinnerColumn(ProgressColumn):
+    """Spinner braille dùng đúng bộ frame từ ``ui.style.SPINNER``."""
+
+    def __init__(self, speed: float = 1.0) -> None:
+        super().__init__()
+        self.speed = speed
+
+    def render(self, task):
+        elapsed = task.get_time() * self.speed
+        frame = round(elapsed * 10) % len(SPINNER)
+        return Text(SPINNER[frame], style="progress.spinner")
+
+
+# Hint dùng chung cho mọi vấn đề xác thực / truy cập danh sách đề.
+_DOCTOR_HINTS = (
+    "chạy 'ctf doctor -u <url>' để kiểm tra cookie/token",
+)
+
+
 class PullService:
+    # ------------------------------------------------------------------ #
+    # UI helpers — output discipline theo layer ctf_downloader.ui
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _fetch_challenges_ui(platform: Any) -> List[Any]:
+        """Bọc ``fetch_challenges`` trong spinner braille transient trên
+        err_console: khi xong spinner biến mất, chỉ còn một dòng
+        ``ok_summary`` ("Đã tải N challenges trong X.XXs")."""
+        start = time.time()
+        with Progress(
+            _BrailleSpinnerColumn(),
+            TextColumn("[dim]{task.description}[/dim]"),
+            console=err_console,
+            transient=True,
+        ) as progress:
+            progress.add_task("Đang tải danh sách đề...", total=None)
+            challenges = platform.fetch_challenges()
+        secs = time.time() - start
+        err_console.print(ok_summary("tải", len(challenges), "challenge", secs))
+        return challenges
+
+    @staticmethod
+    def _render_detect_failure(config: DownloaderConfig, start_time: float,
+                               exc: Exception) -> Dict[str, Any]:
+        """Render Diagnostic cho lỗi phát hiện nền tảng + trả dict thất bại."""
+        render_diagnostic(Diagnostic(
+            "error",
+            "Không phát hiện được nền tảng CTF",
+            cause=f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__,
+            hints=("kiểm tra URL giải (đúng domain, có https://)",
+                   *_DOCTOR_HINTS),
+        ))
+        return {"ok": False, "output_dir": config.output_dir,
+                "summary_file": None, "total_files": 0,
+                "challenges_processed": 0,
+                "elapsed_seconds": time.time() - start_time}
+
+    @staticmethod
+    def _render_auth_warning() -> None:
+        """Render Diagnostic cảnh báo xác thực thất bại (pipeline vẫn chạy)."""
+        render_diagnostic(Diagnostic(
+            "warning",
+            "Xác thực thất bại — tiếp tục với tư cách khách chưa đăng nhập",
+            hints=_DOCTOR_HINTS,
+        ))
+
+    @staticmethod
+    def _render_no_challenges() -> None:
+        """Render Diagnostic cho danh sách đề rỗng / không truy cập được."""
+        render_diagnostic(Diagnostic(
+            "error",
+            "Không tìm thấy challenge nào hoặc không truy cập được danh sách đề",
+            hints=("kiểm tra cookie/token còn hạn và URL đúng giải",
+                   *_DOCTOR_HINTS),
+        ))
+
     @staticmethod
     def run(config: DownloaderConfig,
             session: Optional[Any] = None) -> Dict[str, Any]:
@@ -56,19 +135,20 @@ class PullService:
         )
 
         # 1. Detect Platform
-        platform = PlatformDetector.detect_platform(config.url, master)
+        try:
+            platform = PlatformDetector.detect_platform(config.url, master)
+        except Exception as exc:
+            return PullService._render_detect_failure(config, start_time, exc)
 
         # 2. Authenticate
-        Logger.info("Authenticating with platform...")
         auth_success = platform.authenticate()
         if not auth_success:
-            Logger.warning("Authentication failed or proceeding as unauthenticated guest.")
+            PullService._render_auth_warning()
 
-        # 3. Fetch Challenges
-        Logger.info("Fetching challenge lists and details...")
-        challenges = platform.fetch_challenges()
+        # 3. Fetch Challenges (spinner transient + ok_summary)
+        challenges = PullService._fetch_challenges_ui(platform)
         if not challenges:
-            Logger.error("No challenges found or could not access challenge list. Please check your cookies/token/URL.")
+            PullService._render_no_challenges()
             return {
                 "ok": False,
                 "output_dir": config.output_dir,
@@ -97,10 +177,8 @@ class PullService:
             ex_cats = [c.lower() for c in config.exclude_categories]
             challenges = [c for c in challenges if c.category.lower() not in ex_cats]
 
-        # Display found summary
-        Logger.success(f"Successfully retrieved [bold green]{len(challenges)}[/bold green] challenges!")
-
-        # Create summary table of challenges found
+        # Display found summary — ok_summary đã in bởi _fetch_challenges_ui;
+        # giữ nguyên bảng overview theo category.
         categories_dict = {}
         for c in challenges:
             categories_dict[c.category] = categories_dict.get(c.category, 0) + 1
@@ -112,18 +190,18 @@ class PullService:
         os.makedirs(config.output_dir, exist_ok=True)
         all_download_results: Dict[Any, List[Dict[str, Any]]] = {}
 
-        Logger.info(f"Starting workspace build & asset downloads (Threads: {config.threads})...")
-
         with thread_local_sessions(master) as get_session:
             with Progress(
-                SpinnerColumn(),
+                _BrailleSpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
                 BarColumn(),
                 MofNCompleteColumn(),
                 TimeElapsedColumn(),
-                console=console
+                console=err_console,
+                transient=False
             ) as progress:
-                task_id = progress.add_task("[cyan]Processing Challenges...", total=len(challenges))
+                task_id = progress.add_task("Đang tải đề & dựng workspace...",
+                                            total=len(challenges))
 
                 def process_single_challenge(chall: Challenge) -> tuple:
                     # Session riêng của thread này (copy cookie/header từ master);
@@ -349,13 +427,15 @@ class PullService:
         )
 
         # 1. Detect + Authenticate + Fetch (giống full pull)
-        platform = PlatformDetector.detect_platform(config.url, master)
+        try:
+            platform = PlatformDetector.detect_platform(config.url, master)
+        except Exception as exc:
+            return PullService._render_detect_failure(config, start_time, exc)
         if not platform.authenticate():
-            Logger.warning("Authentication failed or proceeding as unauthenticated guest.")
-        challenges = platform.fetch_challenges()
+            PullService._render_auth_warning()
+        challenges = PullService._fetch_challenges_ui(platform)
         if not challenges:
-            Logger.error("No challenges found or could not access challenge list. "
-                         "Please check your cookies/token/URL.")
+            PullService._render_no_challenges()
             return {"ok": False, "output_dir": config.output_dir,
                     "summary_file": None, "total_files": 0,
                     "new": 0, "updated": 0, "skipped": 0, "missing": 0,
@@ -403,7 +483,8 @@ class PullService:
         new_challs = [c for c in scoped if str(c.id) not in local_index]
         existing_pairs = [(c,) + local_index[str(c.id)]
                           for c in scoped if str(c.id) in local_index]
-        missing_items = [(cid, mp) for cid, (mp, _m) in local_index.items()
+        missing_items = [(cid, mp, (_m.get("name") or str(cid)))
+                         for cid, (mp, _m) in local_index.items()
                          if cid not in api_ids and _in_scope(_m.get("category"))]
 
         # --refresh-meta: challenge đã có nhưng attachment thiếu trên đĩa →
@@ -424,19 +505,17 @@ class PullService:
                       [(c, "redownload") for c in redownload]
         fresh_ids: set = set()
         if to_download:
-            Logger.info(f"Downloading {len(new_challs)} new / "
-                        f"{len(redownload)} re-download attachment challenge(s) "
-                        f"(Threads: {config.threads})...")
             with thread_local_sessions(master) as get_session:
                 with Progress(
-                    SpinnerColumn(),
+                    _BrailleSpinnerColumn(),
                     TextColumn("[progress.description]{task.description}"),
                     BarColumn(),
                     MofNCompleteColumn(),
                     TimeElapsedColumn(),
-                    console=console
+                    console=err_console,
+                    transient=False
                 ) as progress:
-                    task_id = progress.add_task("[cyan]Processing Challenges...",
+                    task_id = progress.add_task("Đang tải đề & dựng workspace...",
                                                 total=len(to_download))
 
                     def _one(item):
@@ -481,8 +560,16 @@ class PullService:
                 all_results[chall.id] = cur.get("downloaded_files") or []
 
         # 5. Challenge biến mất khỏi API: đánh dấu, KHÔNG xoá gì
-        for _cid, mp in missing_items:
+        for _cid, mp, _name in missing_items:
             PullService._mark_removed_from_server(repo, mp)
+
+        # Tổng kết diff (alphabetical): ` + name` green — bài mới,
+        # ` - name` red — bài biến mất khỏi server (removed_from_server).
+        diff_entries = [(c.name or str(c.id), "+") for c in new_challs] \
+            + [(_name, "-") for _cid, _mp, _name in missing_items]
+        for name, sign in sorted(diff_entries, key=lambda e: (e[0].lower(), e[1])):
+            style = "green" if sign == "+" else "red"
+            err_console.print(f"[{style}]{sign} {name}[/{style}]")
 
         # 6. Regenerate SUMMARY.md + challenges.json phản ánh danh sách mới
         Logger.info("Regenerating global SUMMARY.md and challenges.json...")
