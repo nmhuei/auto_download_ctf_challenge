@@ -68,6 +68,10 @@ Quick Examples:
     pull_parser.add_argument('--no-third-party', action='store_true', help='Disable downloading 3rd party links')
     pull_parser.add_argument('--no-template', action='store_true', help='Disable generating solve.py templates')
     pull_parser.add_argument('-f', '--force', action='store_true', help='Force re-download existing files')
+    pull_parser.add_argument('--update', action='store_true',
+                             help='Pull tăng dần: chỉ tải challenge MỚI, cập nhật metadata (points/solves/solved/connection) challenge đã có')
+    pull_parser.add_argument('--refresh-meta', action='store_true',
+                             help='Như --update, nhưng cho phép tải lại attachment khi file thiếu trên đĩa')
     pull_parser.add_argument('--timeout', type=int, default=30, help='Request timeout in seconds (default: 30)')
     pull_parser.add_argument('-i', '--interactive', action='store_true', help='Launch interactive download wizard')
 

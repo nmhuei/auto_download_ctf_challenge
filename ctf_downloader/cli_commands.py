@@ -48,11 +48,16 @@ def handle_pull(args):
         force_redownload=args.force,
         timeout=args.timeout,
         categories=args.category,
-        exclude_categories=args.exclude
+        exclude_categories=args.exclude,
+        incremental_update=getattr(args, 'update', False) or getattr(args, 'refresh_meta', False),
+        refresh_meta=getattr(args, 'refresh_meta', False)
     )
 
     try:
-        result = PullService.run(config)
+        if config.refresh_meta or config.incremental_update:
+            result = PullService.run_update(config, refresh_meta=config.refresh_meta)
+        else:
+            result = PullService.run(config)
         if not result.get('ok'):
             sys.exit(1)
     except KeyboardInterrupt:
