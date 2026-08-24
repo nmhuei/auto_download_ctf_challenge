@@ -4,10 +4,10 @@ import subprocess
 from typing import Optional, Tuple
 
 from ..utils.logger import Logger
+from ..utils.mega_tools import MEGA_TOOL_CANDIDATES  # noqa: F401 — re-export cho caller cũ
 from .registry import register_downloader
 
 # Không tự implement crypto Mega — shell-out sang megatools.
-MEGA_TOOL_CANDIDATES = ("megadl", "mega-get")
 MEGA_MISSING_TOOL_MESSAGE = "Cần cài megatools (megadl) để tải link Mega"
 
 

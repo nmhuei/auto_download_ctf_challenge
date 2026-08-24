@@ -5,6 +5,11 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from bs4 import BeautifulSoup
 
+# Hằng dữ liệu dùng chung với tầng downloaders qua utils.mega_tools (tầng
+# trung tính): tránh nhân bản literal tool ở hai nơi mà vẫn giữ ràng buộc
+# kiến trúc R4 — extractors KHÔNG import downloaders.
+from ..utils.mega_tools import MEGA_TOOL_CANDIDATES
+
 KNOWN_FILE_EXTENSIONS = {
     '.zip', '.tar', '.gz', '.tgz', '.bz2', '.tbz2', '.xz', '.txz', '.7z', '.rar',
     '.bin', '.elf', '.exe', '.dll', '.so', '.dylib', '.apk', '.ipa',
@@ -135,7 +140,7 @@ class LinkExtractor:
         # kiểm tra tool tại đây bằng shutil.which, KHÔNG import ngược tầng
         # downloaders (DownloadManager vẫn tự kiểm tra lại một lần lúc tải).
         if LinkExtractor._host_in(host, ("mega.nz", "mega.co.nz")):
-            has_mega_tool = any(shutil.which(tool) for tool in ("megadl", "mega-get"))
+            has_mega_tool = any(shutil.which(tool) for tool in MEGA_TOOL_CANDIDATES)
             return ExtractedLink(
                 url=url,
                 link_type="mega",

@@ -8,6 +8,8 @@ không cần sửa if/elif trong manager.
 
 from typing import Callable, Dict, Optional, Tuple, Type
 
+from ..utils.logger import Logger
+
 # Bảng dispatch: link_type -> class handler
 DOWNLOADERS: Dict[str, Type] = {}
 
@@ -24,6 +26,14 @@ def register_downloader(
       URL thành link_type hiện vẫn thuộc LinkExtractor.
     """
     def decorator(cls: Type) -> Type:
+        if link_type in DOWNLOADERS:
+            # Ghi đè im lặng dễ giấu bug (hai module tranh cùng link_type):
+            # cảnh báo để người thêm downloader mới nhận ra ngay.
+            Logger.warning(
+                f"register_downloader: link_type '{link_type}' đã được đăng ký "
+                f"bởi {DOWNLOADERS[link_type].__name__} — bị ghi đè bởi "
+                f"{cls.__name__}."
+            )
         DOWNLOADERS[link_type] = cls
         cls.link_type = link_type
         cls.domains = domains

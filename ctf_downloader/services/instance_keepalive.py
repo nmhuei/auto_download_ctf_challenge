@@ -625,6 +625,45 @@ class InstanceKeepAlive:
                 pass
         self._sync_via_repo(tracker, status="running", entry=entry)
 
+    def _metadata_in_sync(self, meta_path: Any, tracker: InstanceTracker,
+                          status: str, entry: Optional[str]) -> bool:
+        """
+        True khi metadata tại `meta_path` đã khớp state cần sync (đúng
+        challenge + status/active_instance/remaining_time như đích) — caller
+        bỏ qua atomic write để không churn mtime file metadata mỗi tick.
+        So sánh bỏ qua `last_updated` (luôn đổi theo thời gian). Bất kỳ nghi
+        vấn nào (không đọc được repo/file, sai id, thiếu field) -> False
+        để rơi về đường ghi có lock an toàn.
+        """
+        reader = getattr(self.repo, "read_metadata", None)
+        if reader is None:
+            return False
+        try:
+            meta = reader(meta_path)
+        except Exception:
+            return False
+        if not isinstance(meta, dict) or str(meta.get("id")) != str(tracker.challenge_id):
+            return False
+        inst = meta.get("instance_info")
+        if not isinstance(inst, dict):
+            return False
+        if entry:
+            expected_active = entry
+            expected_remaining = tracker.remaining
+        elif status == "stopped":
+            expected_active = None
+            expected_remaining = 0
+        else:
+            # Chỉ đổi status: active_instance/remaining_time giữ nguyên
+            expected_active = inst.get("active_instance")
+            expected_remaining = inst.get("remaining_time")
+        return (
+            inst.get("status") == status
+            and inst.get("active_instance") == expected_active
+            and inst.get("remaining_time") == expected_remaining
+            and bool(inst.get("last_updated"))
+        )
+
     def _sync_via_repo(self, tracker: InstanceTracker, status: str,
                        entry: Optional[str] = None) -> None:
         if self.repo is None:
@@ -652,6 +691,11 @@ class InstanceKeepAlive:
 
         for meta_path in self.repo.iter_challenges():
             try:
+                if self._metadata_in_sync(meta_path, tracker, status, entry):
+                    # Metadata đã đúng state -> skip atomic write (giảm mtime
+                    # churn); đọc để so sánh là unlocked nhưng chỉ là tối ưu —
+                    # stale read chỉ gây thêm một lần ghi vô hại dưới flock.
+                    break
                 # update_metadata: read-mutate-write dưới cùng lockfile flock
                 # với update_status (tránh lost update đa tiến trình).
                 updated = self.repo.update_metadata(meta_path, _mutate)

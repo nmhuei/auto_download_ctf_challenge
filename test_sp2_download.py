@@ -956,3 +956,160 @@ class TestWave4Resume416ContentRange(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ----------------------------------------------------------------------
+# Deferred-minors batch-2: mega const dùng chung, register warning,
+# lazy services __init__, _sync_via_repo short-circuit.
+# ----------------------------------------------------------------------
+
+class TestDeferredMinorsBatch2(unittest.TestCase):
+    """Các minor được defer từ review trước, gom lại xử lý một lần."""
+
+    # --- 1. MEGA_TOOL_CANDIDATES: một nguồn duy nhất ở utils.mega_tools ---
+    def test_mega_tool_candidates_is_shared_const(self):
+        from ctf_downloader.utils.mega_tools import MEGA_TOOL_CANDIDATES as canonical
+        from ctf_downloader.downloaders.mega import MEGA_TOOL_CANDIDATES as via_mega
+        from ctf_downloader.extractors import link_extractor
+        self.assertIs(canonical, via_mega)
+        self.assertIs(link_extractor.MEGA_TOOL_CANDIDATES, canonical)
+
+    # --- 2. register_downloader cảnh báo khi ghi đè key ---
+    def test_register_downloader_warns_on_overwrite_only(self):
+        from ctf_downloader.downloaders import registry
+        key = "_dup_probe_batch2_"
+        try:
+            with patch(
+                "ctf_downloader.downloaders.registry.Logger.warning"
+            ) as warn:
+                @registry.register_downloader(key)
+                class ProbeA:
+                    pass
+
+                warn.assert_not_called()  # đăng ký mới: không warning
+
+                @registry.register_downloader(key)
+                class ProbeB:
+                    pass
+
+                warn.assert_called_once()  # ghi đè: warning đúng 1 lần
+        finally:
+            registry.DOWNLOADERS.pop(key, None)
+
+    # --- 3. services/__init__ lazy qua PEP 562 ---
+    def test_services_init_is_lazy_but_compat(self):
+        import importlib
+        import ctf_downloader.services as services
+
+        services = importlib.reload(services)
+        # reload không xoá dict module: dọn symbol đã cache bởi test khác
+        for name in ("create_session", "thread_local_sessions", "AuthService"):
+            services.__dict__.pop(name, None)
+        # Lazy: chưa nạp symbol nào vào namespace lúc import
+        self.assertNotIn("AuthService", vars(services))
+        self.assertNotIn("create_session", vars(services))
+
+        # Truy cập từng symbol vẫn OK và được cache lại sau lần đầu
+        self.assertTrue(callable(services.create_session))
+        self.assertTrue(callable(services.thread_local_sessions))
+        self.assertIsInstance(services.AuthService, type)
+        self.assertIn("AuthService", vars(services))
+
+        # Symbol lạ vẫn raise AttributeError chuẩn
+        with self.assertRaises(AttributeError):
+            services._no_such_symbol_batch2_
+
+    def test_services_import_paths_compat(self):
+        from ctf_downloader.services import (
+            AuthService,
+            create_session,
+            thread_local_sessions,
+        )
+        from ctf_downloader.services.auth_service import AuthService as direct_auth
+        from ctf_downloader.services.session_factory import (
+            create_session as direct_cs,
+            thread_local_sessions as direct_tls,
+        )
+
+        self.assertIs(create_session, direct_cs)
+        self.assertIs(thread_local_sessions, direct_tls)
+        self.assertIs(AuthService, direct_auth)
+
+    # --- 4. _sync_via_repo skip atomic write khi metadata không đổi ---
+    def _make_keepalive_with_meta(self, meta):
+        from ctf_downloader.services.instance_keepalive import (
+            InstanceKeepAlive,
+            InstanceTracker,
+        )
+
+        tracker = InstanceTracker("chall-1", "Chall 1")
+        tracker.remaining = 120.0
+        repo = MagicMock()
+        repo.iter_challenges.return_value = ["/ws/Web/chall_a/metadata.json"]
+        repo.read_metadata.return_value = json.loads(json.dumps(meta))
+        ka = InstanceKeepAlive(svc=MagicMock(), repo=repo)
+        return ka, tracker, repo
+
+    def test_sync_via_repo_skips_write_when_unchanged(self):
+        meta = {"id": "chall-1", "instance_info": {
+            "status": "running", "active_instance": "tcp://h:1",
+            "remaining_time": 120.0, "last_updated": "2026-08-24 10:00:00",
+        }}
+        ka, tracker, repo = self._make_keepalive_with_meta(meta)
+
+        ka._sync_via_repo(tracker, status="running", entry="tcp://h:1")
+
+        repo.update_metadata.assert_not_called()
+
+    def test_sync_via_repo_skips_write_when_stopped_unchanged(self):
+        meta = {"id": "chall-1", "instance_info": {
+            "status": "stopped", "active_instance": None,
+            "remaining_time": 0, "last_updated": "2026-08-24 10:00:00",
+        }}
+        ka, tracker, repo = self._make_keepalive_with_meta(meta)
+
+        ka._sync_via_repo(tracker, status="stopped")
+
+        repo.update_metadata.assert_not_called()
+
+    def test_sync_via_repo_writes_when_changed(self):
+        meta = {"id": "chall-1", "instance_info": {
+            "status": "stopped", "active_instance": None,
+            "remaining_time": 0, "last_updated": "2026-08-24 10:00:00",
+        }}
+        ka, tracker, repo = self._make_keepalive_with_meta(meta)
+        repo.update_metadata.return_value = {"id": "chall-1"}
+
+        ka._sync_via_repo(tracker, status="running", entry="tcp://h:9")
+
+        repo.update_metadata.assert_called_once()
+
+    def test_sync_via_repo_fallback_when_no_read_metadata(self):
+        """Repo không có read_metadata (fake cũ): hành vi như trước."""
+        from ctf_downloader.services.instance_keepalive import (
+            InstanceKeepAlive,
+            InstanceTracker,
+        )
+
+        tracker = InstanceTracker("chall-1", "Chall 1")
+        tracker.remaining = 120.0
+
+        class FakeRepo:
+            def iter_challenges(self):
+                return ["/ws/Web/chall_a/metadata.json"]
+
+            def __init__(self):
+                self.updates = []
+
+            def update_metadata(self, path, mutator):
+                self.updates.append(path)
+                return mutator({"id": "chall-1"})
+
+        repo = FakeRepo()
+        ka = InstanceKeepAlive(svc=MagicMock(), repo=repo)
+        ka._sync_via_repo(tracker, status="running", entry="tcp://h:1")
+        self.assertEqual(repo.updates, ["/ws/Web/chall_a/metadata.json"])
+
+
+if __name__ == "__main__":
+    unittest.main()
