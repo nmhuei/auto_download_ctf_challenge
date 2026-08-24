@@ -129,7 +129,9 @@ class TestGZCTFRegister(unittest.TestCase):
             ("GET", "/api/config", lambda s, u: FakeResponse(
                 200, json_data={"Title": "T", "Slogan": "", "PortMapping": "",
                                 "DefaultLifetime": 0})),
-            ("GET", "/api/captcha", lambda s, u: FakeResponse(404, text="")),
+            # GZCTF hiện đại: KHÔNG bật captcha vẫn trả 200 {"type":"None"}
+            ("GET", "/api/captcha", lambda s, u: FakeResponse(
+                200, json_data={"type": "None", "siteKey": ""})),
             ("POST", "/api/account/register",
              lambda s, u: FakeResponse(200, text='""')),
             ("POST", "/api/account/login",
@@ -165,26 +167,17 @@ class TestGZCTFRegister(unittest.TestCase):
         with self.assertRaises(PlatformRegisterUnsupported):
             platform.register(username="u", email="a@b.c", password="p")
 
-    def test_hashpow_solved_and_sent(self):
+    def test_hashpow_solved_and_ticket_sent(self):
         import hashlib
-        challenge = "deadbeef"
-        nonce = solve_hash_pow(challenge, 8)
+        # id 12-hex (6 bytes) như PowChallenge upstream
+        challenge_id = "deadbeefcafe"
+        nonce = solve_hash_pow(challenge_id, 8)
         self.assertIsNotNone(nonce)
-        digest = hashlib.sha256(f"{challenge}{nonce}".encode()).digest()
+        self.assertEqual(len(nonce), 16)  # AnswerLength*2 = 16 hex (8 bytes)
+        digest = hashlib.sha256(
+            bytes.fromhex(challenge_id) + bytes.fromhex(nonce)).digest()
         # 8 bit 0 ở đầu <=> byte đầu tiên == 0
         self.assertEqual(digest[0], 0)
-
-        routes = [
-            ("GET", "/api/config", lambda s, u: FakeResponse(
-                200, json_data={"Title": "T"})),
-            ("GET", "/api/captcha", lambda s, u: FakeResponse(
-                200, json_data={"type": "HashPow"})),
-            ("GET", "/api/captcha/PowChallenge", lambda s, u: FakeResponse(
-                200, json_data={"challenge": challenge, "difficulty": 8})),
-            ("POST", "/api/account/register",
-             lambda s, u: FakeResponse(200, text="ok")),
-        ]
-        sess = FakeSession(routes)
 
         captured = {}
 
@@ -192,18 +185,41 @@ class TestGZCTFRegister(unittest.TestCase):
             captured.update(kw.get("json") or {})
             return FakeResponse(200, text="ok")
 
-        routes[3] = ("POST", "/api/account/register", capture_post)
-        sess.routes = routes
-        result = gzctf_register(make_gz_platform(sess), username="u",
-                                email="a@b.c", password="p")
+        routes = [
+            ("GET", "/api/config", lambda s, u: FakeResponse(
+                200, json_data={"Title": "T"})),
+            ("GET", "/api/captcha", lambda s, u: FakeResponse(
+                200, json_data={"type": "HashPow"})),
+            ("GET", "/api/captcha/PowChallenge", lambda s, u: FakeResponse(
+                200, json_data={"id": challenge_id, "difficulty": 8})),
+            ("POST", "/api/account/register", capture_post),
+        ]
+        result = gzctf_register(make_gz_platform(FakeSession(routes)),
+                                username="u", email="a@b.c", password="p")
         self.assertTrue(result["ok"], result.get("message"))
-        self.assertIn(challenge, str(captured.get("captcha")))
-        self.assertIn(".", str(captured.get("captcha")))
+        # Ticket đúng wire-format: field "challenge" = "<id>:<answer>"
+        ticket = captured.get("challenge")
+        self.assertIsInstance(ticket, str)
+        challenge_part, answer_part = ticket.split(":")
+        self.assertEqual(challenge_part, challenge_id)
+        self.assertEqual(answer_part, nonce)
+
+    def test_captcha_type_none_with_sitekey_stops(self):
+        # type None NHƯNG siteKey có giá trị -> vẫn là captcha -> dừng sạch
+        routes = [("GET", "/api/config", lambda s, u: FakeResponse(
+            200, json_data={})),
+            ("GET", "/api/captcha", lambda s, u: FakeResponse(
+                200, json_data={"type": "None",
+                                "siteKey": "0xTURNSTILEKEY"}))]
+        with self.assertRaises(PlatformRegisterUnsupported):
+            gzctf_register(make_gz_platform(FakeSession(routes)),
+                           username="u", email="a@b.c", password="p")
 
     def test_http_error_reported_not_raised(self):
         routes = [
             ("GET", "/api/config", lambda s, u: FakeResponse(200, json_data={})),
-            ("GET", "/api/captcha", lambda s, u: FakeResponse(404, text="")),
+            ("GET", "/api/captcha", lambda s, u: FakeResponse(
+                200, json_data={"type": "None", "siteKey": ""})),
             ("POST", "/api/account/register",
              lambda s, u: FakeResponse(400, text='"Ten dang nhap da ton tai"')),
         ]

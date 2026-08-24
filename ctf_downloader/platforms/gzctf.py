@@ -65,18 +65,26 @@ _CAPTCHA_PROVIDER_VALUES = ("turnstile", "recaptchav2", "recaptchav3",
                             "recaptcha", "hcaptcha")
 
 
-def solve_hash_pow(challenge: str, difficulty: int,
+def solve_hash_pow(challenge_id: str, difficulty: int,
                    max_iter: int = 50_000_000) -> Optional[str]:
-    """Giải HashPow của GZCTF: tìm nonce (8-hex lowercase) sao cho
-    sha256(challenge + nonce) có >= ``difficulty`` bit 0 liên tiếp ở đầu.
+    """Giải HashPow của GZCTF đúng wire-format upstream:
 
-    Trả nonce dạng hex string hoặc None nếu vượt ``max_iter``.
+    - ``challenge_id``: hex string từ PowChallenge (vd 12-hex = 6 bytes).
+    - Preimage server hash: ``SHA256(unhexlify(challenge) + answer_bytes)``
+      (KHÔNG phải ASCII string).
+    - Answer ĐÚNG ``AnswerLength * 2`` = 16 hex (8 bytes).
+
+    Trả answer dạng 16-hex lowercase, hoặc None nếu vượt ``max_iter``.
     """
     if difficulty <= 0:
         return ""
+    try:
+        prefix = bytes.fromhex(challenge_id)
+    except ValueError:
+        prefix = challenge_id.encode()  # fallback: id không phải hex
     for i in range(max_iter):
-        nonce = format(i, "08x")
-        digest = hashlib.sha256(f"{challenge}{nonce}".encode()).digest()
+        answer_bytes = i.to_bytes(8, "big")
+        digest = hashlib.sha256(prefix + answer_bytes).digest()
         bits = 0
         for byte in digest:
             if byte == 0:
@@ -85,15 +93,19 @@ def solve_hash_pow(challenge: str, difficulty: int,
             bits += (8 - byte.bit_length())
             break
         if bits >= difficulty:
-            return nonce
+            return answer_bytes.hex()
     return None
 
 
 def gzctf_probe_captcha(platform) -> Optional[Dict[str, Any]]:
     """Kiểm tra cấu hình captcha trước khi register.
 
+    GZCTF hiện đại: KHÔNG bật captcha thì GET /api/captcha vẫn trả
+    HTTP 200 ``{"type": "None", "siteKey": ""}`` — đó là KHÔNG captcha,
+    phải đi tiếp (không được coi là "captcha lạ").
+
     Returns:
-        dict PoW challenge {'challenge','difficulty'} nếu cần giải HashPow;
+        dict PoW task {'challenge_id','difficulty'} nếu cần giải HashPow;
         {} nếu platform KHÔNG yêu cầu captcha nào; raise
         PlatformRegisterUnsupported nếu Turnstile/reCAPTCHA/hCaptcha bật.
     """
@@ -115,8 +127,8 @@ def gzctf_probe_captcha(platform) -> Optional[Dict[str, Any]]:
                 "⚠️ Platform cấu hình site-key captcha (Turnstile/reCAPTCHA/"
                 "hCaptcha) — đăng ký thủ công. Tool không bypass captcha.")
 
-    # 2. GET /api/captcha: 404/204/rỗng -> không cần captcha; JSON kiểu
-    #    {"type": "HashPow"|"pow"...} -> lấy challenge và giải.
+    # 2. GET /api/captcha: 404/204/rỗng (GZCTF cũ) HOẶC 200 {"type":"None",
+    #    "siteKey":""} (GZCTF hiện đại) -> không cần captcha, đi tiếp.
     try:
         resp = sess.get(f"{origin}/api/captcha", timeout=15)
     except Exception as exc:
@@ -131,18 +143,38 @@ def gzctf_probe_captcha(platform) -> Optional[Dict[str, Any]]:
         return {}
     if not isinstance(data, dict) or not data:
         return {}
-    ctype = str(data.get("type") or data.get("captchaType") or "").lower()
-    if "pow" in ctype or "hashpow" in ctype or \
-            ("challenge" in data and "difficulty" in data):
+
+    ctype = str(data.get("type") or data.get("captchaType") or "").strip()
+    ctype_low = ctype.lower()
+    site_key = str(data.get("siteKey") or "").strip()
+
+    # type "None" + siteKey rỗng = platform TẮT captcha (HTTP 200) -> đi tiếp.
+    if ctype_low in ("none", "") and not site_key:
+        return {}
+
+    # Turnstile/reCAPTCHA/hCaptcha (theo type hoặc siteKey có giá trị) -> dừng.
+    if any(marker in ctype_low for marker in
+           ("turnstile", "recaptcha", "hcaptcha")) or site_key:
+        raise PlatformRegisterUnsupported(
+            f"⚠️ Platform bật captcha ({ctype or 'siteKey'}) — đăng ký thủ "
+            f"công tại {origin}/register. Tool không bypass captcha.")
+
+    # HashPow -> lấy challenge từ /api/captcha/PowChallenge và giải.
+    if "pow" in ctype_low or "hashpow" in ctype_low:
         chal_url = f"{origin}/api/captcha/PowChallenge"
         chal_resp = sess.get(chal_url, timeout=15)
         if chal_resp.status_code != 200:
             raise PlatformRegisterUnsupported(
                 f"Lấy PowChallenge thất bại (HTTP {chal_resp.status_code}).")
         chal = chal_resp.json() or {}
-        return {"challenge": str(chal.get("challenge") or ""),
+        chal_id = str(chal.get("id") or chal.get("challenge") or "")
+        if not chal_id:
+            raise PlatformRegisterUnsupported(
+                f"PowChallenge thiếu id/challenge: {chal}")
+        return {"challenge_id": chal_id,
                 "difficulty": int(chal.get("difficulty") or 0)}
-    # Loại captcha lạ/không rõ -> an toàn là dừng
+
+    # Loại captcha khác/không rõ -> an toàn là dừng
     raise PlatformRegisterUnsupported(
         f"⚠️ Platform yêu cầu captcha không nhận diện được ({data}) — "
         "đăng ký thủ công. Tool không bypass captcha.")
@@ -157,12 +189,15 @@ def gzctf_register(platform, *, username: str, email: str, password: str,
     payload: Dict[str, Any] = {"userName": username, "email": email,
                                "password": password}
     if pow_task:
-        solution = solve_hash_pow(pow_task["challenge"], pow_task["difficulty"])
+        solution = solve_hash_pow(pow_task["challenge_id"],
+                                  pow_task["difficulty"])
         if solution is None:
             return {"ok": False,
                     "message": "Không giải được HashPow trong giới hạn vòng lặp."}
-        # Format theo client GZCTF: answer gửi kèm request register.
-        payload["captcha"] = f"{pow_task['challenge']}.{solution}"
+        # Wire-format upstream: server bind ModelWithCaptcha.Challenge và split
+        # theo ':' -> ticket = "<challenge_ID>:<answer 16-hex>", field JSON
+        # tên "challenge".
+        payload["challenge"] = f"{pow_task['challenge_id']}:{solution}"
         Logger.info("GZCTF: đã giải HashPow (PoW) — tiếp tục register.")
 
     try:
@@ -184,6 +219,14 @@ def gzctf_register(platform, *, username: str, email: str, password: str,
         result["email_verified"] = bool(verified)
 
     # Login NGAY để lấy GZCTF_Token (cookie hoặc body trả JWT).
+    # Ghi chú upstream: LoginModel cũng kế thừa captcha — platform BẬT captcha
+    # thì bước login cần challenge RIÊNG (single-use, không tái dùng ticket
+    # register); chỉ warning, xử lý đầy đủ ở đợt sau.
+    if pow_task:
+        Logger.warning(
+            "GZCTF: platform dùng HashPow — login-sau-register có thể bị đòi "
+            "captcha riêng; nếu vậy hãy đăng nhập thủ công bằng credentials "
+            "đã in.")
     try:
         login = sess.post(f"{origin}/api/account/login",
                           json={"name": username, "password": password},
