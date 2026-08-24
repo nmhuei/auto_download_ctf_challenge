@@ -171,6 +171,36 @@ def handle_submit(args):
         sys.exit(1)
 
 
+def handle_hoard(args):
+    """GAP-02 / spec §7: ``ctf hoard <chal> <FLAG>`` — lưu flag tìm được vào kho
+    local (flag.value=x, state=hoarded) KHÔNG submit lên platform.
+
+    Quyết định đặt tên: tên ``flag`` theo spec đã bị ``submit`` dùng làm alias
+    (tồn tại từ trước) — nên lệnh mới là ``hoard``, alias ``flag-stash``.
+    """
+    chall_id = getattr(args, 'id', None) or (
+        args.target if args.target and str(args.target).isdigit() else None)
+    chall_name = getattr(args, 'name', None) or (
+        args.target if args.target and not str(args.target).isdigit() else None)
+    identifier = chall_id if chall_id is not None else chall_name
+    flag_value = args.flag or args.flag_val
+
+    if not identifier or not flag_value:
+        Logger.error("Usage: ctf hoard <challenge_id|name> <FLAG>")
+        sys.exit(2)
+
+    try:
+        svc = SubmitService(workspace_dir=args.workspace)
+    except Exception as e:
+        Logger.error(f'Initialization error: {e}')
+        sys.exit(1)
+
+    ok, message = svc.hoard_flag(identifier, flag_value)
+    if not ok:
+        Logger.error(message)
+        sys.exit(1)
+
+
 def handle_rank(args):
     cookie_val, token_val = get_auth_for_workspace(args.workspace, args.cookie, args.token)
     try:

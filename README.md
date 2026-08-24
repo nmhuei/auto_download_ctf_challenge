@@ -78,33 +78,33 @@ python main.py
 
 #### Tải toàn bộ với Cookie:
 ```bash
-python main.py -u https://ctf.example.com -c "session=.eJw1z..." -o ./my_ctf
+python main.py pull -u https://ctf.example.com -c "session=.eJw1z..." -o ./my_ctf
 ```
 
 #### Tải bằng file chứa cookie:
 ```bash
 # Lưu cookie vào file cookie.txt
-python main.py -u https://ctf.example.com -c cookie.txt -o ./my_ctf
+python main.py pull -u https://ctf.example.com -c cookie.txt -o ./my_ctf
 ```
 
 #### Tải bằng CTFd API Token:
 ```bash
-python main.py -u https://ctf.example.com -t ctfd_xxxxxxxxxxxxxxxxxxxx -o ./my_ctf
+python main.py pull -u https://ctf.example.com -t ctfd_xxxxxxxxxxxxxxxxxxxx -o ./my_ctf
 ```
 
 #### Chỉ tải một số Category cụ thể (Ví dụ: Web và Pwn):
 ```bash
-python main.py -u https://ctf.example.com -c "session=..." -C Web Pwn -j 8
+python main.py pull -u https://ctf.example.com -c "session=..." -C Web Pwn -j 8
 ```
 
 #### Bỏ qua một Category không muốn tải:
 ```bash
-python main.py -u https://ctf.example.com -c "session=..." -E Misc Forensics
+python main.py pull -u https://ctf.example.com -c "session=..." -E Misc Forensics
 ```
 
 #### Không tải file từ bên thứ 3 (chỉ tải file đính kèm chính thức):
 ```bash
-python main.py -u https://ctf.example.com -c "session=..." --no-third-party
+python main.py pull -u https://ctf.example.com -c "session=..." --no-third-party
 ```
 
 ---
@@ -139,6 +139,16 @@ python3 submit.py -w ./my_ctf --auto
 python3 submit.py -w ./my_ctf --id <CHALL_ID> -f "FLAG{...}"
 ```
 
+#### Lưu flag vào kho local (`ctf hoard`):
+Tìm được flag nhưng chưa muốn/chưa nộp được? Lưu lại vào `metadata.json`
+(flag.value + state=hoarded) mà **không** gọi mạng:
+```bash
+python main.py hoard -w ./my_ctf <CHALL_ID> "FLAG{...}"
+# hoặc theo tên bài / alias flag-stash:
+python main.py hoard -w ./my_ctf -n "flask-jail" "FLAG{...}"
+python main.py flag-stash -w ./my_ctf 16 "FLAG{...}"
+```
+
 ### 6. Trạng thái đa chiều (`ctf status`)
 Mỗi challenge có block `status` trong `metadata.json` gồm 4 trục độc lập —
 dashboard và SUMMARY.md render bằng bộ icon thống nhất:
@@ -156,6 +166,10 @@ dashboard và SUMMARY.md render bằng bộ icon thống nhất:
 
 - Kết quả submit (đúng/sai), container start/stop và sync solve attribution
   từ server (GZCTF / CTFd / rCTF) tự động cập nhật trạng thái — chỉ nâng, không hạ.
+- Trục Writeup được **tự chấm điểm heuristic** (`assess_writeup`, thang 100đ) từ
+  nội dung `writeup/README.md` (fallback `README.md` layout cũ) khi mở dashboard:
+  skeleton 📄 → draft 📝 → complete 📚, chỉ nâng không hạ. Đặt `"writeup_auto": false`
+  trong block `status` của `metadata.json` để quản lý tay.
 - Header dashboard hiển thị: 📊 Progress · 💰 Points · 🏴 Hoarded · 📝 Drafts · 📦 Files · ⏱️ Window.
 - Workspace cũ (layout phẳng, chưa có block `status`) được migrate-on-read ngay khi mở.
 

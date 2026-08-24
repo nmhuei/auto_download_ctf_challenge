@@ -684,5 +684,129 @@ class TestComputeStatusAndStats(TempWorkspaceCase):
         self.assertEqual(stats["writeup_drafts"], 1)
 
 
+# ----------------------------------------------------------------------
+# 9. Fix wave cycle-1: GAP-02 (CLI hoard) + GAP-03 (assessor wiring) + smoke
+# ----------------------------------------------------------------------
+class TestHoardCLI(TempWorkspaceCase):
+    """GAP-02: ``ctf hoard <chal> <FLAG>`` -> SubmitService.hoard_flag.
+
+    Tên lệnh là `hoard` (alias `flag-stash`) vì `flag` đã là alias của
+    `submit` — xung đột parser, quyết định ghi trong handle_hoard docstring.
+    """
+
+    def _parse(self, argv):
+        from ctf_downloader.cli import build_unified_parser
+        return build_unified_parser().parse_args(argv)
+
+    def _offline_submit_service(self):
+        platform = MagicMock()
+        platform.authenticate.return_value = True
+        platform.fetch_challenges.return_value = []
+        return patch("ctf_downloader.services.submit_service.create_session"), \
+            patch("ctf_downloader.services.submit_service.PlatformDetector.detect_platform",
+                  return_value=platform)
+
+    def test_hoard_command_sets_hoarded_status(self):
+        p1, p2 = self._offline_submit_service()
+        with p1, p2:
+            args = self._parse(["hoard", "1", "FLAG{stashed}", "-w", str(self.root)])
+            from ctf_downloader.cli_commands import handle_hoard
+            handle_hoard(args)
+        st = self.repo.read_status(self.meta_path)
+        self.assertEqual(st["flag"]["state"], "hoarded")
+        self.assertEqual(st["flag"]["value"], "FLAG{stashed}")
+        self.assertEqual(st["solve"], "working")   # nâng từ unsolved
+
+    def test_flag_stash_alias_parses(self):
+        args = self._parse(["flag-stash", "-n", "Chall A", "-f", "FLAG{x}",
+                            "-w", "/tmp"])
+        self.assertEqual(args.flag, "FLAG{x}")
+        self.assertEqual(args.name, "Chall A")
+
+    def test_alias_flag_still_belongs_to_submit(self):
+        # `flag` KHÔNG bị giành làm alias của hoard — vẫn dispatch về submit.
+        args = self._parse(["flag", "--auto", "-w", "/tmp"])
+        self.assertEqual(args.auto, True)
+
+    def test_hoard_without_flag_exits_2(self):
+        p1, p2 = self._offline_submit_service()
+        with p1, p2:
+            args = self._parse(["hoard", "1", "-w", str(self.root)])
+            from ctf_downloader.cli_commands import handle_hoard
+            with self.assertRaises(SystemExit) as cm:
+                handle_hoard(args)
+        self.assertEqual(cm.exception.code, 2)
+
+
+class TestComputeStatusAssessorWiring(TempWorkspaceCase):
+    """GAP-03: compute_status gọi assess_writeup và chỉ nâng trục writeup."""
+
+    def _fill_writeup(self, with_placeholder=False):
+        wp = self.meta_path.parent / "writeup" / "README.md"
+        tail = "Flag: `FLAG{...}`\n" if with_placeholder else \
+            "- [x] Solved\nFlag: `FLAG{real_flag_here}`\n"
+        wp.write_text(
+            "# Chall A\n\n## Reconnaissance\n" + ("analysis word " * 40) + "\n\n"
+            "## Exploitation\n" + ("exploit word " * 40) + "\n\n"
+            "```python\nprint('pwn')\n```\n\n" + tail,
+            encoding="utf-8")
+
+    def test_compute_status_calls_assessor(self):
+        # Text không còn placeholder → kết quả mock được áp (none -> draft).
+        self._fill_writeup(with_placeholder=False)
+        with patch("ctf_downloader.services.status_service.assess_writeup",
+                   return_value={"status": "draft", "score": 42,
+                                 "signals": {}, "missing": []}) as mock:
+            st = StatusService.compute_status(self.repo, self.meta_path)
+        mock.assert_called_once()
+        # Đủ 3 tham số (md_text, flag_format, reference_template) — template
+        # sinh lại từ metadata được truyền vào guard-skeleton.
+        _args, kwargs = mock.call_args
+        self.assertEqual(len(_args) + len(kwargs), 3)
+        self.assertEqual(st["writeup"], "draft")   # none -> draft (chỉ nâng)
+
+    def test_only_raises_never_lowers(self):
+        self.repo.update_status(self.meta_path,
+                                lambda st: {**st, "writeup": "complete"})
+        with patch("ctf_downloader.services.status_service.assess_writeup",
+                   return_value={"status": "skeleton", "score": 0,
+                                 "signals": {"template_similarity": 0.99},
+                                 "missing": []}):
+            st = StatusService.compute_status(self.repo, self.meta_path)
+        self.assertEqual(st["writeup"], "complete")
+
+    def test_writeup_auto_false_is_respected(self):
+        self.repo.update_status(self.meta_path,
+                                lambda st: {**st, "writeup_auto": False})
+        with patch("ctf_downloader.services.status_service.assess_writeup") as mock:
+            StatusService.compute_status(self.repo, self.meta_path)
+        mock.assert_not_called()
+
+    def test_filled_writeup_raises_to_complete_end_to_end(self):
+        self._fill_writeup()
+        st = StatusService.compute_status(self.repo, self.meta_path)
+        self.assertEqual(st["writeup"], "complete")
+
+    def test_intact_template_stays_none_without_guard_match(self):
+        # Fixture README còn nguyên placeholder + không khớp guard skeleton
+        # (metadata không đủ để tái tạo đúng template) -> KHÔNG nâng.
+        st = StatusService.compute_status(self.repo, self.meta_path)
+        self.assertEqual(st["writeup"], "none")
+
+
+class TestStatusSmokePTIT(unittest.TestCase):
+    """Smoke: `main.py status -w PTIT_CTF_2026` chạy thật, exit 0."""
+
+    def test_main_py_status_smoke(self):
+        repo_root = pathlib.Path(__file__).resolve().parent
+        if not (repo_root / "PTIT_CTF_2026").is_dir():
+            self.skipTest("PTIT_CTF_2026 workspace không tồn tại")
+        result = subprocess.run(
+            [sys.executable, "main.py", "status", "-w", "PTIT_CTF_2026"],
+            cwd=str(repo_root), capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("CTF WORKSPACE", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

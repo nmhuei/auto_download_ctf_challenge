@@ -6,6 +6,7 @@ import sys
 
 from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test cũ
     get_auth_for_workspace,
+    handle_hoard,
     handle_instance,
     handle_pull,
     handle_rank,
@@ -40,6 +41,9 @@ Quick Examples:
   # 5. Submit Flag:
   ctf submit --id 16 -f "FLAG{...}"
   ctf submit --auto   # Submit all solved flags in workspace
+
+  # 5b. Hoard a found flag locally (NO submit to platform):
+  ctf hoard 16 "FLAG{...}"
 
   # 6. Scan all downloaded CTF workspaces:
   ctf workspaces
@@ -105,6 +109,16 @@ Quick Examples:
     sub_parser.add_argument('--force', action='store_true', help='Vượt blacklist flag sai để vẫn submit')
     sub_parser.add_argument('-i', '--interactive', action='store_true', help='Interactive submission wizard')
 
+    # 5b. HOARD / FLAG-STASH — lưu flag local, KHÔNG submit
+    #     (tên `flag` đã là alias của `submit` nên lệnh mới đặt `hoard`)
+    hoard_parser = subparsers.add_parser('hoard', aliases=['flag-stash'], help='Lưu flag tìm được vào kho local (metadata.json) mà KHÔNG submit lên platform')
+    hoard_parser.add_argument('target', nargs='?', help='Target challenge ID or Name')
+    hoard_parser.add_argument('flag_val', nargs='?', help='Flag string to hoard')
+    hoard_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory')
+    hoard_parser.add_argument('--id', help='Target challenge ID')
+    hoard_parser.add_argument('-n', '--name', help='Target challenge name')
+    hoard_parser.add_argument('-f', '--flag', help='Flag string to hoard')
+
     # 6. RANK / SCOREBOARD / LEADERBOARD
     rank_parser = subparsers.add_parser('rank', aliases=['scoreboard', 'leaderboard'], help='Display live scoreboard standings and update ranking docs')
     rank_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
@@ -150,6 +164,8 @@ def main():
         handle_instance(args)
     elif cmd in ['submit', 'flag']:
         handle_submit(args)
+    elif cmd in ['hoard', 'flag-stash']:
+        handle_hoard(args)
     elif cmd in ['rank', 'scoreboard', 'leaderboard']:
         handle_rank(args)
     elif cmd in ['menu', 'ui', 'console']:

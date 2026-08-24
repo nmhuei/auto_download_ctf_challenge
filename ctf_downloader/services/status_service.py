@@ -8,8 +8,13 @@ delegate vào đây.
 import os
 from typing import Any, Dict, List, Optional
 
-from ..storage.constants import CATEGORY_ICONS, STATUS_ICONS
+from ..storage.constants import CATEGORY_ICONS, FLAG_PLACEHOLDER, STATUS_ICONS
 from ..storage.workspace_repo import WorkspaceRepo
+from ..utils.writeup_assessor import assess_writeup
+
+# Thứ bậc trục writeup cho nguyên tắc "chỉ nâng không hạ" khi áp heuristic
+# (spec status-model §5: heuristic CHỈ ghi đè khi writeup_auto=True).
+WRITEUP_RANK = {"none": 0, "skeleton": 1, "draft": 2, "complete": 3}
 
 
 class StatusService:
@@ -19,8 +24,119 @@ class StatusService:
 
     @staticmethod
     def compute_status(repo: WorkspaceRepo, meta_path) -> Dict[str, Any]:
-        """Trạng thái đa chiều đã normalize/migrate của một challenge."""
-        return repo.read_status(meta_path)
+        """Trạng thái đa chiều đã normalize/migrate của một challenge.
+
+        Ngoài read_status (normalize + migrate-on-read), hàm còn tự đánh giá
+        trục ``writeup`` qua ``assess_writeup`` trên nội dung writeup trên đĩa:
+
+        - Bỏ qua hoàn toàn khi ``status.writeup_auto == False`` (user set tay).
+        - File đọc theo thứ tự: ``<chal>/writeup/README.md`` (layout mới),
+          fallback ``<chal>/README.md`` (layout phẳng cũ — file này chính là
+          template writeup).
+        - ``flag_format`` lấy từ cache ``challenges.json → ctf_info.flag_format``
+          (không gọi mạng).
+        - Nguyên tắc CHỈ NÂNG: kết quả assess chỉ ghi khi cao hơn giá trị hiện
+          có; điểm 0 mà không khớp guard-skeleton (template chưa đụng tới ở
+          layout không sinh được reference) thì không nâng lên gì cả.
+        - Tính toán thuần (không ghi file) — scan/render luôn tái suy ra từ
+          nội dung writeup hiện tại.
+        """
+        status = repo.read_status(meta_path)
+        return StatusService._apply_writeup_assessment(repo, meta_path, status)
+
+    # ------------------------------------------------------------------ #
+    # Writeup assessment wiring (GAP-03)
+    # ------------------------------------------------------------------ #
+    @classmethod
+    def _apply_writeup_assessment(cls, repo: WorkspaceRepo,
+                                  meta_path, status: Dict[str, Any]) -> Dict[str, Any]:
+        if not status.get("writeup_auto", True):
+            return status
+
+        text = cls._read_writeup_text(meta_path.parent)
+        if not text:
+            return status
+
+        flag_format = None
+        try:
+            data = repo.read_challenges()
+            flag_format = ((data.get("ctf_info") or {}).get("flag_format")) or None
+        except Exception:
+            flag_format = None
+
+        reference_template = None
+        try:
+            meta = repo.read_metadata(meta_path) or {}
+            reference_template = cls._reference_template(meta)
+        except Exception:
+            reference_template = None
+
+        try:
+            result = assess_writeup(text, flag_format, reference_template)
+        except Exception:
+            return status
+
+        assessed = str(result.get("status") or "none")
+        signals = result.get("signals") or {}
+        score = int(result.get("score") or 0)
+        skeleton_guarded = (
+            signals.get("template_similarity") is not None
+            and float(signals["template_similarity"]) >= 0.95
+        )
+        if FLAG_PLACEHOLDER in text and not skeleton_guarded:
+            # Placeholder flag chưa được thay → người viết chưa đụng vào
+            # writeup. Bỏ qua điểm "noise" từ nội dung mô tả đề bài (layout
+            # phẳng cũ) — chỉ guard-skeleton mới được nâng lên `skeleton`.
+            return status
+        if score <= 0 and not skeleton_guarded:
+            # Chưa có tín hiệu nội dung nào — không nâng trục writeup.
+            return status
+
+        current = str(status.get("writeup") or "none")
+        if WRITEUP_RANK.get(assessed, 0) > WRITEUP_RANK.get(current, 0):
+            merged = dict(status)
+            merged["writeup"] = assessed
+            return merged
+        return status
+
+    @staticmethod
+    def _read_writeup_text(challenge_dir):
+        """Nội dung writeup của challenge: ``writeup/README.md`` trước, fallback
+        ``README.md`` ở thư mục gốc challenge (layout phẳng cũ)."""
+        for rel in ("writeup/README.md", "README.md"):
+            path = challenge_dir / rel
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if text.strip():
+                return text
+        return None
+
+    @staticmethod
+    def _reference_template(meta: Dict[str, Any]) -> Optional[str]:
+        """Sinh lại template writeup từ metadata để guard-skeleton của assessor
+        hoạt động. Trả None nếu không sinh được (assessor tự bỏ qua guard)."""
+        try:
+            from ..generator.workspace_builder import WorkspaceBuilder
+            from ..models import Challenge
+
+            raw = meta.get("raw") if isinstance(meta.get("raw"), dict) else {}
+            chall = Challenge(
+                id=meta.get("id"),
+                name=str(meta.get("name") or ""),
+                category=str(meta.get("category") or "Misc"),
+                points=int(meta.get("points") or 0),
+                description=meta.get("description") or raw.get("description") or "",
+                author=meta.get("author"),
+                connection_info=meta.get("connection_info"),
+                solves_count=meta.get("solves_count"),
+            )
+            return WorkspaceBuilder._generate_writeup_template(chall)
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------ #
     # Scan một workspace
@@ -39,8 +155,8 @@ class StatusService:
 
                 # Trạng thái đa chiều (normalize + migrate-on-read từ legacy:
                 # bool solved_by_me / marker README / placeholder flag thay rồi /
-                # instance_info.is_container)
-                status = repo.read_status(meta_path)
+                # instance_info.is_container) + tự đánh giá trục writeup
+                status = StatusService.compute_status(repo, meta_path)
                 m['_status'] = status
 
                 m['solved_by_me'] = status['solve'] == 'solved_by_me'
