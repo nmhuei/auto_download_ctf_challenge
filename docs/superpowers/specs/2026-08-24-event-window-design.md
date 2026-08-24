@@ -154,3 +154,18 @@ Một số platform trả 502 từ lớp limit/proxy của instance trong khi ba
 2. **Invisible maintenance**: extend thành công chỉ log 1 dòng 🔄, KHÔNG spam; đếm ngược hiển thị nhẹ nhàng ở dashboard.
 3. **Reconnect tự động**: entry đổi IP/port sau pod-restart hoặc qua PlatformProxy bridge → tool phát hiện (poll status 60s) và patch lại HOST/PORT vào solve.py/metadata NGAY, kèm in lệnh nc mới — solver chỉ cần chạy lại script chứ không phải mò IP thủ công.
 4. Restart/rebuild là phương sách cuối; mọi quyết định phá vỡ kết nối hiện có phải đi qua R-A (flag rotate warning).
+
+### State machine & tham số (tổng hợp từ nghiên cứu thuật toán)
+
+KeepAliveTick chạy reconciliation **level-triggered** (mỗi tick quyết định lại toàn bộ từ observed mới — desired={running, remaining≥threshold}, không dựa event):
+```
+ALIVE --remaining≤RENEW_LEAD--> DUE_SOON --T_renew(jitter)--> RENEWING
+RENEWING --OK--> ALIVE | --retry-able err--> RENEW_FAILED --attempts<4 ∧ remaining>90s--> RENEWING
+RENEWING --fatal(403 hết lượt/giải kết)--> GIVE_UP (circuit breaker OPEN)
+ALIVE/DUE_SOON/RENEW_FAILED --API≠Running ∨ TCP-fail×3 ∨ remaining=0--> DEAD
+DEAD --> RESTARTING (DELETE → cooldown 10s → POST → boot-wait 20-30s → health)
+RESTARTING --health OK--> ALIVE | --fail--> RESTART_BACKOFF (30→60→120s… cap 600, ±20%)
+RESTART_BACKOFF --restarts<MAX_RESTARTS(3)--> RESTARTING | --≥3--> GIVE_UP (CRITICAL chờ user)
+```
+Tham số: POLL 30-60s (DUE_SOON/FAILED: 5-10s) · TCP probe period 15s × threshold 3 · RENEW_LEAD ≈60% cửa sổ · jitter 0-60s · EXT retry 2s→30s full-jitter · SAFETY_MARGIN 90s · BOOT_WAIT 20-30s · ESCALATION INFO/WARNING/ERROR/CRITICAL, ERROR repeat 300s, CRITICAL mute các cấp thấp hơn cùng instance.
+Per-platform nuance: GZCTF recreate giữ flag (FlagContext ghim DB) — DEAD→auto-restart OK; whale PATCH-renew tuyệt đối trước, POST chỉ khi row mất/chết thật và PHẢI qua R-A (đổi flag). Whale backoff ≥61s (request lỗi cũng reset đồng hồ).
