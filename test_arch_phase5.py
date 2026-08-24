@@ -532,3 +532,186 @@ class TestRegistryThrottlePins(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# Task 8 — Characterization tests: StatusService + PullService
+# ---------------------------------------------------------------------------
+
+class TestStatusServiceSummaryStats(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="arch8_status_")
+        self.root = _make_workspace(self._tmp)
+        self.repo = WorkspaceRepo(self.root)
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_summary_stats_from_repo(self):
+        from ctf_downloader.services.status_service import StatusService
+
+        stats = StatusService.summary_stats(self.repo)
+        self.assertEqual(stats["title"], "TestCTF")
+        self.assertEqual(stats["platform"], "gzctf")
+        self.assertEqual(stats["total_challenges"], 1)
+        self.assertEqual(stats["solved_challenges"], 0)
+        self.assertEqual(stats["unsolved_challenges"], 1)
+        self.assertEqual(stats["total_points"], 100)
+        self.assertEqual(stats["earned_points"], 0)
+        self.assertEqual(set(stats["categories"]), {"Web"})
+
+    def test_scan_all_workspaces_prints_table(self):
+        import io
+        from contextlib import redirect_stdout
+        from ctf_downloader.services.status_service import StatusService
+
+        # Workspace rỗng -> bị skip (total == 0)
+        empty = pathlib.Path(self._tmp) / "ws_empty"
+        empty.mkdir(parents=True, exist_ok=True)
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rows = StatusService.scan_all_workspaces(self._tmp)
+        out = buf.getvalue()
+        self.assertIn("SCANNING ALL CTF WORKSPACES", out)
+        self.assertIn("TestCTF", out)
+        self.assertIn("GZCTF", out)
+        self.assertIn("0/1", out)
+        # Workspace rỗng không xuất hiện trong bảng
+        self.assertNotIn("ws_empty\n", out.split("Progress")[-1].split("TestCTF")[0])
+        self.assertTrue(rows)
+        self.assertEqual(rows[0]["title"], "TestCTF")
+
+    def test_scan_all_workspaces_missing_dir_warns_only(self):
+        import io
+        from contextlib import redirect_stdout
+        from ctf_downloader.services.status_service import StatusService
+
+        missing = pathlib.Path(self._tmp) / "no_such_dir"
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rows = StatusService.scan_all_workspaces(str(missing))
+        self.assertEqual(rows, [])
+
+
+class TestPullServiceRun(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="arch8_pull_")
+        self.out_dir = os.path.join(self._tmp, "out")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _config(self, threads=2):
+        from ctf_downloader.config import DownloaderConfig
+
+        return DownloaderConfig(
+            url="https://pull.example.com",
+            cookie="session=abc",
+            output_dir=self.out_dir,
+            threads=threads,
+        )
+
+    def _fake_platform(self):
+        from ctf_downloader.models import Challenge, CTFInfo
+
+        plat = mock.MagicMock()
+        plat.authenticate.return_value = True
+        plat.ctf_info = CTFInfo(title="PullCTF", url="https://pull.example.com")
+        plat.fetch_challenges.return_value = [
+            Challenge(id=1, name="Chall A", category="Web", points=100),
+            Challenge(id=2, name="Chall B", category="Pwn", points=200),
+        ]
+        return plat
+
+    def test_run_returns_result_dict_and_builds_workspace(self):
+        import threading
+        from ctf_downloader.services import pull_service
+
+        fake_platform = self._fake_platform()
+
+        real_dm_cls = pull_service.DownloadManager
+        constructions = []
+
+        class SpyDM(real_dm_cls):
+            def __init__(self, session=None, **kw):
+                super().__init__(session=session, **kw)
+                constructions.append((threading.get_ident(), id(session)))
+
+        master_sessions = []
+        real_create = pull_service.create_session
+
+        def spy_create(**kw):
+            sess = real_create(**kw)
+            master_sessions.append(sess)
+            return sess
+
+        with mock.patch.object(pull_service.PlatformDetector, "detect_platform",
+                               return_value=fake_platform), \
+             mock.patch.object(pull_service, "DownloadManager", SpyDM), \
+             mock.patch.object(pull_service, "create_session", side_effect=spy_create):
+            result = pull_service.PullService.run(self._config())
+
+        self.assertIsInstance(result, dict)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["challenges_processed"], 2)
+        self.assertTrue(os.path.isdir(self.out_dir))
+        self.assertTrue(os.path.exists(os.path.join(self.out_dir, "SUMMARY.md")))
+        self.assertTrue(result["output_dir"] == self.out_dir)
+
+        # Mỗi thread worker dùng đúng 1 session, và KHÔNG phải session master
+        per_thread = {}
+        for tid, sess_id in constructions:
+            per_thread.setdefault(tid, set()).add(sess_id)
+        for tid, sessions in per_thread.items():
+            self.assertEqual(len(sessions), 1,
+                             f"thread {tid} used multiple sessions")
+        for _, sess_id in constructions:
+            for master in master_sessions:
+                self.assertNotEqual(sess_id, id(master),
+                                    "worker reused the shared master session")
+
+    def test_run_no_challenges_returns_not_ok(self):
+        from ctf_downloader.services import pull_service
+
+        fake_platform = self._fake_platform()
+        fake_platform.fetch_challenges.return_value = []
+
+        with mock.patch.object(pull_service.PlatformDetector, "detect_platform",
+                               return_value=fake_platform):
+            result = pull_service.PullService.run(self._config())
+
+        self.assertIsInstance(result, dict)
+        self.assertFalse(result["ok"])
+
+    def test_ctf_downloader_facade_delegates_and_keeps_bool(self):
+        from ctf_downloader.core import CTFDownloader
+        from ctf_downloader.services import pull_service
+
+        fake_platform = self._fake_platform()
+
+        with mock.patch.object(pull_service.PlatformDetector, "detect_platform",
+                               return_value=fake_platform), \
+             mock.patch.object(pull_service.PullService, "run",
+                               return_value={"ok": True}) as run_mock:
+            dl = CTFDownloader(self._config())
+            ok = dl.run()
+
+        self.assertTrue(ok)
+        run_mock.assert_called_once()
+
+    def test_dashboard_facade_delegates_to_status_service(self):
+        from ctf_downloader.dashboard import CTFDashboard
+        from ctf_downloader.services.status_service import StatusService
+
+        ws_root = _make_workspace(self._tmp)
+        with mock.patch.object(StatusService, "summary_stats",
+                               wraps=StatusService.summary_stats) as spy:
+            dash = CTFDashboard(str(ws_root))
+            stats = dash.get_summary_stats()
+        self.assertEqual(stats["total_challenges"], 1)
+        self.assertGreaterEqual(spy.call_count, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

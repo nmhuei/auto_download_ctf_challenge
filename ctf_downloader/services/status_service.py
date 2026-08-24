@@ -1,0 +1,207 @@
+"""StatusService — đọc trạng thái workspace & in tổng quan.
+
+Hợp nhất logic cũ của ``dashboard.CTFDashboard`` (scan + stats + render tree)
+và 3 bản sao scan-all-workspaces (cli.py / manage.py / interactive_menu.py)
+thành một nơi DUY NHẤT. Các facade (CTFDashboard) và các entrypoint chỉ
+delegate vào đây.
+"""
+import os
+from typing import Any, Dict, List, Optional
+
+from ..storage.workspace_repo import WorkspaceRepo
+
+
+class StatusService:
+    # ------------------------------------------------------------------ #
+    # Scan một workspace
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def scan_local_challenges(repo: WorkspaceRepo) -> List[Dict[str, Any]]:
+        """Đọc metadata mọi challenge trong workspace, gắn trạng thái solved."""
+        workspace_path = repo.root
+        results = []
+        for meta_path in repo.iter_challenges():
+            try:
+                m = repo.read_metadata(meta_path)
+                if not m:
+                    continue
+                root = meta_path.parent
+
+                # Solved state: metadata + marker trong writeup/README.md hoặc README.md
+                is_solved = bool(m.get('solved_by_me', False))
+                readme_paths = [root / 'writeup' / 'README.md', root / 'README.md']
+                if repo.read_solved_state(readme_paths):
+                    is_solved = True
+
+                m['solved_by_me'] = is_solved
+                m['_folder'] = str(root)
+                m['_rel_folder'] = os.path.relpath(root, workspace_path)
+
+                # Count local files in challenge/ subdirectory or root
+                c_subdir = root / 'challenge'
+                if c_subdir.is_dir():
+                    local_files = [f for f in os.listdir(c_subdir) if f not in ['__pycache__', '.git']]
+                else:
+                    local_files = [f for f in os.listdir(root) if f not in ['metadata.json', 'README.md', 'solve.py', 'challenge', 'solver', 'writeup', 'script', 'scripts', '__pycache__']]
+                m['_local_files_count'] = len(local_files)
+
+                results.append(m)
+            except Exception:
+                pass
+        return results
+
+    @staticmethod
+    def summary_stats(repo: WorkspaceRepo,
+                      challenges: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """Tổng hợp thống kê giải từ repo (dùng lại ``challenges`` nếu đã scan)."""
+        challs = challenges if challenges is not None else StatusService.scan_local_challenges(repo)
+        workspace_path = repo.root
+
+        total_challs = len(challs)
+        solved_challs = sum(1 for c in challs if c.get('solved_by_me'))
+        total_points = sum((c.get('points') or 0) for c in challs)
+        earned_points = sum((c.get('points') or 0) for c in challs if c.get('solved_by_me'))
+
+        by_cat: Dict[str, Dict[str, Any]] = {}
+        for c in challs:
+            cat = c.get('category', 'Misc')
+            pts = c.get('points') or 0
+            if cat not in by_cat:
+                by_cat[cat] = {'total': 0, 'solved': 0, 'points': 0, 'earned': 0, 'challenges': []}
+            by_cat[cat]['total'] += 1
+            by_cat[cat]['points'] += pts
+            if c.get('solved_by_me'):
+                by_cat[cat]['solved'] += 1
+                by_cat[cat]['earned'] += pts
+            by_cat[cat]['challenges'].append(c)
+
+        challenges_data = repo.read_challenges()
+        ctf_info = challenges_data.get('ctf_info', {}) if isinstance(challenges_data, dict) else {}
+        return {
+            'title': ctf_info.get('title') or os.path.basename(workspace_path),
+            'url': ctf_info.get('url', ''),
+            'platform': ctf_info.get('platform', 'generic'),
+            'user': ctf_info.get('user', ''),
+            'team': ctf_info.get('team', ''),
+            'total_challenges': total_challs,
+            'solved_challenges': solved_challs,
+            'unsolved_challenges': total_challs - solved_challs,
+            'total_points': total_points,
+            'earned_points': earned_points,
+            'completion_rate': (solved_challs / total_challs * 100) if total_challs > 0 else 0,
+            'categories': by_cat
+        }
+
+    # ------------------------------------------------------------------ #
+    # Render cây challenge
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def render_tree(repo: WorkspaceRepo,
+                    stats: Optional[Dict[str, Any]] = None,
+                    filter_cat: Optional[List[str]] = None,
+                    only_unsolved: bool = False,
+                    only_solved: bool = False,
+                    only_container: bool = False) -> None:
+        if stats is None:
+            stats = StatusService.summary_stats(repo)
+
+        title = stats['title']
+        platform = stats['platform'].upper()
+        rate = stats['completion_rate']
+
+        print('=' * 85)
+        print(f" 🏆 CTF WORKSPACE: {title} [{platform}]")
+        if stats['user'] or stats['team']:
+            team_str = f" | Team: {stats['team']}" if stats['team'] else ''
+            print(f" 👤 User: {stats['user']}{team_str}")
+        print(f" 📊 Progress: {stats['solved_challenges']}/{stats['total_challenges']} Solved ({rate:.1f}%) | Points: {stats['earned_points']}/{stats['total_points']}")
+
+        bar_len = 30
+        filled_len = int(bar_len * rate // 100)
+        bar = '█' * filled_len + '░' * (bar_len - filled_len)
+        print(f"    [{bar}] {rate:.1f}%")
+        print('=' * 85)
+
+        categories = stats['categories']
+        for cat, data in sorted(categories.items()):
+            if filter_cat and cat.lower() not in [c.lower() for c in filter_cat]:
+                continue
+
+            c_list = data['challenges']
+            if only_unsolved:
+                c_list = [c for c in c_list if not c.get('solved_by_me')]
+            elif only_solved:
+                c_list = [c for c in c_list if c.get('solved_by_me')]
+
+            if only_container:
+                c_list = [c for c in c_list if repo.is_container(c)]
+
+            if not c_list:
+                continue
+
+            c_rate = (data['solved'] / data['total'] * 100) if data['total'] > 0 else 0
+            c_bar = '█' * int(10 * c_rate // 100) + '░' * (10 - int(10 * c_rate // 100))
+            print(f"\n📁 {cat} ({len(c_list)} challs, {data['points']} pts) [{c_bar}] {data['solved']}/{data['total']}")
+
+            for idx, c in enumerate(c_list):
+                is_last = (idx == len(c_list) - 1)
+                prefix = '└── ' if is_last else '├── '
+
+                status_icon = '✅' if c.get('solved_by_me') else '⏳'
+                status_str = 'Solved' if c.get('solved_by_me') else 'Unsolved'
+
+                c_id = c.get('id', '?')
+                c_name = c.get('name', 'Unknown')
+                c_pts = c.get('points', 0)
+                solves = c.get('solves_count', c.get('solves', '-'))
+                files_count = c.get('_local_files_count', 0)
+
+                # Check container tag
+                is_cont = repo.is_container(c)
+                cont_str = ' [🐳 Container]' if is_cont else ''
+                files_str = f' [{files_count} file(s)]' if files_count > 0 else ''
+
+                print(f"  {prefix}[{status_icon} {status_str:<8}] {c_id:>3}. {c_name:<32} ({c_pts:>4} pts) - {str(solves):>3} solves{cont_str}{files_str}")
+
+        print('\n' + '=' * 85)
+
+    # ------------------------------------------------------------------ #
+    # Scan toàn bộ workspace trong một thư mục gốc (bản DUY NHẤT — cli/
+    # manage/interactive_menu sẽ redirect về đây ở task sau)
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def scan_all_workspaces(base_dir: str) -> List[Dict[str, Any]]:
+        """In bảng tổng quát mọi workspace trong ``base_dir``.
+
+        Trả về danh sách stats của các workspace có ít nhất 1 challenge.
+        """
+        from ..utils.logger import Logger
+
+        base_dir = os.path.abspath(os.path.expanduser(base_dir))
+        collected: List[Dict[str, Any]] = []
+        print('=' * 85)
+        print(f' 📁 SCANNING ALL CTF WORKSPACES IN: {base_dir}')
+        print('=' * 85)
+        print(f'{"CTF Competition":<35} | {"Platform":<10} | {"Solved/Total":<14} | {"Progress":<15}')
+        print('=' * 85)
+
+        if not os.path.exists(base_dir):
+            Logger.warning(f'Directory {base_dir} does not exist.')
+            return collected
+
+        for entry in sorted(os.listdir(base_dir)):
+            full_p = os.path.join(base_dir, entry)
+            if os.path.isdir(full_p):
+                repo = WorkspaceRepo(full_p)
+                stats = StatusService.summary_stats(repo)
+                if stats['total_challenges'] > 0:
+                    collected.append(stats)
+                    title = stats['title'][:35]
+                    plat = stats['platform'][:10].upper()
+                    solv_str = f"{stats['solved_challenges']}/{stats['total_challenges']}"
+                    rate = stats['completion_rate']
+                    bar = '█' * int(8 * rate // 100) + '░' * (8 - int(8 * rate // 100))
+                    prog_str = f'[{bar}] {rate:.0f}%'
+                    print(f'{title:<35} | {plat:<10} | {solv_str:<14} | {prog_str:<15}')
+        print('=' * 85)
+        return collected
