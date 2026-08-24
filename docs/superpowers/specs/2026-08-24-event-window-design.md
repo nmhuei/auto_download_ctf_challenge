@@ -130,3 +130,17 @@ Hai cơ chế cốt lõi của instance: (1) **bật** (start) đã có; (2) **d
 
 ### Testing
 Mock platform: tick đúng thời điểm cửa sổ (không sớm hơn — tránh 400 GZCTF); whale hết lượt → không gọi PATCH nữa; poll phát hiện Destroyed → sync local.
+
+### Ràng buộc thực chiến (kinh nghiệm user — BẮT BUỘC tuân thủ)
+
+**R-A. Restart ĐỔI FLAG với một số bài dynamic.**
+Với challenge dynamic mà flag sinh theo instance (không theo teamToken), tạo lại container = flag cũ chết.
+→ Quy tắc: TUYỆT ĐỐI không auto-restart âm thầm khi `status.flag.value` đã có (hoarded/submitted):
+  (1) nếu chưa submit đúng → cảnh báo + xác nhận "restart sẽ ĐỔI FLAG của bài này, flag bạn đang giữ sẽ hết hiệu lực";
+  (2) nếu user đồng ý (hoặc --yes): restart xong set `status.flag.state = found_unverified` + xoá `flag.value`, note "🔄 flag đã rotate do restart";
+  (3) nếu đang auto-mode không có người (watch), chỉ restart khi flag.value == null; có flag → dừng ở mức 📢 critical chờ user.
+Điều này ghi đè mọi mặc định khác trong mục 9.
+
+**R-B. Lỗi 502 qua entry KHÔNG có nghĩa là container đã chết.**
+Một số platform trả 502 từ lớp limit/proxy của instance trong khi backend vẫn chạy bình thường.
+→ Quy tắc health-check: 502/503/504 từ entry KHÔNG được tính là dấu hiệu chết; chỉ tin (a) trạng thái API chính thức (status Destroyed / expectStopAt quá khứ), hoặc (b) TCP connect fail NHIỀU lần liên tiếp (≥3 lần cách nhau ≥30s). Trước khi kết luận dead phải cross-check status API; nếu API vẫn báo Running + còn hạn → chỉ hiển thị ⚠️ "502 tạm thời (limit)" chứ không restart.
