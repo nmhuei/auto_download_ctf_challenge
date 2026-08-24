@@ -338,6 +338,48 @@ def handle_watch(args):
         sys.exit(exit_code)
 
 
+def handle_register(args):
+    """``ctf register`` — auto-register ĐÚNG 1 tài khoản/lần chạy (spec §4).
+
+    Exit code: 0 thành công | 1 thất bại/captcha-unsupported | 2 thiếu tham số
+    hoặc đang bị rate limit."""
+    from .platforms.base import PlatformRegisterUnsupported
+    from .services.register_service import RegisterService
+
+    if not getattr(args, 'url', None):
+        Logger.error("Usage: ctf register -u <platform-url> "
+                     "[--email me@x.com | --tempmail] [--username PREFIX] [--password PASS]")
+        sys.exit(2)
+
+    svc = RegisterService()
+    try:
+        result = svc.run(
+            url=args.url,
+            email=getattr(args, 'email', None),
+            use_tempmail=bool(getattr(args, 'tempmail', False)),
+            username_prefix=getattr(args, 'username_prefix', None) or 'player',
+            password=getattr(args, 'password', None),
+            workspace=getattr(args, 'workspace', None),
+        )
+    except PlatformRegisterUnsupported:
+        # Service đã in credentials + hướng dẫn thủ công — captcha không bypass.
+        sys.exit(1)
+    except RuntimeError as exc:
+        Logger.error(str(exc))
+        sys.exit(2)
+    except KeyboardInterrupt:
+        Logger.info('Đã huỷ register.')
+        sys.exit(130)
+
+    if not result.get('ok'):
+        creds = result.get('credentials') or {}
+        if creds.get('username'):
+            Logger.info(f"Credentials đã sinh (chưa dùng được): "
+                        f"{creds.get('username')} / {creds.get('password')} "
+                        f"(email: {creds.get('email')})")
+        sys.exit(1)
+
+
 def handle_rank(args):
     cookie_val, token_val = get_auth_for_workspace(args.workspace, args.cookie, args.token)
     try:

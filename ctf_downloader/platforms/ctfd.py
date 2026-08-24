@@ -5,10 +5,94 @@ import requests
 from typing import List, Dict, Any, Optional, Tuple
 from bs4 import BeautifulSoup
 from .base import (BasePlatform, Challenge, CTFInfo, EventTimes,
-                   SolveAttribution, epoch_ms, normalize_epoch_to_utc, safe_get_json)
+                   PlatformRegisterUnsupported, SolveAttribution, epoch_ms,
+                   normalize_epoch_to_utc, safe_get_json)
 from ..utils.logger import Logger
 from ..utils.sanitize import sanitize_filename
 from .registry import register
+
+
+# --------------------------------------------------------------------------- #
+# Auto-register (spec auto-register §2): scrape csrfNonce trang /register ->
+# POST form (name, email, password, nonce) -> xác minh bằng /api/v1/users/me.
+# Verify email (nếu platform bật) do RegisterService cung cấp hook tempmail.
+# --------------------------------------------------------------------------- #
+_NONCE_PATTERNS = (
+    re.compile(r"['\"]csrfNonce['\"]\s*:\s*['\"]([^'\"]+)['\"]"),
+    re.compile(r"csrf_nonce\s*=\s*['\"]([^'\"]+)['\"]"),
+)
+
+
+def ctfd_scrape_nonce(platform) -> Optional[str]:
+    """Lấy csrfNonce từ trang /register (JS init > attr > meta tag)."""
+    try:
+        resp = platform.session.get(f"{platform.base_url}/register", timeout=15)
+    except Exception as exc:
+        Logger.warning(f"CTFd register: không tải được /register: {exc}")
+        return None
+    if resp.status_code != 200:
+        Logger.warning(f"CTFd register: GET /register -> HTTP {resp.status_code}")
+        return None
+    html = resp.text or ""
+    for pattern in _NONCE_PATTERNS:
+        match = pattern.search(html)
+        if match:
+            return match.group(1)
+    soup = BeautifulSoup(html, "html.parser")
+    meta_csrf = soup.find("meta", {"name": "csrf-token"})
+    if meta_csrf and meta_csrf.get("content"):
+        return meta_csrf["content"]
+    return None
+
+
+def ctfd_register(platform, *, username: str, email: str, password: str,
+                  verify_email_hook=None) -> Dict[str, Any]:
+    """Flow auto-register CTFd. Xác minh thành công bằng /api/v1/users/me."""
+    base, sess = platform.base_url, platform.session
+
+    nonce = ctfd_scrape_nonce(platform)
+    if not nonce:
+        return {"ok": False,
+                "message": "Không lấy được csrfNonce từ trang /register "
+                           "(platform có thể chặn bot hoặc khác chuẩn CTFd)."}
+
+    try:
+        resp = sess.post(
+            f"{base}/register",
+            data={"name": username, "email": email, "password": password,
+                  "nonce": nonce},
+            timeout=20, allow_redirects=True)
+    except Exception as exc:
+        return {"ok": False, "message": f"Lỗi mạng khi register: {exc}"}
+
+    # POST xong CTFd redirect về /profile|/challenges nếu OK; lỗi thì render
+    # lại form kèm thông báo — kiểm chứng CHẮC CHẮN bằng /api/v1/users/me.
+    me_ok, me_name = False, None
+    try:
+        me = sess.get(f"{base}/api/v1/users/me", timeout=15)
+        if me.status_code == 200:
+            data = (me.json() or {}).get("data") or {}
+            me_name = data.get("name")
+            me_ok = bool(data.get("type") == "user")
+    except Exception:
+        pass
+
+    if not me_ok:
+        detail = (resp.text or "").strip()[:200].replace("\n", " ")
+        return {"ok": False,
+                "message": f"Register thất bại (final={getattr(resp, 'url', '?')}): {detail}"}
+
+    Logger.success(f"CTFd: register OK — đang đăng nhập với user "
+                   f"[bold cyan]{me_name or username}[/bold cyan].")
+    result: Dict[str, Any] = {"ok": True, "message": "Registered",
+                              "user_name": me_name or username}
+
+    if verify_email_hook is not None:
+        verified = verify_email_hook(sess)
+        result["email_verified"] = bool(verified)
+
+    result["cookies"] = {c.name: c.value for c in sess.cookies}
+    return result
 
 
 def probe_ctfd_challenges(origin: str, session, info, done: set) -> bool:
@@ -131,6 +215,13 @@ class CTFdPlatform(BasePlatform):
 
         Logger.error("Failed to authenticate to CTFd platform. Please check your Cookie or Token.")
         return False
+
+    def register(self, *, username: str, email: str, password: str,
+                 verify_email_hook=None) -> Dict[str, Any]:
+        """Auto-register CTFd — xem ctfd_register (spec auto-register §2)."""
+        return ctfd_register(self, username=username, email=email,
+                             password=password,
+                             verify_email_hook=verify_email_hook)
 
     def fetch_challenges(self) -> List[Challenge]:
         """

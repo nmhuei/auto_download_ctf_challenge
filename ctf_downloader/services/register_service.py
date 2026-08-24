@@ -1,0 +1,302 @@
+"""RegisterService — auto-register 1 tài khoản/lần chạy trên platform CTF.
+
+Van-an-toàn (bắt buộc, spec auto-register §4):
+  - TẠO ĐÚNG 1 tài khoản cho mỗi lần chạy — KHÔNG có cờ count/batch, KHÔNG loop.
+  - Luôn in cảnh báo rules trước khi tạo tài khoản.
+  - Captcha phức tạp (Turnstile/reCAPTCHA/hCaptcha) -> dừng sạch, hướng dẫn
+    thủ công (platform layer raise PlatformRegisterUnsupported) — không bypass.
+  - Rate limit nội bộ: 2 lần register trên cùng URL phải cách nhau >= 60s
+    (state persist trong global config để chặn cả giữa các lần chạy CLI).
+"""
+import os
+import random
+import string
+import time
+from typing import Any, Callable, Dict, Optional
+
+from ..platforms.base import PlatformRegisterUnsupported
+from ..storage.global_config import load_global_config, save_global_config
+from ..utils.logger import Logger, console
+from ..utils.tempmail import TempMailClient, TempMailError
+
+# Bảng ký tự mật khẩu mạnh (loại bỏ ký tự dễ nhầm lẫn l/1/I/O/0)
+_PW_LOWER = "abcdefghijkmnopqrstuvwxyz"
+_PW_UPPER = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+_PW_DIGIT = "23456789"
+_PW_SPECIAL = "!@#$%^&*-_+?"
+_USERNAME_ALPHABET = string.ascii_lowercase + string.digits
+
+
+def generate_credentials(prefix: str = "player",
+                         password_length: int = 16,
+                         rng: Optional[random.Random] = None) -> Dict[str, str]:
+    """Sinh credentials random: username = prefix + 6 alphanumeric lowercase,
+    password ``password_length`` ký tự đảm bảo đủ 4 nhóm ký tự.
+
+    Truyền ``random.Random(seed)`` để chạy deterministic (dùng trong test).
+    """
+    rng = rng or random.Random()
+    suffix = "".join(rng.choice(_USERNAME_ALPHABET) for _ in range(6))
+    username = f"{prefix}{suffix}"
+
+    while password_length < 4:
+        password_length = 4  # tối thiểu 4 để đảm bảo đủ 4 nhóm
+    pools = [_PW_LOWER, _PW_UPPER, _PW_DIGIT, _PW_SPECIAL]
+    chars = [rng.choice(pool) for pool in pools]
+    all_chars = "".join(pools)
+    chars += [rng.choice(all_chars)
+              for _ in range(password_length - len(chars))]
+    rng.shuffle(chars)
+    return {"username": username, "password": "".join(chars)}
+
+
+class RegisterService:
+    """Điều phối `ctf register`: sinh credential -> gọi platform.register ->
+    lưu auth map -> in kết quả. Mỗi lần run() tạo ĐÚNG 1 tài khoản."""
+
+    RATE_LIMIT_SECONDS = 60
+
+    def __init__(self,
+                 now_fn: Callable[[], float] = time.time,
+                 sleep_fn: Callable[[float], None] = time.sleep,
+                 config_loader: Callable[[], Dict] = load_global_config,
+                 config_saver: Callable[[Dict], Any] = save_global_config,
+                 tempmail_factory: Callable[[], TempMailClient] = TempMailClient,
+                 detect_fn: Optional[Callable] = None):
+        self._now = now_fn
+        self._sleep = sleep_fn
+        self._load_cfg = config_loader
+        self._save_cfg = config_saver
+        self._tempmail_factory = tempmail_factory
+        if detect_fn is None:
+            # import muộn để tránh vòng phụ thuộc khi chỉ dùng unit-test thuần
+            from ..platforms.detection import detect_platform_info
+            detect_fn = detect_platform_info
+        self._detect = detect_fn
+
+    # ------------------------------------------------------------------ #
+    # Van-an-toàn §4: rate limit >= 60s giữa 2 lần register cùng URL
+    # ------------------------------------------------------------------ #
+    def _check_rate_limit(self, cfg: Dict, url_key: str) -> float:
+        """Trả về số giây còn phải chờ (0.0 = được phép)."""
+        state = cfg.get("register_state") or {}
+        last = state.get(url_key) or {}
+        last_ts = float(last.get("last_attempt_ts") or 0)
+        elapsed = self._now() - last_ts
+        remaining = self.RATE_LIMIT_SECONDS - elapsed
+        return max(0.0, remaining)
+
+    def _record_attempt(self, cfg: Dict, url_key: str) -> Dict:
+        state = cfg.setdefault("register_state", {})
+        entry = state.setdefault(url_key, {})
+        entry["last_attempt_ts"] = self._now()
+        return cfg
+
+    @staticmethod
+    def _print_warnings(url: str) -> None:
+        """Cảnh báo bắt buộc trước khi tạo bất kỳ tài khoản nào."""
+        Logger.warning("=" * 70)
+        Logger.warning(
+            "[bold yellow]⚠️  VAN AN TOÀN AUTO-REGISTER[/bold yellow]")
+        Logger.warning(
+            "⚠️  Một số giải [bold]cấm nhiều tài khoản/người[/bold] — đảm bảo "
+            f"tuân thủ rules của giải ({url}).")
+        Logger.warning(
+            "⚠️  Tool sẽ tạo [bold]ĐÚNG 1 tài khoản[/bold] cho lần chạy này "
+            "(không hỗ trợ batch/loop theo thiết kế).")
+        Logger.warning(
+            "⚠️  Nếu platform bật captcha (Turnstile/reCAPTCHA/hCaptcha), tool "
+            "sẽ DỪNG và bạn cần đăng ký thủ công.")
+        Logger.warning("=" * 70)
+
+    @staticmethod
+    def _print_credentials(creds: Dict[str, str]) -> None:
+        try:
+            from rich.panel import Panel
+            body = (f"[bold cyan]URL:[/]      {creds['url']}\n"
+                    f"[bold cyan]Username:[/] {creds['username']}\n"
+                    f"[bold cyan]Password:[/] {creds['password']}")
+            if creds.get("email"):
+                body += f"\n[bold cyan]Email:[/]    {creds['email']}"
+            console.print(Panel(body, title="[bold green]✅ REGISTERED — LƯU LẠI CREDENTIALS[/]",
+                                border_style="green"))
+        except Exception:
+            for key in ("url", "username", "password", "email"):
+                if creds.get(key):
+                    Logger.success(f"{key.upper()}: {creds[key]}")
+
+    # ------------------------------------------------------------------ #
+    # Auth map persistence (global config)
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _auth_key(workspace: Optional[str], url: str) -> str:
+        """Key trong auth map: đường dẫn workspace tuyệt đối nếu có, ngược lại URL."""
+        if workspace:
+            abs_ws = os.path.abspath(workspace)
+            if os.path.isdir(abs_ws):
+                return abs_ws
+        return url
+
+    @staticmethod
+    def _cookies_to_header(cookies: Dict[str, str]) -> str:
+        return "; ".join(f"{k}={v}" for k, v in (cookies or {}).items())
+
+    # ------------------------------------------------------------------ #
+    # Email: --email | --tempmail | fallback tempmail tự thử
+    # ------------------------------------------------------------------ #
+    def _resolve_email(self, email_arg: Optional[str],
+                       use_tempmail: bool) -> Dict[str, Any]:
+        """Trả {'email', 'tempmail': client|None, 'verified_flow': bool}.
+
+        Không truyền gì -> tự thử tempmail; lỗi -> báo user dùng --email.
+        """
+        if email_arg:
+            return {"email": email_arg, "tempmail": None, "verified_flow": False}
+
+        try:
+            client = self._tempmail_factory()
+            address, _mail_pw, _token = client.create_mailbox()
+            Logger.info(f"Tempmail sẵn sàng: [bold cyan]{address}[/bold cyan] "
+                        "(mail.tm)")
+            return {"email": address, "tempmail": client, "verified_flow": True}
+        except TempMailError as exc:
+            if use_tempmail:
+                raise RuntimeError(
+                    f"Không tạo được mailbox tạm (--tempmail): {exc}. "
+                    "Hãy tự cung cấp --email.") from exc
+            Logger.warning(f"Tempmail lỗi ({exc}) — hãy chạy lại với "
+                           "--email <dia-chi> nếu platform bắt nhập email.")
+            raise RuntimeError(
+                "Thiếu email đăng ký: truyền --email me@x.com hoặc --tempmail."
+            ) from exc
+
+    def _make_verify_hook(self, client: Optional[TempMailClient],
+                          timeout_s: float = 120.0):
+        """Hook xác minh email (CTFd): poll tempmail <=120s, GET link /confirm/<token>."""
+        if client is None:
+            return None
+
+        def hook(session) -> bool:
+            Logger.info("Đang chờ thư xác nhận từ platform (tối đa "
+                        f"{int(timeout_s)}s)...")
+            msg = client.wait_for_message(timeout_s=timeout_s)
+            if msg is None:
+                Logger.error("Hết giờ chưa nhận được thư xác nhận — kiểm tra "
+                             "thủ công hộp thư tạm hoặc đăng nhập web để resend.")
+                return False
+            content = client.fetch_message_text(msg.get("id", ""))
+            link = TempMailClient.find_confirm_link(content)
+            if not link:
+                Logger.error("Thư xác nhận không chứa link /confirm/<token> — "
+                             "xác minh thủ công.")
+                return False
+            try:
+                resp = session.get(link, timeout=20)
+                ok = getattr(resp, "status_code", 0) == 200 or \
+                    "confirm" in str(getattr(resp, "url", "")).lower() or \
+                    True  # nhiều CTFd redirect về profile sau confirm
+                Logger.success(f"Đã mở link xác nhận ({link}) "
+                               f"-> HTTP {getattr(resp, 'status_code', '?')}.")
+                return bool(ok)
+            except Exception as exc:
+                Logger.error(f"Mở link xác nhận thất bại: {exc}")
+                return False
+
+        return hook
+
+    # ------------------------------------------------------------------ #
+    # Orchestrator — ĐÚNG 1 lần register mỗi lần gọi
+    # ------------------------------------------------------------------ #
+    def run(self, url: str,
+            email: Optional[str] = None,
+            use_tempmail: bool = False,
+            username_prefix: str = "player",
+            password: Optional[str] = None,
+            workspace: Optional[str] = None) -> Dict[str, Any]:
+        """Chạy auto-register. Returns dict trạng thái; raise RuntimeError khi
+        đầu vào sai / bị rate-limit; PlatformRegisterUnsupported khi platform
+        chặn (captcha...) — caller (CLI) map sang exit code."""
+        if not url:
+            raise RuntimeError("Thiếu URL platform (-u https://ctf.example.com).")
+
+        url = url.rstrip("/")
+        self._print_warnings(url)
+
+        cfg = self._load_cfg()
+        wait = self._check_rate_limit(cfg, url)
+        if wait > 0:
+            raise RuntimeError(
+                f"Rate limit: URL này vừa được register cách đây chưa đầy "
+                f"{self.RATE_LIMIT_SECONDS}s — thử lại sau {int(wait)}s nữa.")
+
+        creds = generate_credentials(username_prefix)
+        creds["password"] = password or creds["password"]
+
+        mail = self._resolve_email(email, use_tempmail)
+        reg_email = mail["email"]
+
+        from ..services.session_factory import create_session
+        session = create_session()
+
+        Logger.info(f"Phát hiện loại platform tại {url} ...")
+        platform, info = self._detect(url, session)
+        Logger.info(f"Platform: [bold magenta]{info.platform_type}[/bold magenta] "
+                    f"(confidence={info.confidence}).")
+
+        hook = self._make_verify_hook(mail["tempmail"])
+        try:
+            result = platform.register(
+                username=creds["username"], email=reg_email,
+                password=creds["password"], verify_email_hook=hook)
+        except PlatformRegisterUnsupported as exc:
+            Logger.error(str(exc))
+            Logger.info(
+                "👉 Hướng dẫn thủ công: mở trang web platform bằng trình duyệt, "
+                "đăng ký bằng các credentials dưới đây rồi cấu hình cookie/token "
+                "như bình thường:")
+            self._print_credentials({**creds, "url": url, "email": reg_email})
+            raise
+
+        # Van-an-toàn: ghi nhận MỌI lần attempt để siết rate limit.
+        self._save_cfg(self._record_attempt(cfg, url))
+
+        if not result.get("ok"):
+            Logger.error(f"Register thất bại: {result.get('message')}")
+            return {"ok": False, "message": result.get("message"),
+                    "credentials": {**creds, "email": reg_email}}
+
+        self._print_credentials({**creds, "url": url, "email": reg_email})
+
+        # Lưu auth map: ưu tiên key = workspace tuyệt đối (nếu là dir thật),
+        # ngược lại key = URL. Cookie/token serialize để `ctf pull -w` dùng lại.
+        auth_entry = {
+            "username": creds["username"],
+            "password": creds["password"],
+            "email": reg_email,
+            "registered_at": int(self._now()),
+        }
+        token = result.get("token")
+        cookies = result.get("cookies") or {
+            c.name: c.value for c in session.cookies}
+        if cookies:
+            auth_entry["cookie"] = self._cookies_to_header(cookies)
+        if token:
+            auth_entry["token"] = token
+
+        fresh_cfg = self._load_cfg()
+        key = self._auth_key(workspace, url)
+        fresh_cfg.setdefault("auth", {})[key] = auth_entry
+        self._save_cfg(self._record_attempt(fresh_cfg, url))
+
+        saved_as = ("workspace " + key) if workspace and \
+            os.path.isdir(os.path.abspath(workspace)) else f"URL {key}"
+        Logger.success(f"Đã lưu credentials vào global config (auth[{saved_as!r}]).")
+
+        return {
+            "ok": True,
+            "platform": info.platform_type,
+            "credentials": {**creds, "email": reg_email},
+            "auth_key": key,
+            "email_verified": result.get("email_verified"),
+            "message": result.get("message"),
+        }

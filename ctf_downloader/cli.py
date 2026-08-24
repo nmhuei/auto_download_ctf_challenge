@@ -10,6 +10,7 @@ from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test c
     handle_instance,
     handle_pull,
     handle_rank,
+    handle_register,
     handle_status,
     handle_submit,
     handle_watch,
@@ -149,6 +150,19 @@ Quick Examples:
     watch_parser.add_argument('-c', '--cookie', help='Cookie string or path to cookie file')
     watch_parser.add_argument('-t', '--token', help='API token or Bearer token')
 
+    # 9. REGISTER / AUTO-REGISTER — tạo 1 tài khoản trên platform
+    reg_parser = subparsers.add_parser('register', aliases=['reg'],
+                                       help='Tự tạo ĐÚNG 1 tài khoản trên platform (GZCTF/CTFd) + lưu auth map')
+    reg_parser.add_argument('-u', '--url', help='URL platform (vd https://ctf.example.com)')
+    reg_parser.add_argument('--email', help='Email dùng để đăng ký (bỏ qua nếu dùng --tempmail)')
+    reg_parser.add_argument('--tempmail', action='store_true',
+                            help='Ép dùng mailbox tạm mail.tm (cần khi platform bắt verify email)')
+    reg_parser.add_argument('--username', dest='username_prefix', default='player',
+                            help="Prefix username (mặc định 'player' + 6 ký tự random)")
+    reg_parser.add_argument('--password', help='Mật khẩu muốn đặt (mặc định sinh random mạnh 16 ký tự)')
+    reg_parser.add_argument('-w', '--workspace', default=None,
+                            help='Workspace để gắn credentials trong auth map (mặc định key=URL)')
+
     # 8. MENU / UI / INTERACTIVE
     menu_parser = subparsers.add_parser('menu', aliases=['ui', 'console'], help='Launch full interactive CTF suite dashboard')
     menu_parser.add_argument('-w', '--workspace', default=None, help='CTF workspace directory')
@@ -191,6 +205,8 @@ def main():
         handle_rank(args)
     elif cmd in ['watch', 'sync']:
         handle_watch(args)
+    elif cmd in ['register', 'reg']:
+        handle_register(args)
     elif cmd in ['menu', 'ui', 'console']:
         launch_interactive_menu(workspace_path=args.workspace, cookie=args.cookie, token=args.token)
     else:

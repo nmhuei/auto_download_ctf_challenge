@@ -114,6 +114,10 @@ def safe_get_json(session: Any, url: str, statuses=(200,)):
     except Exception:
         return None, status
 
+class PlatformRegisterUnsupported(Exception):
+    """Platform không hỗ trợ (hoặc chặn) tự động đăng ký tài khoản."""
+
+
 class BaseCTFPlatform(ABC):
     def __init__(self, base_url: str, session: Any):
         self.base_url = base_url.rstrip("/")
@@ -151,6 +155,29 @@ class BaseCTFPlatform(ABC):
         Returns (is_correct, message).
         """
         pass
+
+    # ------------------------------------------------------------------ #
+    # Auto-register (tính năng tùy chọn — mặc định không hỗ trợ)
+    # ------------------------------------------------------------------ #
+    def register(self, *, username: str, email: str, password: str,
+                 verify_email_hook=None) -> Dict[str, Any]:
+        """Tự động đăng ký tài khoản MỚI trên platform (auto-register).
+
+        Args:
+            username / email / password: credentials đã sinh sẵn (service lo).
+            verify_email_hook: callable(session) -> bool|None; nếu platform bắt
+                xác thực email thì hook poll tempmail + GET link confirm
+                (do RegisterService cung cấp). None = platform không cần.
+
+        Returns:
+            dict tối thiểu {'ok': bool, 'message': str}; có thể kèm
+            'token'/'cookies' khi register xong đã login luôn.
+
+        Raises:
+            PlatformRegisterUnsupported: platform không hỗ trợ auto-register.
+        """
+        raise PlatformRegisterUnsupported(
+            f"Auto register is not supported for {self.ctf_info.platform_type}")
 
     def fetch_rules(self) -> Optional[str]:
         """
