@@ -14,8 +14,11 @@ import string
 import time
 from typing import Any, Callable, Dict, Optional
 
+from rich.markup import escape
+
 from ..platforms.base import PlatformRegisterUnsupported
 from ..storage.global_config import load_global_config, save_global_config
+from ..ui.theme import ERROR, FG_BASE, FG_FAINT, FG_MUTED, INFO, SOLVED, WARN
 from ..utils.logger import Logger, console
 from ..utils.tempmail import TempMailClient, TempMailError
 
@@ -94,36 +97,43 @@ class RegisterService:
 
     @staticmethod
     def _print_warnings(url: str) -> None:
-        """Cảnh báo bắt buộc trước khi tạo bất kỳ tài khoản nào."""
-        Logger.warning("=" * 70)
-        Logger.warning(
-            "[bold yellow]⚠️  VAN AN TOÀN AUTO-REGISTER[/bold yellow]")
-        Logger.warning(
-            "⚠️  Một số giải [bold]cấm nhiều tài khoản/người[/bold] — đảm bảo "
-            f"tuân thủ rules của giải ({url}).")
-        Logger.warning(
-            "⚠️  Tool sẽ tạo [bold]ĐÚNG 1 tài khoản[/bold] cho lần chạy này "
-            "(không hỗ trợ batch/loop theo thiết kế).")
-        Logger.warning(
-            "⚠️  Nếu platform bật captcha (Turnstile/reCAPTCHA/hCaptcha), tool "
-            "sẽ DỪNG và bạn cần đăng ký thủ công.")
-        Logger.warning("=" * 70)
+        """Cảnh báo van-an-toàn bắt buộc trước khi tạo bất kỳ tài khoản nào.
+
+        PHOSPHOR: mỗi dòng gắn glyph ``!`` warn amber (spec §3.2), không emoji,
+        không đường kẻ ``=`` full-width (spec §5 cấm lặp lại nhiều hơn 1 lần).
+        """
+        def w(msg: str) -> None:
+            console.print(f"[{WARN}]![/{WARN}] {msg}")
+
+        console.print(
+            f"[{WARN}]![/{WARN}] "
+            f"[bold {FG_BASE}]VAN AN TOÀN AUTO-REGISTER[/bold {FG_BASE}]")
+        w(f"Một số giải [bold]cấm nhiều tài khoản/người[/bold] — đảm bảo "
+          f"tuân thủ rules của giải ([{INFO}]{escape(url)}[/{INFO}]).")
+        w("Tool sẽ tạo [bold]ĐÚNG 1 tài khoản[/bold] cho lần chạy này "
+          "(không hỗ trợ batch/loop theo thiết kế).")
+        w("Nếu platform bật captcha (Turnstile/reCAPTCHA/hCaptcha), tool "
+          "sẽ DỪNG và bạn cần đăng ký thủ công.")
 
     @staticmethod
-    def _print_credentials(creds: Dict[str, str]) -> None:
-        try:
-            from rich.panel import Panel
-            body = (f"[bold cyan]URL:[/]      {creds['url']}\n"
-                    f"[bold cyan]Username:[/] {creds['username']}\n"
-                    f"[bold cyan]Password:[/] {creds['password']}")
-            if creds.get("email"):
-                body += f"\n[bold cyan]Email:[/]    {creds['email']}"
-            console.print(Panel(body, title="[bold green]✅ REGISTERED — LƯU LẠI CREDENTIALS[/]",
-                                border_style="green"))
-        except Exception:
-            for key in ("url", "username", "password", "email"):
-                if creds.get(key):
-                    Logger.success(f"{key.upper()}: {creds[key]}")
+    def _print_credentials(creds: Dict[str, str], created: bool = True) -> None:
+        """Khối credentials PHOSPHOR: dòng ``✔ Đã tạo tài khoản <user>``
+        solved-green khi thành công; nhãn cột faint UPPERCASE; URL/literal
+        info-cyan. Với ``created=False`` (auto-register bị chặn → hướng dẫn
+        thủ công) chỉ liệt kê credentials, không có ✔."""
+        if created:
+            console.print(
+                f"[{SOLVED}]✔[/{SOLVED}] Đã tạo tài khoản "
+                f"[bold {FG_BASE}]{escape(creds.get('username', ''))}"
+                f"[/bold {FG_BASE}]")
+        for label, color in (("URL", INFO), ("USERNAME", FG_BASE),
+                             ("PASSWORD", FG_BASE), ("EMAIL", FG_BASE)):
+            val = creds.get(label.lower())
+            if not val:
+                continue
+            console.print(
+                f"  [{FG_FAINT}]{label:<9}[/{FG_FAINT}]"
+                f"[{color}]{escape(val)}[/{color}]")
 
     # ------------------------------------------------------------------ #
     # Auth map persistence (global config)
@@ -156,8 +166,9 @@ class RegisterService:
         try:
             client = self._tempmail_factory()
             address, _mail_pw, _token = client.create_mailbox()
-            Logger.info(f"Tempmail sẵn sàng: [bold cyan]{address}[/bold cyan] "
-                        "(mail.tm)")
+            console.print(
+                f"[{INFO}]ℹ Tempmail sẵn sàng: {escape(address)}[/{INFO}] "
+                f"[{FG_MUTED}](mail.tm)[/{FG_MUTED}]")
             return {"email": address, "tempmail": client, "verified_flow": True}
         except TempMailError as exc:
             if use_tempmail:
@@ -240,8 +251,10 @@ class RegisterService:
 
         Logger.info(f"Phát hiện loại platform tại {url} ...")
         platform, info = self._detect(url, session)
-        Logger.info(f"Platform: [bold magenta]{info.platform_type}[/bold magenta] "
-                    f"(confidence={info.confidence}).")
+        console.print(
+            f"[{FG_FAINT}]·[/{FG_FAINT}] Platform: "
+            f"[{INFO}]{escape(info.platform_type)}[/{INFO}] "
+            f"[{FG_MUTED}](confidence={info.confidence})[/{FG_MUTED}]")
 
         hook = self._make_verify_hook(mail["tempmail"])
         try:
@@ -249,12 +262,16 @@ class RegisterService:
                 username=creds["username"], email=reg_email,
                 password=creds["password"], verify_email_hook=hook)
         except PlatformRegisterUnsupported as exc:
-            Logger.error(str(exc))
-            Logger.info(
-                "👉 Hướng dẫn thủ công: mở trang web platform bằng trình duyệt, "
-                "đăng ký bằng các credentials dưới đây rồi cấu hình cookie/token "
-                "như bình thường:")
-            self._print_credentials({**creds, "url": url, "email": reg_email})
+            # Diagnostic-style (spec §4.6): ✗ kết quả → ╰─▶ hướng dẫn thủ công.
+            console.print(
+                f"[bold {ERROR}]✗[/bold {ERROR}] "
+                f"[bold]{escape(str(exc))}[/bold]")
+            console.print(
+                f"  [{FG_FAINT}]╰─▶[/{FG_FAINT}] "
+                f"[{FG_MUTED}]đăng ký thủ công bằng trình duyệt với credentials "
+                f"dưới đây rồi cấu hình cookie/token như bình thường.[/{FG_MUTED}]")
+            self._print_credentials({**creds, "url": url, "email": reg_email},
+                                    created=False)
             raise
 
         # Van-an-toàn: ghi nhận MỌI lần attempt để siết rate limit.
@@ -290,7 +307,10 @@ class RegisterService:
 
         saved_as = ("workspace " + key) if workspace and \
             os.path.isdir(os.path.abspath(workspace)) else f"URL {key}"
-        Logger.success(f"Đã lưu credentials vào global config (auth[{saved_as!r}]).")
+        # Hint cyan (token info): path/literal đi kèm màu lạnh duy nhất.
+        console.print(
+            f"[{INFO}]ℹ credentials đã lưu vào global config — "
+            f"auth[{escape(saved_as)}][/{INFO}]")
 
         return {
             "ok": True,

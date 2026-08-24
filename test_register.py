@@ -7,6 +7,7 @@ import os
 import random
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -14,6 +15,8 @@ from ctf_downloader.platforms.base import PlatformRegisterUnsupported
 from ctf_downloader.platforms.ctfd import ctfd_register
 from ctf_downloader.platforms.gzctf import (GZCTFPlatform, gzctf_register,
                                             solve_hash_pow)
+from ctf_downloader.services import register_service as reg_mod
+from ctf_downloader.services.register_service import RegisterService
 
 
 # --------------------------------------------------------------------------- #
@@ -457,3 +460,59 @@ class TestRateLimit60s(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# --------------------------------------------------------------------------- #
+# UI polish PHOSPHOR: van-an-toàn dùng glyph ``!`` warn, credentials dùng
+# ``✔`` solved / nhãn faint UPPERCASE, captcha-dừng kiểu Diagnostic.
+# --------------------------------------------------------------------------- #
+class TestRegisterPhosphorOutput(unittest.TestCase):
+    def _capture(self):
+        import io
+
+        from rich.console import Console
+
+        from ctf_downloader.ui.theme import load_theme
+
+        buf = io.StringIO()
+        con = Console(file=buf, width=120, theme=load_theme(None),
+                      force_terminal=False, highlight=False)
+        return con, buf
+
+    def test_warnings_use_warn_glyph_no_emoji(self):
+        con, buf = self._capture()
+        with patch.object(reg_mod, "console", con):
+            RegisterService._print_warnings("https://ctf.example.com")
+        out = buf.getvalue()
+        self.assertIn("VAN AN TOÀN AUTO-REGISTER", out)
+        for bad in ("⚠", "✅", "=" * 10):
+            self.assertNotIn(bad, out)
+        # Mỗi dòng cảnh báo gắn glyph ``!`` warn.
+        self.assertGreaterEqual(out.count("!"), 4)
+
+    def test_credentials_created_line_and_manual_variant(self):
+        creds = {"url": "https://ctf.example.com", "username": "playerabc",
+                 "password": "s3cret!", "email": "a@b.c"}
+        con, buf = self._capture()
+        with patch.object(reg_mod, "console", con):
+            RegisterService._print_credentials(creds, created=True)
+        out = buf.getvalue()
+        self.assertIn("✔ Đã tạo tài khoản playerabc", out)
+        self.assertIn("URL", out)
+
+        con2, buf2 = self._capture()
+        with patch.object(reg_mod, "console", con2):
+            RegisterService._print_credentials(creds, created=False)
+        out2 = buf2.getvalue()
+        self.assertNotIn("✔", out2)          # chưa tạo được tài khoản nào
+        self.assertIn("playerabc", out2)     # vẫn liệt kê credentials
+
+    def test_no_emoji_in_warning_or_credential_blocks(self):
+        con, buf = self._capture()
+        creds = {"url": "https://ctf.example.com", "username": "u",
+                 "password": "p"}
+        with patch.object(reg_mod, "console", con):
+            RegisterService._print_warnings("https://ctf.example.com")
+            RegisterService._print_credentials(creds, created=True)
+        for emoji in ("⚠️", "✅", "👉"):
+            self.assertNotIn(emoji, buf.getvalue())

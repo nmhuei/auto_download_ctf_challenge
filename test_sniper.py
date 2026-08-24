@@ -8,6 +8,7 @@ submit_history cho verdict correct/incorrect, KHÔNG ghi khi ratelimited).
 Chạy: python3 -m unittest test_sniper.py -v
 """
 import json
+import io
 import os
 import shutil
 import tempfile
@@ -23,6 +24,18 @@ from ctf_downloader.services.sniper_service import (
     MAX_CONSECUTIVE_RATELIMITS,
     SniperService,
 )
+
+
+def capture_console():
+    """Console rich ghi ra buffer (theme PHOSPHOR) để assert output không ANSI."""
+    from rich.console import Console
+
+    from ctf_downloader.ui.theme import load_theme
+
+    buf = io.StringIO()
+    con = Console(file=buf, width=200, theme=load_theme(None),
+                  force_terminal=False, highlight=False)
+    return con, buf
 
 
 # ----------------------------------------------------------------------
@@ -229,7 +242,8 @@ class TestFirstBloodPath(SniperBase):
             {"challenge": "Pwn Baby", "flag": "FLAG{b}", "delay_seconds": 7},
             {"challenge": 1, "flag": "FLAG{a}", "delay_seconds": 0},
         ])
-        with patch.object(sn_mod.Logger, "success") as mock_success:
+        con, buf = capture_console()
+        with patch.object(sn_mod, "console", con):
             summary = self.run_sniper(svc, poll_interval=10)
         # Bắn theo thứ tự delay: FLAG{a} (0s) trước FLAG{b} (7s)
         self.assertEqual(
@@ -238,9 +252,10 @@ class TestFirstBloodPath(SniperBase):
         )
         self.assertEqual(len(summary["solved"]), 2)
         self.assertEqual(summary["pending"], [])
-        first_bloods = [c.args[0] for c in mock_success.call_args_list
-                        if "FIRST BLOOD" in str(c.args[0])]
-        self.assertEqual(len(first_bloods), 2)
+        out = buf.getvalue()
+        # Phát bắn: `◆ <challenge> → flag…`; kết quả: dòng `◆ FB`.
+        self.assertIn("◆ 1 → FLAG{a}…", out)
+        self.assertEqual(out.count("◆ FB"), 2)
 
 
 class TestIncorrectBlacklist(SniperBase):
@@ -311,16 +326,50 @@ class TestKeyboardInterrupt(SniperBase):
             {"challenge": 1, "flag": "FLAG{a}"},
             {"challenge": "Pwn Baby", "flag": "FLAG{b}"},
         ])
-        with patch.object(sn_mod.Logger, "print_table") as mock_table, \
-             patch.object(sn_mod.Logger, "info"):
+        con, buf = capture_console()
+        with patch.object(sn_mod, "console", con):
             summary = self.run_sniper(svc, poll_interval=10)
         self.assertTrue(summary["aborted"])
         self.assertEqual(len(summary["pending"]), 2)   # cả hai còn nguyên
         self.assertEqual(summary["solved"], [])
-        # Trạng thái còn lại được in ra bảng
-        self.assertTrue(mock_table.called)
-        rows = str(mock_table.call_args.kwargs.get("rows"))
-        self.assertIn("Pwn Baby", rows)
+        # Trạng thái còn lại được in ra bảng heading faint UPPERCASE
+        out = buf.getvalue()
+        self.assertIn("SNIPER · TARGETS CÒN LẠI", out)
+        self.assertIn("CHALLENGE", out)
+        self.assertIn("Pwn Baby", out)
+
+
+class TestPhosphorOutput(SniperBase):
+    """UI polish: glyph PHOSPHOR thay emoji chrome (spec §3/§6)."""
+
+    def test_automation_warning_has_no_emoji(self):
+        self.assertNotIn("⚠", sn_mod.AUTOMATION_WARNING)
+        self.assertNotIn("🩸", sn_mod.AUTOMATION_WARNING)
+
+    def test_remaining_table_faint_uppercase_heading(self):
+        svc = SniperService(WorkspaceRepo(self.ws), MagicMock())
+        con, buf = capture_console()
+        with patch.object(sn_mod, "console", con):
+            svc._print_remaining([
+                {"challenge": "Pwn Baby", "flag": "FLAG{x}", "attempts": 1},
+            ])
+        out = buf.getvalue()
+        # Heading + nhãn cột faint UPPERCASE; dữ liệu row nguyên vẹn.
+        self.assertIn("SNIPER · TARGETS CÒN LẠI", out)
+        self.assertIn("CHALLENGE", out)
+        self.assertIn("ATTEMPTS", out)
+        self.assertIn("Pwn Baby", out)
+        self.assertIn("FLAG{x}", out)
+
+    def test_no_emoji_in_run_output(self):
+        self.write_challenges(event_start=str(int(self.start_epoch)))
+        svc = self.make_service([("correct", "ok")])
+        self.write_sniper([{"challenge": 1, "flag": "FLAG{a}"}])
+        con, buf = capture_console()
+        with patch.object(sn_mod, "console", con):
+            self.run_sniper(svc, poll_interval=10)
+        for emoji in ("🩸", "⏳", "⏹", "⚠", "✅"):
+            self.assertNotIn(emoji, buf.getvalue())
 
 
 if __name__ == "__main__":

@@ -32,7 +32,7 @@ VAN AN TOÀN (spec P2-6 §3):
    thủ rules.
 
 Verdict xử lý mỗi phát bắn:
-- ``correct``     : 🩸 FIRST BLOOD — bỏ khỏi hàng chờ.
+- ``correct``     : ◆ FB first-blood (solved green) — bỏ khỏi hàng chờ.
 - ``incorrect``   : SubmitService đã ghi blacklist (submit_history) — bỏ khỏi
                     hàng chờ (trừ khi ``retry_wrong``).
 - ``ratelimited`` : KHÔNG tiêu lượt thử — backoff luỹ thừa (tôn trọng throttle
@@ -61,8 +61,12 @@ import json
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from rich.markup import escape
+from rich.table import Table
+
 from ..platforms.base import normalize_epoch_to_utc
-from ..utils.logger import Logger
+from ..ui.theme import ACCENT, ERROR, FG_BASE, FG_FAINT, FG_MUTED, SOLVED, WARN
+from ..utils.logger import console
 
 SNIPER_FILENAME = "sniper.json"
 
@@ -77,10 +81,37 @@ MAX_ATTEMPTS_PER_TARGET = 3
 # khi last_verdict kẹt ở "ratelimited" vì lý do khác).
 MAX_CONSECUTIVE_RATELIMITS = 20
 
+# Cảnh báo automation (PHOSPHOR: glyph ``!`` warn gắn tại chỗ in, không emoji).
 AUTOMATION_WARNING = (
-    "⚠️ Một số giải CTF cấm automation/auto-submit — hãy đọc kỹ rules của giải "
+    "Một số giải CTF cấm automation/auto-submit — hãy đọc kỹ rules của giải "
     "và tuân thủ. Sniper chỉ bắn sau khi window mở."
 )
+
+
+# ----------------------------------------------------------------------
+# Output helpers — PHOSPHOR FIELD KIT (spec §3): màu luôn đi kèm glyph,
+# không emoji chrome; challenge/flag/message là dữ liệu → escape markup.
+# ----------------------------------------------------------------------
+
+def _warn(msg: str) -> None:
+    console.print(f"[{WARN}]![/{WARN}] {escape(msg)}")
+
+
+def _fail(msg: str) -> None:
+    console.print(f"[{ERROR}]✗[/{ERROR}] {escape(msg)}")
+
+
+def _dim(msg: str) -> None:
+    """Trạng thái chờ — dim, dot faint làm bullet."""
+    console.print(f"[{FG_FAINT}]·[/{FG_FAINT}] [dim]{escape(msg)}[/dim]")
+
+
+def _cause(msg: str) -> None:
+    """Chuỗi nhân quả ``╰─▶`` (spec §5 whitelist đường kẻ)."""
+    console.print(
+        f"  [{FG_FAINT}]╰─▶[/{FG_FAINT}] "
+        f"[{FG_MUTED}]{escape(msg)}[/{FG_MUTED}]"
+    )
 
 
 class SniperService:
@@ -111,31 +142,31 @@ class SniperService:
         try:
             text = open(path, "r", encoding="utf-8").read()
         except FileNotFoundError:
-            Logger.warning(
+            _warn(
                 f"Không tìm thấy {SNIPER_FILENAME} trong workspace — tạo file "
                 f"(list các {{challenge, flag, delay_seconds}}) để dùng sniper."
             )
             return []
         except OSError as e:
-            Logger.error(f"Không đọc được {path}: {e}")
+            _fail(f"Không đọc được {path}: {e}")
             return []
 
         try:
             data = json.loads(text)
         except ValueError as e:
-            Logger.error(f"{SNIPER_FILENAME} hỏng (JSON không hợp lệ): {e}")
+            _fail(f"{SNIPER_FILENAME} hỏng (JSON không hợp lệ): {e}")
             return []
 
         if isinstance(data, dict):
             data = data.get("targets")
         if not isinstance(data, list):
-            Logger.error(f"{SNIPER_FILENAME}: nội dung phải là list hoặc {{'targets': [...]}}.")
+            _fail(f"{SNIPER_FILENAME}: nội dung phải là list hoặc {{'targets': [...]}}.")
             return []
 
         targets: List[Dict[str, Any]] = []
         for idx, raw in enumerate(data):
             if not isinstance(raw, dict):
-                Logger.warning(f"{SNIPER_FILENAME}: bỏ qua entry #{idx} (không phải object).")
+                _warn(f"{SNIPER_FILENAME}: bỏ qua entry #{idx} (không phải object).")
                 continue
             raw_challenge = raw.get("challenge")
             if isinstance(raw_challenge, str):
@@ -143,14 +174,14 @@ class SniperService:
             challenge = raw_challenge
             flag = str(raw.get("flag") or "").strip()
             if not challenge or not flag:
-                Logger.warning(
+                _warn(
                     f"{SNIPER_FILENAME}: bỏ qua entry #{idx} (thiếu 'challenge' hoặc 'flag')."
                 )
                 continue
             try:
                 delay = max(0.0, float(raw.get("delay_seconds") or 0))
             except (TypeError, ValueError):
-                Logger.warning(f"{SNIPER_FILENAME}: entry '#{idx}' delay_seconds sai kiểu → 0.")
+                _warn(f"{SNIPER_FILENAME}: entry '#{idx}' delay_seconds sai kiểu → 0.")
                 delay = 0.0
             targets.append({
                 "challenge": challenge,
@@ -247,21 +278,24 @@ class SniperService:
         m, s = divmod(rem, 60)
         return f"{h}h{m:02d}m{s:02d}s" if h else (f"{m}m{s:02d}s" if m else f"{s}s")
 
-    def _remaining_summary(self, pending: List[Dict[str, Any]]) -> List[List[str]]:
-        return [
-            [str(t.get("challenge")), t.get("flag", ""), f"{t.get('attempts', 0)}"]
-            for t in pending
-        ]
-
     def _print_remaining(self, pending: List[Dict[str, Any]]) -> None:
+        """Bảng tổng kết target chưa bắn được — heading faint UPPERCASE,
+        không viền/kẻ dọc (spec §5: khoảng trắng trước đường kẻ)."""
         if not pending:
             return
-        Logger.info(f"Còn {len(pending)} target chưa bắn được:")
-        Logger.print_table(
-            title="Sniper — remaining targets",
-            columns=["Challenge", "Flag", "Attempts"],
-            rows=self._remaining_summary(pending),
-        )
+        console.print()
+        console.print(f"[bold {FG_FAINT}]SNIPER · TARGETS CÒN LẠI[/bold {FG_FAINT}]")
+        table = Table(show_header=True, header_style=f"bold {FG_FAINT}", box=None)
+        table.add_column("CHALLENGE", style=FG_BASE)
+        table.add_column("FLAG", style=FG_MUTED)
+        table.add_column("ATTEMPTS", justify="right", style=FG_BASE)
+        for t in pending:
+            table.add_row(
+                escape(str(t.get("challenge"))),
+                escape(t.get("flag", "")),
+                str(t.get("attempts", 0)),
+            )
+        console.print(table)
 
     def run(
         self,
@@ -278,7 +312,7 @@ class SniperService:
                               ``MAX_ATTEMPTS_PER_TARGET`` lần/target).
         :return: summary dict {solved, failed, pending, started_at, aborted}.
         """
-        Logger.warning(AUTOMATION_WARNING)
+        _warn(AUTOMATION_WARNING)
 
         targets = self.load_targets()
         summary: Dict[str, Any] = {
@@ -289,21 +323,21 @@ class SniperService:
             "aborted": False,
         }
         if not targets:
-            Logger.info("Sniper: không có target nào — thoát.")
+            _dim("Sniper: không có target nào — thoát.")
             return summary
 
         try:
             start_ts = self.resolve_start(start_at)
         except ValueError as e:
-            Logger.error(str(e))
+            _fail(str(e))
             summary["pending"] = targets
             return summary
         if start_ts is None:
-            Logger.error(
+            _fail(
                 "Không xác định được thời điểm mở giải (thiếu "
-                "challenges.json.ctf_info.event_window.start) — hãy truyền "
-                "--start-at <ISO> để sniper biết giờ G."
+                "challenges.json.ctf_info.event_window.start)."
             )
+            _cause("truyền --start-at <ISO> để sniper biết giờ G.")
             summary["pending"] = targets
             return summary
 
@@ -317,12 +351,16 @@ class SniperService:
             now = time.time()
             if now >= start_ts:
                 break
-            Logger.info(
-                f"⏳ Sniper: còn {self._human_wait(start_ts - now)} tới giờ G "
-                f"({summary['started_at']}) — đang canh..."
+            _dim(
+                f"còn {self._human_wait(start_ts - now)} tới giờ G "
+                f"({summary['started_at']}) — đang canh…"
             )
             time.sleep(min(float(poll_interval), start_ts - now))
-        Logger.success("🩸 Window mở — sniper bắt đầu bắn theo hàng chờ.")
+        console.print(
+            f"[{ACCENT}]◆[/{ACCENT}] "
+            f"[bold {FG_BASE}]Window mở[/bold {FG_BASE}] "
+            f"[{FG_MUTED}]— sniper bắt đầu bắn theo hàng chờ.[/{FG_MUTED}]"
+        )
 
         backoff_until = 0.0
         backoff_step = BACKOFF_BASE_SECONDS
@@ -348,14 +386,23 @@ class SniperService:
                 target = due[0]
                 force = retry_wrong and target["attempts"] > 0
                 target["attempts"] += 1
+                # Log phát bắn: `◆ <challenge> → flag…` (accent khi bắn).
+                console.print(
+                    f"[{ACCENT}]◆ {escape(str(target['challenge']))}[/{ACCENT}]"
+                    f" [{FG_FAINT}]→[/{FG_FAINT}]"
+                    f" [{ACCENT}]{escape(target['flag'])}…[/{ACCENT}]"
+                )
                 kind, message = self._fire(target, force=force)
 
                 if kind == "correct":
                     consecutive_ratelimits = 0
                     pending.remove(target)
                     solved.append(target)
-                    Logger.success(
-                        f"🩸 FIRST BLOOD — [bold cyan]{target['challenge']}[/bold cyan]: {message}"
+                    console.print(
+                        f"[bold {SOLVED}]◆ FB[/bold {SOLVED}] "
+                        f"[bold {FG_BASE}]{escape(str(target['challenge']))}[/"
+                        f"bold {FG_BASE}]"
+                        f" [{FG_MUTED}]— {escape(message)}[/{FG_MUTED}]"
                     )
 
                 elif kind == "incorrect":
@@ -363,25 +410,27 @@ class SniperService:
                     # SubmitService ĐÃ tự blacklist flag này trong submit_history
                     # (gate sẵn có). Không retry trừ khi --retry-wrong.
                     if retry_wrong and target["attempts"] < MAX_ATTEMPTS_PER_TARGET:
-                        Logger.warning(
-                            f"Sai (lần {target['attempts']}/{MAX_ATTEMPTS_PER_TARGET}) — "
-                            f"sẽ thử lại {target['challenge']}: {message}"
+                        _warn(
+                            f"Sai (lần {target['attempts']}/"
+                            f"{MAX_ATTEMPTS_PER_TARGET}) — sẽ thử lại "
+                            f"{target['challenge']}: {message}"
                         )
                     else:
                         pending.remove(target)
                         failed.append(target)
-                        Logger.error(
-                            f"SAI (đã blacklist tự động) — {target['challenge']}: {message}"
-                        )
+                        _fail(f"SAI — {target['challenge']}: {message}")
+                        _cause("flag đã bị blacklist tự động trong "
+                               "submit_history — bỏ khỏi hàng chờ.")
 
                 elif kind == "ratelimited":
                     consecutive_ratelimits += 1
                     if consecutive_ratelimits >= MAX_CONSECUTIVE_RATELIMITS:
-                        Logger.error(
-                            f"Bị rate-limit {consecutive_ratelimits} lần liên tiếp — dừng sniper."
+                        _fail(
+                            f"Bị rate-limit {consecutive_ratelimits} lần "
+                            f"liên tiếp — dừng sniper."
                         )
                         break
-                    Logger.warning(
+                    _warn(
                         f"Rate-limited — backoff {backoff_step:.0f}s (target "
                         f"'{target['challenge']}' giữ nguyên lượt thử)."
                     )
@@ -391,28 +440,33 @@ class SniperService:
                 else:  # unknown — tính như đã tiêu lượt thử để tránh vòng lặp
                     consecutive_ratelimits = 0
                     if retry_wrong and target["attempts"] < MAX_ATTEMPTS_PER_TARGET:
-                        Logger.warning(
-                            f"Kết quả không rõ — sẽ thử lại {target['challenge']}: {message}"
+                        _warn(
+                            f"Kết quả không rõ — sẽ thử lại "
+                            f"{target['challenge']}: {message}"
                         )
                     else:
                         pending.remove(target)
                         failed.append(target)
-                        Logger.warning(
-                            f"Kết quả không rõ (không retry) — {target['challenge']}: {message}"
+                        _warn(
+                            f"Kết quả không rõ (không retry) — "
+                            f"{target['challenge']}: {message}"
                         )
 
         except KeyboardInterrupt:
             summary["aborted"] = True
-            Logger.warning("⏹️ Ctrl-C — dừng sniper theo yêu cầu.")
+            _warn("Ctrl-C — dừng sniper theo yêu cầu.")
 
         summary["solved"] = solved
         summary["failed"] = failed
         summary["pending"] = pending
         if pending:
             self._print_remaining(pending)
-        Logger.success(
-            f"Sniper kết thúc: {len(solved)} first-blood, {len(failed)} thất bại, "
-            f"{len(pending)} còn lại."
+        console.print()
+        console.print(
+            f"[bold {FG_BASE}]Sniper kết thúc:[/] "
+            f"[{SOLVED}]✔ {len(solved)} first-blood[/{SOLVED}] · "
+            f"[{ERROR}]✗ {len(failed)} thất bại[/{ERROR}] · "
+            f"[{FG_MUTED}]· {len(pending)} còn lại[/{FG_MUTED}]"
         )
         return summary
 
