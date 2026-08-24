@@ -28,37 +28,85 @@ from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test c
 from .interactive_menu import launch_interactive_menu
 
 
+class _PhosphorHelpParser(argparse.ArgumentParser):
+    """Parser gốc ``ctf``: ``--help`` render theo HelpScreen spec §4.8
+    (PHOSPHOR FIELD KIT) thay vì usage/options mặc định của argparse.
+
+    Subparser kế thừa class này qua ``parser_class``, nên chỉ parser gốc
+    (``prog == 'ctf'``) được render riêng — help của lệnh con
+    (``ctf status --help``…) giữ nguyên cơ chế argparse.
+    """
+
+    def print_help(self, file=None):
+        if self.prog != 'ctf':
+            super().print_help(file)
+            return
+        self._render_phosphor_help(file or sys.stdout)
+
+    @staticmethod
+    def _render_phosphor_help(out):
+        from rich.console import Console, Group
+        from rich.text import Text
+
+        from .ui.banner import TAGLINE, banner_b, tagline_text
+        from .ui.theme import FG_BASE, FG_FAINT, FG_MUTED, INFO, load_theme
+        from .ui.widgets import footer_bar
+
+        # LỆNH — mỗi lệnh 1 dòng, cột lệnh pad cố định 12, KHÔNG liệt kê alias.
+        COMMANDS = [
+            ('pull', 'Tải đề + attachment từ platform, dựng workspace'),
+            ('status', 'Bảng tổng quan workspace hiện tại'),
+            ('workspaces', 'Quét mọi workspace CTF trên máy'),
+            ('sync', 'Đồng bộ metadata động workspace ↔ platform'),
+            ('instance', 'Quản lý container động của challenge'),
+            ('submit', 'Gửi flag lên platform và ghi nhật ký'),
+            ('hoard', 'Lưu flag tìm được vào kho local (chưa nộp)'),
+            ('note', 'Ghi/xoá note cho một challenge'),
+            ('tag', 'Thêm/xoá label cho một challenge'),
+            ('rank', 'Bảng xếp hạng và thống kê giải'),
+            ('watch', 'Auto-sync trong event window của giải'),
+            ('sniper', 'Nộp flag tự động đúng giờ G'),
+            ('register', 'Tự tạo tài khoản trên platform'),
+            ('doctor', 'Health-check platform trước giờ giải'),
+            ('storage', 'Báo cáo dung lượng workspace + archive'),
+            ('export-pack', 'Đóng gói writeup đã solve thành pack zip'),
+            ('history', 'Lịch sử submit flag của workspace'),
+            ('serve', 'Dashboard web read-only cho workspace'),
+            ('menu', 'Console interactive đầy đủ'),
+        ]
+
+        console = Console(file=out, theme=load_theme(None))
+
+        listing = Text()
+        for name, desc in COMMANDS:
+            listing.append(f'  {name:<12}', style=f'bold {FG_BASE}')
+            listing.append(f'{desc}\n', style=FG_MUTED)
+
+        syntax = Text('  ctf <lệnh> [tuỳ chọn]', style=INFO)
+
+        footer = footer_bar([('↑↓', 'di chuyển'), ('?', 'help'),
+                             ('q', 'thoát')], width=max(40, console.width))
+
+        # Nhịp theo spec §4.8: banner → 1 dòng trống → tagline → 1 → CÚ PHÁP
+        # → syntax → 1 → LỆNH → bảng lệnh → 1 → footer. banner_b() và dòng
+        # lệnh cuối đều đã tự kết thúc bằng '\n' (tự tạo 1 dòng trống).
+        console.print(Group(
+            banner_b(),
+            tagline_text(),
+            Text(),
+            Text('CÚ PHÁP', style=f'bold {FG_FAINT}'),
+            syntax,
+            Text(),
+            Text('LỆNH', style=f'bold {FG_FAINT}'),
+            listing,
+            footer,
+        ))
+
+
 def build_unified_parser():
-    parser = argparse.ArgumentParser(
+    parser = _PhosphorHelpParser(
         prog='ctf',
-        description='⚡ CTF Toolkit: Unified CTF Downloader, Submitter, Container Manager & Dashboard ⚡',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
-Quick Examples:
-  # 1. Interactive Menu (Default):
-  ctf
-
-  # 2. Download a CTF Competition:
-  ctf pull -u https://ctf.example.com -c "session=xxx" -o ./my_ctf
-
-  # 3. View Challenge Hierarchy & Progress:
-  ctf status -w ./my_ctf
-  ctf status -u   # Only unsolved challenges
-
-  # 4. Manage Dynamic Containers (Start/Stop/Extend):
-  ctf instance --list
-  ctf instance start --id 34 -c "session=xxx"
-
-  # 5. Submit Flag:
-  ctf submit --id 16 -f "FLAG{...}"
-  ctf submit --auto   # Submit all solved flags in workspace
-
-  # 5b. Hoard a found flag locally (NO submit to platform):
-  ctf hoard 16 "FLAG{...}"
-
-  # 6. Scan all downloaded CTF workspaces:
-  ctf workspaces
-        '''
+        description='CTF Toolkit: Unified CTF Downloader, Submitter, Container Manager & Dashboard',
     )
     from . import __version__ as _pkg_version
     parser.add_argument('-v', '--version', action='version', version=f'ctf-toolkit {_pkg_version}')
@@ -100,14 +148,14 @@ Quick Examples:
 
     # 2b. NOTE / TAG — memory của người chơi ("đã thử SSTI, bị chặn")
     note_parser = subparsers.add_parser('note', aliases=['ghi-chu'],
-                                        help='📝 Ghi/xoá note cho một challenge (lưu vào metadata.status.notes)')
+                                        help='Ghi/xoá note cho một challenge (lưu vào metadata.status.notes)')
     note_parser.add_argument('target', help='Challenge ID hoặc Name')
     note_parser.add_argument('content', nargs='*', help='Nội dung note (bỏ trống để nhập multi-line, kết thúc bằng dòng trống)')
     note_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory')
     note_parser.add_argument('--remove', action='store_true', help='Xoá note của challenge')
 
     tag_parser = subparsers.add_parser('tag', aliases=['tags'],
-                                       help='🏷️ Thêm/xoá label cho một challenge ([a-z0-9-], tối đa 24 ký tự)')
+                                       help='Thêm/xoá label cho một challenge ([a-z0-9-], tối đa 24 ký tự)')
     tag_parser.add_argument('target', help='Challenge ID hoặc Name')
     tag_parser.add_argument('tags', nargs='+', help='Một hoặc nhiều tag')
     tag_parser.add_argument('-r', '--remove', action='store_true', help='Xoá các tag khỏi challenge thay vì thêm')
@@ -171,7 +219,7 @@ Quick Examples:
 
     # 7. WATCH / EVENT WINDOW — auto-sync trong window giải + keep-alive
     #    (alias 'sync' đã nhường cho lệnh `ctf sync` — sync metadata 2 chiều)
-    watch_parser = subparsers.add_parser('watch', help='👀 Auto-sync challenges/scoreboard/notices trong event window (+ keep-alive instance)')
+    watch_parser = subparsers.add_parser('watch', help='Auto-sync challenges/scoreboard/notices trong event window (+ keep-alive instance)')
     watch_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
     watch_parser.add_argument('--once', action='store_true', help='Chạy đúng 1 vòng rồi exit (entrypoint cho cron/systemd bọc ngoài)')
     watch_parser.add_argument('--no-scoreboard', action='store_true', help='Tắt tick scoreboard')
@@ -195,7 +243,7 @@ Quick Examples:
 
     # 7b. DOCTOR / HEALTH-CHECK — kiểm tra platform trước giờ giải
     doctor_parser = subparsers.add_parser('doctor', aliases=['health', 'checkup'],
-                                          help='🩺 Health-check platform: URL/auth/capabilities/event-window/flag-format')
+                                          help='Health-check platform: URL/auth/capabilities/event-window/flag-format')
     doctor_parser.add_argument('-u', '--url', help='Platform URL (vd https://ctf.example.com)')
     doctor_parser.add_argument('-w', '--workspace', default=None,
                                help='Workspace để lấy auth từ auth map (nếu không truyền -c/-t)')
@@ -210,7 +258,7 @@ Quick Examples:
 
     # 10. STORAGE / DU / ARCHIVE — báo cáo dung lượng + archive workspace
     storage_parser = subparsers.add_parser('storage', aliases=['du', 'archive'],
-                                           help='💾 Kiểm soát dung lượng workspace: báo cáo usage, gợi ý dọn dẹp, archive tar.gz (+ git push)')
+                                           help='Kiểm soát dung lượng workspace: báo cáo usage, gợi ý dọn dẹp, archive tar.gz (+ git push)')
     storage_parser.add_argument('-d', '--base-dir', default=os.path.expanduser('~/Workspace/CTF'),
                                 help='Thư mục gốc chứa các workspace (default: ~/Workspace/CTF)')
     storage_parser.add_argument('--threshold-mb', type=int, default=1024,
@@ -225,27 +273,27 @@ Quick Examples:
 
     # 11. SYNC — đồng bộ metadata 2 chiều workspace <-> platform (P2-1)
     sync_parser = subparsers.add_parser('sync', aliases=['resync'],
-                                        help='🔄 Đồng bộ metadata động (points/solves/connection) workspace ↔ platform; không đụng status/flag/file')
+                                        help='Đồng bộ metadata động (points/solves/connection) workspace ↔ platform; không đụng status/flag/file')
     sync_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
     sync_parser.add_argument('--verify', action='store_true',
                              help='Chạy thêm verify: liệt kê challenge solved trên server nhưng local chưa (drift)')
 
     # 12. EXPORT-PACK — đóng gói writeup thành pack zip (P2-3)
     exp_parser = subparsers.add_parser('export-pack',
-                                       help='📦 Đóng gói writeup các challenge đã solve thành pack markdown + zip')
+                                       help='Đóng gói writeup các challenge đã solve thành pack markdown + zip')
     exp_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
     exp_parser.add_argument('--out', default='.', help='Thư mục lưu pack zip (default: thư mục hiện tại)')
 
     # 13. HISTORY — lịch sử submit từ submit_history.json
     hist_parser = subparsers.add_parser('history', aliases=['log'],
-                                        help='📜 Xem lịch sử submit flag của workspace (flag bị che mặc định)')
+                                        help='Xem lịch sử submit flag của workspace (flag bị che mặc định)')
     hist_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
     hist_parser.add_argument('--all', dest='show_all', action='store_true',
                              help='Hiện flag đầy đủ (mặc định chỉ 4 ký tự đầu + ***)')
 
     # 14. SNIPER — preload flag, nộp tự động đúng giờ G (P2-6)
     sniper_parser = subparsers.add_parser('sniper',
-                                          help='🎯 Preload flag và nộp tự động ngay giây đầu window mở (first-blood race)')
+                                          help='Preload flag và nộp tự động ngay giây đầu window mở (first-blood race)')
     sniper_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
     sniper_parser.add_argument('--start-at', dest='start_at',
                                help='Thời điểm mở giải ISO-8601/epoch — bắt buộc nếu challenges.json thiếu event_window.start')
@@ -256,11 +304,60 @@ Quick Examples:
 
     # 15. SERVE — dashboard web read-only
     serve_parser = subparsers.add_parser('serve', aliases=['web'],
-                                         help='🌐 Chạy dashboard web read-only cho workspace (bind 127.0.0.1)')
+                                         help='Chạy dashboard web read-only cho workspace (bind 127.0.0.1)')
     serve_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
     serve_parser.add_argument('--port', type=int, default=8689, help='Port HTTP (default: 8689)')
 
     return parser
+
+
+def _frame_console():
+    """Rich console cho AppHeader/FooterBar (theme PHOSPHOR, stdout).
+
+    Non-TTY: rich tự strip ANSI → fallback plain (không màu) nhưng vẫn giữ
+    đúng nội dung 1 dòng header / footer.
+    """
+    from rich.console import Console
+
+    from .ui.theme import load_theme
+    return Console(theme=load_theme(None))
+
+
+def _frame_timestamp():
+    """Timestamp faint mép phải AppHeader — giờ local + offset UTC."""
+    import datetime as _dt
+    try:
+        now = _dt.datetime.now().astimezone()
+        off_h = int(now.utcoffset().total_seconds() // 3600)
+        return f"{now:%H:%M} UTC{off_h:+d}"
+    except Exception:
+        return ""
+
+
+#: FooterBar chuẩn cho lệnh thường (spec §4.7: phím amber · nhãn fg.base).
+_FRAME_FOOTER = [('↑↓', 'di chuyển'), ('?', 'help'), ('q', 'thoát')]
+
+
+def _print_app_header(label, context=""):
+    from .ui.banner import app_header
+    _frame_console().print(
+        app_header(label, context=context, timestamp=_frame_timestamp()))
+
+
+def _print_footer_bar():
+    from .ui.widgets import footer_bar
+    con = _frame_console()
+    con.print(footer_bar(_FRAME_FOOTER, width=max(40, con.width)))
+
+
+def _run_framed(handler, args, label, ctx_attr='workspace'):
+    """Bọc handler lệnh thường bằng AppHeader (đầu) + FooterBar (cuối).
+
+    Handler sys.exit() giữa chừng (lỗi) → không in footer (nhịp kết thúc chỉ
+    dành cho output thành công)."""
+    _print_app_header(label, str(getattr(args, ctx_attr, '') or ''))
+    handler(args)
+    _print_footer_bar()
 
 
 def main():
@@ -283,9 +380,9 @@ def main():
     if cmd in ['pull', 'download', 'clone']:
         handle_pull(args)
     elif cmd in ['status', 'tree', 'ls', 'dashboard']:
-        handle_status(args)
+        _run_framed(handle_status, args, 'status')
     elif cmd in ['workspaces', 'scan']:
-        handle_workspaces(args)
+        _run_framed(handle_workspaces, args, 'workspaces', ctx_attr='dir')
     elif cmd in ['instance', 'container', 'spawn']:
         handle_instance(args)
     elif cmd in ['submit', 'flag']:
@@ -305,13 +402,13 @@ def main():
     elif cmd in ['register', 'reg']:
         handle_register(args)
     elif cmd in ['storage', 'du', 'archive']:
-        handle_storage(args)
+        _run_framed(handle_storage, args, 'storage', ctx_attr='base_dir')
     elif cmd in ['sync', 'resync']:
-        handle_sync(args)
+        _run_framed(handle_sync, args, 'sync')
     elif cmd == 'export-pack':
-        handle_export_pack(args)
+        _run_framed(handle_export_pack, args, 'export-pack')
     elif cmd in ['history', 'log']:
-        handle_history(args)
+        _run_framed(handle_history, args, 'history')
     elif cmd == 'sniper':
         handle_sniper(args)
     elif cmd in ['serve', 'web']:

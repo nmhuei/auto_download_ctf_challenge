@@ -56,7 +56,9 @@ class TestHelpSnapshot(unittest.TestCase):
     """Smoke help từng entrypoint — argv/help text không đổi với user."""
 
     MARKERS = {
-        ("main.py", "--help"): "Unified CTF Downloader, Submitter, Container Manager",
+        # Đổi CÓ CHỦ ĐÍCH (fix finding codex 05_help): `ctf --help` giờ là
+        # HelpScreen PHOSPHOR FIELD KIT §4.8 thay vì usage/options argparse.
+        ("main.py", "--help"): "bộ kit tác chiến capture-the-flag",
         ("main.py", "pull", "--help"): "Target CTF platform URL",
         ("main.py", "status", "--help"): "Show only unsolved challenges",
         ("main.py", "workspaces", "--help"): "Base CTF directory to scan",
@@ -363,10 +365,6 @@ class TestStorageCommand(unittest.TestCase):
         self.assertEqual(cm.exception.code, 1)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestNewServiceCommands(unittest.TestCase):
     """Phase 7c — wire 5 lệnh mới: sync / export-pack / history / sniper /
     serve. Parse args + mock service assert đúng tham số + exit code
@@ -661,3 +659,97 @@ class TestNewServiceCommands(unittest.TestCase):
                          ["-w", self.MISSING_WS])
                 self.assertEqual(r.returncode, 1,
                                  f"{argv}: {r.stdout + r.stderr}")
+
+
+class TestPhosphorHelpScreen(unittest.TestCase):
+    """Fix finding codex 05_help: `ctf --help` = HelpScreen spec §4.8
+    (banner B amber + tagline + CÚ PHÁP + LỆNH pad-12 + FooterBar), không
+    emoji chrome, không liệt kê alias trong bảng chính."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.out = _run(["main.py", "--help"]).stdout
+
+    def test_spec_markers_present(self):
+        for marker in ("CÚ PHÁP", "LỆNH",
+                       "bộ kit tác chiến capture-the-flag",
+                       "ctf <lệnh> [tuỳ chọn]",
+                       "q thoát"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.out)
+
+    def test_no_emoji_chrome(self):
+        # Glyph rule: emoji chrome bị cấm (⚡📝🏷️👀🩺💾🔄📦📜🎯🌐).
+        banned = "⚡📝🏷👀🩺💾🔄📦📜🎯🌐"
+        hits = [ch for ch in banned if ch in self.out]
+        self.assertEqual([], hits)
+
+    def test_argparse_chrome_gone(self):
+        # Không còn usage/options argparse lẫn khối aliases "{a,b,c}".
+        self.assertNotIn("usage:", self.out)
+        self.assertNotIn("options:", self.out)
+        self.assertNotIn("{pull,download,clone,", self.out)
+
+    def test_command_column_pad12_one_line_each(self):
+        import re
+        for name in ("pull", "sync", "status", "history", "menu"):
+            # "  " indent + tên ljust(12) → pull + 8 spaces trước mô tả;
+            # export-pack (11 ký tự) vẫn vừa cột cố định.
+            row = re.search(rf"(?m)^  {name} +\S", self.out)
+            self.assertIsNotNone(row, name)
+        self.assertRegex(self.out, r"(?m)^  pull {8}Tải đề")
+        self.assertRegex(self.out, r"(?m)^  export-pack Đóng gói")
+
+    def test_aliases_not_listed_in_command_table(self):
+        # Alias KHÔNG xuất hiện ở cột lệnh (dạng "  download  ...").
+        import re
+        for alias in ("download", "clone", "scan", "du", "log"):
+            self.assertIsNone(
+                re.search(rf"(?m)^  {alias} +\S", self.out),
+                f"alias '{alias}' không được nằm trong bảng LỆNH")
+
+
+class TestAppHeaderFooterFrame(unittest.TestCase):
+    """Fix finding codex 01_status: lệnh thường bọc AppHeader đầu + FooterBar
+    cuối (spec §4.1/§4.7). Non-TTY → plain text không ANSI."""
+
+    def _frame_output(self):
+        import contextlib
+        import io
+
+        from ctf_downloader import cli
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            cli._run_framed(lambda a: print("BODY"), Namespace(workspace="wsA"),
+                            "status")
+        return buf.getvalue()
+
+    def test_header_before_body_footer_after(self):
+        out = self._frame_output()
+        self.assertIn("CTF·TOOLKIT", out)
+        self.assertIn("status · wsA", out)
+        self.assertIn("BODY", out)
+        self.assertLess(out.index("CTF·TOOLKIT"), out.index("BODY"))
+        self.assertGreater(out.index("q thoát"), out.index("BODY"))
+
+    def test_footer_bindings_standard_set(self):
+        out = self._frame_output()
+        for frag in ("↑↓ di chuyển", "? help", "q thoát", " · "):
+            self.assertIn(frag, out)
+
+    def test_framed_commands_wired_in_dispatch(self):
+        import inspect
+        import re
+
+        from ctf_downloader import cli
+
+        src = inspect.getsource(cli.main)
+        for label in ("'status'", "'workspaces'", "'storage'", "'sync'",
+                      "'export-pack'", "'history'"):
+            self.assertRegex(
+                src, rf"_run_framed\([^\n]*{re.escape(label)}")
+
+
+if __name__ == "__main__":
+    unittest.main()
