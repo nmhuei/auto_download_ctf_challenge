@@ -570,8 +570,10 @@ class CTFdPlatform(BasePlatform):
                     user = row.get("user") or {}
                     uname = user.get("name")
                     if user:
-                        # Teams mode: mỗi dòng mang user.id/name của thành viên submit
-                        by_me = (user.get("id") == me_id) if me_id is not None else True
+                        # Teams mode: mỗi dòng mang user.id/name của thành viên submit.
+                        # me_id không xác định được -> KHÔNG tự coi là của mình
+                        # (fail-safe, tránh kẹt solved_by_me sai).
+                        by_me = (user.get("id") == me_id) if me_id is not None else False
                     else:
                         # Users mode: mọi solve của /users/me/solves là của mình
                         by_me = not teams_mode

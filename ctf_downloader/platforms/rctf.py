@@ -256,9 +256,12 @@ class RCTFPlatform(BasePlatform):
                         ts = epoch_ms(s.get("createdAt") or s.get("ts") or s.get("time"))
                         names = [me_name] if me_name else []
                         prev = cache.get(str(cid))
-                        if prev is not None and prev.solved_at is not None \
-                                and ts is not None and ts < prev.solved_at:
-                            ts = prev.solved_at   # giữ mốc sớm nhất
+                        if prev is not None:
+                            # Giữ mốc SỚM NHẤT giữa các lần solve ghi nhận được
+                            if prev.solved_at is not None and ts is not None:
+                                ts = min(prev.solved_at, ts)
+                            elif ts is None:
+                                ts = prev.solved_at
                         cache[str(cid)] = SolveAttribution(
                             by_me=True, by_team=True,
                             solver_names=names, solved_at=ts)

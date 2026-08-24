@@ -245,10 +245,15 @@ class InstanceService:
                 self.repo.write_metadata(meta_path, m)
                 Logger.info(f'[bold green]✓[/bold green] Synced instance details into: [cyan]{os.path.relpath(meta_path, self.workspace_path)}[/cyan]')
 
-                # Mirror trục container của status đa chiều (spec §7)
+                # Mirror trục container của status đa chiều (spec §7).
+                # Trạng thái khác running/stopped (vd 'unknown') -> KHÔNG đụng
+                # trục container, giữ nguyên giá trị hiện có.
                 try:
                     def _mut_container(st):
-                        st['container'] = 'running' if status == 'running' else 'stopped'
+                        if status == 'running':
+                            st['container'] = 'running'
+                        elif status == 'stopped':
+                            st['container'] = 'stopped'
                         return st
 
                     self.repo.update_status(meta_path, _mut_container)

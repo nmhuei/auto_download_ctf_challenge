@@ -275,6 +275,17 @@ class TestWriteupAssessor(unittest.TestCase):
         res = self._assess(hand)
         self.assertNotEqual(res["status"], "skeleton")
 
+    def test_anchored_format_matches_flag_mid_document(self):
+        # Fix review: pattern anchored ^...$ phải khớp flag nằm giữa tài liệu
+        # nhiều dòng (mốc +30 flag_format không được "chết").
+        mid_doc = TEMPLATE.replace(
+            "- Flag: `FLAG{...}`",
+            "- Flag: `FLAG{...}`\nFlag thật bắt được: `FLAG{mid_document_hit}` ngay giữa bài.")
+        res = self._assess(mid_doc, reference_template=TEMPLATE)
+        self.assertTrue(res["signals"].get("flag_format_matched"),
+                        "anchored flag_format phải match flag giữa văn bản")
+        self.assertTrue(res["signals"].get("has_real_flag"))
+
 
 # ----------------------------------------------------------------------
 # 4. Solve attribution parsers (mock JSON shape đã verify trong spec §4)
@@ -400,6 +411,24 @@ class TestCTFdAttribution(TempWorkspaceCase):
         plat = CTFdPlatform("https://ctfd.example.com", sess)
         self.assertEqual(plat.fetch_solve_attribution([1]), {})
 
+    def test_me_id_unknown_is_fail_safe_not_by_me(self):
+        # Fix review: /users/me lỗi (me_id=None) mà teams mode còn sống ->
+        # solve của đồng đội KHÔNG được đánh dấu by_me (tránh kẹt solved_by_me sai).
+        routes = [
+            ("/api/v1/users/me", make_resp(500, json_data={})),
+            ("/api/v1/teams/me/solves", make_resp(json_data={
+                "success": True, "data": [
+                    {"challenge_id": 1, "user": {"id": 99, "name": "teammate"}}]})),
+            ("/api/v1/teams/me", make_resp(json_data={
+                "success": True, "data": {"id": 5, "name": "TeamX"}})),
+        ]
+        plat = CTFdPlatform("https://ctfd.example.com", make_mock_session(routes))
+        plat.ctf_info.user_name = "me_user"
+        result = plat.fetch_solve_attribution([1])
+        self.assertFalse(result[1].by_me)
+        self.assertTrue(result[1].by_team)          # team vẫn ăn solved_by_team
+        self.assertEqual(result[1].solver_names, ["teammate"])
+
 
 class TestRCTFAttribution(TempWorkspaceCase):
     def test_by_team_equals_by_me_and_first_blood(self):
@@ -420,6 +449,43 @@ class TestRCTFAttribution(TempWorkspaceCase):
         self.assertTrue(result[1].by_team)
         self.assertTrue(result[1].first_blood)   # mình là solver sớm nhất
         self.assertIn("other", result[1].solver_names)
+
+    def test_duplicate_solve_keeps_earliest_timestamp(self):
+        # Fix review: nhiều dòng solve cùng challId -> giữ mốc SỚM NHẤT.
+        routes = [
+            ("/api/v1/users/me", make_resp(json_data={
+                "kind": "goodUserData",
+                "data": {"name": "me_user",
+                         "solves": [
+                             {"chalId": 1, "ts": "2026-08-24T10:00:00Z"},
+                             {"chalId": 1, "ts": "2026-08-24T08:30:00Z"},
+                         ]}})),
+            ("/api/v1/challs/1/solves", make_resp(404, json_data={})),
+        ]
+        plat = RCTFPlatform("https://rctf.example.com", make_mock_session(routes))
+        result = plat.fetch_solve_attribution([1])
+        from ctf_downloader.platforms.base import epoch_ms
+        self.assertEqual(result[1].solved_at, epoch_ms("2026-08-24T08:30:00Z"))
+
+
+class TestGZCTFFailSafeMembership(TempWorkspaceCase):
+    def test_unverifiable_team_is_rejected_not_fail_open(self):
+        # Fix review: /api/team/{id} lỗi cả retry -> KHÔNG chấp nhận đội
+        # trùng tên (fail-safe), fallback /details cũng không có -> {}.
+        routes = [
+            ("/api/team/42", make_resp(500, json_data={})),
+            ("/api/game/6/scoreboard", make_resp(json_data={
+                "items": [
+                    {"rank": 2, "id": 42, "name": "TeamX", "score": 500,
+                     "solvedChallenges": [
+                         {"id": 1, "title": "Chall A", "userName": "memberB"}]},
+                ]})),
+        ]
+        plat = GZCTFPlatform("https://gz.example.com/games/6/challenges",
+                             make_mock_session(routes))
+        plat.ctf_info.user_name = "me_user"
+        plat.ctf_info.team_name = "TeamX"
+        self.assertEqual(plat.fetch_solve_attribution([1]), {})
 
 
 # ----------------------------------------------------------------------
@@ -574,10 +640,31 @@ class TestRenderIcons(TempWorkspaceCase):
         self.assertIn(STATUS_ICONS["container"]["stopped"], out)
 
 
+class TestInstanceContainerMirror(TempWorkspaceCase):
+    def _service(self):
+        from ctf_downloader.services.instance_service import InstanceService
+        with patch("ctf_downloader.services.platform_resolver.PlatformResolver.for_workspace",
+                   return_value=(None, MagicMock(), {})):
+            return InstanceService(str(self.root))
+
+    def test_unknown_status_leaves_container_axis_untouched(self):
+        # Fix review: status lạ ('unknown') không được map thành 'stopped'.
+        svc = self._service()
+        svc._update_local_instance_info(1, entry=None, time_left=0, status='unknown')
+        st = self.repo.read_status(self.meta_path)
+        self.assertEqual(st['container'], 'none')
+
+    def test_running_and_stopped_still_mirror(self):
+        svc = self._service()
+        svc._update_local_instance_info(1, entry='h:1', time_left=9, status='running')
+        svc._update_local_instance_info(1, entry=None, time_left=0, status='stopped')
+        st = self.repo.read_status(self.meta_path)
+        self.assertEqual(st['container'], 'stopped')
+
+
 # ----------------------------------------------------------------------
 # 8. compute_status + summary stats mở rộng
 # ----------------------------------------------------------------------
-
 class TestComputeStatusAndStats(TempWorkspaceCase):
     def test_compute_status_matches_read_status(self):
         st = StatusService.compute_status(self.repo, self.meta_path)

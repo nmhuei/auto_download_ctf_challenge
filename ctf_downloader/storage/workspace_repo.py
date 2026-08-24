@@ -277,11 +277,16 @@ class WorkspaceRepo:
                     st["flag"]["state"] = "found_unverified"
                     break
 
-        # 4. instance_info mirror
+        # 4. instance_info mirror (bare is_container -> stopped theo spec;
+        #    status lạ vd 'unknown' -> KHÔNG đụng trục container)
         if st["container"] == "none":
             inst = (meta or {}).get("instance_info")
             if isinstance(inst, dict) and inst.get("is_container"):
-                st["container"] = "running" if inst.get("status") == "running" else "stopped"
+                inst_status = inst.get("status")
+                if inst_status == "running":
+                    st["container"] = "running"
+                elif inst_status in (None, "", "stopped"):
+                    st["container"] = "stopped"
 
         return st
 

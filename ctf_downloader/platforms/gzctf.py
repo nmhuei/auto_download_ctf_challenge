@@ -426,16 +426,20 @@ class GZCTFPlatform(BasePlatform):
     # ------------------------------------------------------------------
 
     def _team_member_names(self, team_id: Any) -> Optional[list]:
-        """GET /api/team/{id}.members[].userName; None nếu request lỗi."""
-        try:
-            resp = self.session.get(f"{self.origin}/api/team/{team_id}", timeout=10)
-            if resp.status_code == 200:
-                data = resp.json() or {}
-                members = data.get("members") or []
-                names = [m.get("userName") for m in members if isinstance(m, dict)]
-                return [n for n in names if n]
-        except Exception:
-            pass
+        """GET /api/team/{id}.members[].userName; retry 1 lần, None nếu vẫn lỗi."""
+        for attempt in (1, 2):
+            try:
+                resp = self.session.get(f"{self.origin}/api/team/{team_id}", timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json() or {}
+                    members = data.get("members") or []
+                    names = [m.get("userName") for m in members if isinstance(m, dict)]
+                    return [n for n in names if n]
+            except Exception:
+                pass
+        Logger.warning(
+            f"GZCTF attribution: không xác minh được membership của team {team_id} "
+            f"(sau 1 lần retry).")
         return None
 
     def _attribution_from_details(self, cache: dict) -> None:
@@ -486,14 +490,19 @@ class GZCTFPlatform(BasePlatform):
                 break
 
         if my_item is not None and not confirmed_by_user:
-            # Match theo tên đội — chốt membership bằng team members để tránh
-            # trùng tên đội của người khác.
+            # Match theo tên đội — phải chốt membership bằng team members.
+            # Fail-safe: KHÔNG xác minh được (request lỗi cả 2 lần) -> bỏ đội
+            # này thay vì chấp nhận mạo danh (tránh kẹt solved_by_team/by_me sai).
             member_names = self._team_member_names(my_item.get("id"))
-            if member_names is not None and profile:
-                if profile in member_names:
+            if profile:
+                if member_names is not None and profile in member_names:
                     confirmed_by_user = True
                 else:
-                    my_item = None   # đội trùng tên, không phải của mình
+                    if member_names is not None:
+                        Logger.warning(
+                            "GZCTF attribution: team trùng tên nhưng profile không "
+                            f"nằm trong members — bỏ qua '{my_item.get('name')}'.")
+                    my_item = None
 
         if my_item is None:
             self._attribution_from_details(cache)

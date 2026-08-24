@@ -100,9 +100,18 @@ def assess_writeup(md_text: str,
     format_matched = False
     if flag_format:
         try:
-            fmt_re = re.compile(flag_format)
-            candidate = GENERIC_FLAG_RE.sub("", md.replace(FLAG_PLACEHOLDER, ""))
-            format_matched = bool(fmt_re.search(candidate))
+            # Bỏ anchor ^/$ để search được flag nằm GIỮA văn bản nhiều dòng
+            # (pattern anchored giữ nguyên cho validate_flag ở chỗ khác).
+            body = flag_format.strip()
+            if body.startswith("^"):
+                body = body[1:]
+            if body.endswith("$"):
+                body = body[:-1]
+            fmt_re = re.compile(body, re.M)
+            for m in fmt_re.finditer(md):
+                if m.group(0).strip() != FLAG_PLACEHOLDER:
+                    format_matched = True   # bỏ qua chính placeholder
+                    break
         except re.error:
             format_matched = False
     if format_matched:
