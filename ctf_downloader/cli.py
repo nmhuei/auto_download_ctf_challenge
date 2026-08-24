@@ -222,39 +222,10 @@ def handle_instance(args):
         print('='*75)
         return
 
-    # 2. Interactive
+    # 2. Interactive — menu gom về InstanceService.interactive_pick (dùng chung
+    #    với instance.py / interactive_menu)
     if args.interactive or (not args.action and not args.id and not args.name):
-        containers = mgr.list_containers()
-        if not containers:
-            Logger.warning('No container challenges detected. Enter challenge ID manually.')
-            chall_id = input('Enter Challenge ID: ').strip()
-        else:
-            print("\nSelect Challenge to manage:")
-            for idx, c in enumerate(containers, 1):
-                print(f'  [{idx}] {c.get("name")} (ID: {c.get("id")}, {c.get("category")})')
-            choice = input(f'Choice (1-{len(containers)}): ').strip()
-            try:
-                selected = containers[int(choice) - 1]
-                chall_id = selected.get('id')
-            except Exception:
-                Logger.error('Invalid choice.')
-                return
-
-        print("\nAction:")
-        print('  [1] Start / Renew Container')
-        print('  [2] Check Container Status')
-        print('  [3] Extend Container Lifetime')
-        print('  [4] Stop / Destroy Container')
-        act = input('Choice (1-4): ').strip()
-        if act == '1':
-            mgr.start_instance(chall_id)
-        elif act == '2':
-            st = mgr.get_status(chall_id)
-            Logger.info(f'Status: {st}')
-        elif act == '3':
-            mgr.extend_instance(chall_id)
-        elif act == '4':
-            mgr.stop_instance(chall_id)
+        mgr.interactive_pick()
         return
 
     # 3. Direct action
