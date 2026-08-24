@@ -7,10 +7,15 @@ delegate vào đây.
 """
 import os
 import re
-from typing import Any, Dict, List, Optional, Tuple
+import shutil
+import sys
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+from rich.text import Text
 
 from ..storage.constants import CATEGORY_ICONS, FLAG_PLACEHOLDER, STATUS_ICONS
 from ..storage.workspace_repo import WorkspaceRepo
+from ..ui.console import out_console
 from ..utils.logger import Logger
 from ..utils.writeup_assessor import assess_writeup
 
@@ -21,6 +26,11 @@ WRITEUP_RANK = {"none": 0, "skeleton": 1, "draft": 2, "complete": 3}
 # Tag/label hợp lệ: lowercase [a-z0-9-], dài tối đa 24 ký tự.
 TAG_PATTERN = re.compile(r'^[a-z0-9-]{1,24}$')
 TAG_MAX_LEN = 24
+
+# Gradient meter (btop pattern): xanh → vàng → đỏ theo % hoàn thành.
+METER_RAMP_START = (0, 200, 83)    # xanh lá
+METER_RAMP_MID = (255, 214, 0)     # vàng
+METER_RAMP_END = (255, 61, 61)     # đỏ
 
 
 class ChallengeNotFoundError(Exception):
@@ -457,6 +467,50 @@ class StatusService:
         }
 
     # ------------------------------------------------------------------ #
+    # Progress bar (btop meter gradient)
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _gradient_enabled() -> bool:
+        """Bật meter gradient chỉ khi stdout là TTY thật và terminal đủ rộng
+        (terminal hẹp < 60 cols hoặc non-TTY → fallback plain)."""
+        try:
+            if not sys.stdout.isatty():
+                return False
+            return shutil.get_terminal_size().columns >= 60
+        except Exception:
+            return False
+
+    @classmethod
+    def _progress_line(cls, rate: float, width: int,
+                       prefix: str = "", suffix: str = "") -> Union[str, Text]:
+        """Dòng progress bar cho dashboard:
+
+        - TTY đủ rộng → ``ui.widgets.meter`` gradient per-cell (xanh→vàng→đỏ
+          theo % hoàn thành), trả ``rich.text.Text``.
+        - Terminal hẹp (<60 cols) hoặc non-TTY → fallback bar cũ plain
+          ``'█' * n + '░'``.
+        """
+        if cls._gradient_enabled():
+            from ..ui.widgets import gradient, meter
+            ramp = gradient(METER_RAMP_START, METER_RAMP_MID, METER_RAMP_END)
+            text = Text(prefix)
+            text.append_text(meter(rate, width, ramp))
+            text.append(suffix)
+            return text
+        filled_len = int(width * rate // 100)
+        return f"{prefix}{'█' * filled_len}{'░' * (width - filled_len)}{suffix}"
+
+    @staticmethod
+    def _emit_progress(line: Union[str, Text]) -> None:
+        """In dòng progress: str → print(); rich Text → out_console để giữ
+        màu ANSI của gradient (out_console resolve sys.stdout lúc in nên vẫn
+        hoạt động khi caller redirect_stdout trong test)."""
+        if isinstance(line, str):
+            print(line)
+        else:
+            out_console.print(line)
+
+    # ------------------------------------------------------------------ #
     # Render cây challenge
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -490,9 +544,9 @@ class StatusService:
             print(f" ⏱️ Window: {window_str}")
 
         bar_len = 30
-        filled_len = int(bar_len * rate // 100)
-        bar = '█' * filled_len + '░' * (bar_len - filled_len)
-        print(f"    [{bar}] {rate:.1f}%")
+        StatusService._emit_progress(
+            StatusService._progress_line(rate, bar_len,
+                                         prefix="    [", suffix=f"] {rate:.1f}%"))
         print('=' * 85)
 
         categories = stats['categories']
@@ -533,8 +587,10 @@ class StatusService:
 
             cat_icon = CATEGORY_ICONS.get(str(cat).lower(), '📁')
             c_rate = (data['solved'] / data['total'] * 100) if data['total'] > 0 else 0
-            c_bar = '█' * int(10 * c_rate // 100) + '░' * (10 - int(10 * c_rate // 100))
-            print(f"\n📁 {cat_icon} {cat} ({len(c_list)} challs, {data['points']} pts) [{c_bar}] {data['solved']}/{data['total']}")
+            StatusService._emit_progress(StatusService._progress_line(
+                c_rate, 10,
+                prefix=f"\n📁 {cat_icon} {cat} ({len(c_list)} challs, {data['points']} pts) [",
+                suffix=f"] {data['solved']}/{data['total']}"))
 
             for idx, c in enumerate(c_list):
                 is_last = (idx == len(c_list) - 1)
