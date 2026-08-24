@@ -453,6 +453,197 @@ def handle_rank(args):
         sys.exit(1)
 
 
+def handle_sync(args):
+    """``ctf sync`` — đồng bộ metadata động workspace ↔ platform (P2-1).
+
+    Handler mỏng: auth từ auth map + dựng platform qua PlatformResolver
+    (cùng đường như InstanceService/WatchService), rồi gọi
+    ``PullService.sync_workspace(repo, platform)`` — bảng updated/new/drift
+    do service tự in. LOCAL STATE LÀ CHỦ: không đụng status/flag/file.
+    ``--verify`` chạy thêm ``PullService.verify`` in drift chi tiết.
+    """
+    from .services.platform_resolver import PlatformResolver
+
+    cookie_val, token_val = get_auth_for_workspace(args.workspace)
+    repo = WorkspaceRepo(args.workspace)
+    try:
+        _session, platform, _info = PlatformResolver.for_workspace(
+            repo, cookie=cookie_val, token=token_val)
+    except Exception as e:
+        Logger.error(f'Cannot resolve platform for workspace '
+                     f"'{args.workspace}': {e}")
+        sys.exit(1)
+
+    try:
+        result = PullService.sync_workspace(repo, platform)
+        if getattr(args, 'verify', False):
+            verdict = PullService.verify(repo, platform)
+            _render_verify_drift(verdict)
+    except KeyboardInterrupt:
+        Logger.info('👋 Sync dừng.')
+        sys.exit(130)
+    except Exception as e:
+        Logger.error(f'Sync failed: {e}')
+        sys.exit(1)
+    if not result.get('ok'):
+        sys.exit(1)
+
+
+def _render_verify_drift(verdict):
+    """In kết quả ``PullService.verify`` (dùng chung cho sync --verify)."""
+    drift = verdict.get('unsolved_locally_solved_remotely') or []
+    if not drift:
+        Logger.success('✅ Verify: không có challenge nào solved trên server '
+                       'mà local còn unsolved.')
+        return
+    rows = [[f"{d.get('name')} ({d.get('category')})",
+             'me' if d.get('by_me') else 'team',
+             ', '.join(d.get('solver_names') or []) or '(không rõ)']
+            for d in drift]
+    Logger.print_table(
+        'Verify — unsolved locally, solved remotely',
+        ['Challenge', 'By', 'Solvers'], rows)
+    Logger.warning("⚠️ KHÔNG tự đổi trạng thái — user quyết định qua "
+                   "'status set' hoặc submit flag.")
+
+
+def handle_export_pack(args):
+    """``ctf export-pack`` — đóng gói writeup các bài đã solve thành pack
+    markdown + zip (P2-3). Handler mỏng quanh WriteupExporter."""
+    from .services.writeup_exporter import WriteupExporter
+    from rich.markup import escape
+
+    try:
+        exporter = WriteupExporter(args.workspace)
+        entries = exporter.collect()
+    except Exception as e:
+        Logger.error(f'Export failed: {e}')
+        sys.exit(1)
+
+    # escape(): cảnh báo chứa tên challenge/category dạng [tag] không được
+    # rich nuốt mất như markup.
+    for w in exporter.validate(entries):
+        console.print(escape(w), style='yellow')
+
+    try:
+        pack_dir = exporter.build_pack(args.out or '.')
+    except ValueError as e:
+        # Không có bài nào đạt điều kiện export — service đã hướng dẫn chi tiết.
+        Logger.error(str(e))
+        sys.exit(1)
+    except Exception as e:
+        Logger.error(f'Export failed: {e}')
+        sys.exit(1)
+    Logger.success(f'📦 Đã export writeup pack: {pack_dir}.zip')
+
+
+# Icon kết quả submit cho `ctf history` (result strings của SubmitService).
+_HISTORY_RESULT_ICONS = {
+    'correct': '🚩✔',
+    'incorrect': '⛔',
+    'ratelimited': '⏳',
+}
+
+
+def _redact_flag(flag) -> str:
+    """Che flag: 4 ký tự đầu + *** (mặc định; --all hiện đầy đủ)."""
+    flag = str(flag or '').strip()
+    if not flag:
+        return '-'
+    return flag[:4] + '***'
+
+
+def handle_history(args):
+    """``ctf history`` — bảng lịch sử submit từ submit_history.json.
+
+    Flag bị che mặc định (4 ký tự đầu + ***) chống lộ khi share screen;
+    ``--all`` hiện đầy đủ. Workspace chưa từng submit → thông báo thân thiện,
+    KHÔNG lỗi.
+    """
+    if not os.path.isdir(args.workspace):
+        Logger.error(f"Workspace không tồn tại: {args.workspace}")
+        sys.exit(1)
+    repo = WorkspaceRepo(args.workspace)
+    entries = repo.load_submit_history().get('entries') or []
+    if not entries:
+        Logger.info(f"Chưa có lịch sử submit nào trong workspace "
+                    f"'{args.workspace}' (submit_history.json chưa tồn tại).")
+        return
+
+    show_all = bool(getattr(args, 'show_all', False))
+    rows = []
+    for e in entries:
+        cid = e.get('challenge_id')
+        try:
+            chall = repo.find_challenge(cid)
+        except Exception:
+            chall = None
+        name = (chall or {}).get('name') or str(cid if cid is not None else '?')
+        icon = _HISTORY_RESULT_ICONS.get(e.get('result'), '❓')
+        flag = str(e.get('flag', '') or '')
+        shown = flag if show_all else _redact_flag(flag)
+        rows.append([e.get('timestamp') or '-', str(name),
+                     f"{icon} {e.get('result') or 'unknown'}", shown])
+    Logger.print_table('Submit History',
+                       ['Thời gian (UTC)', 'Challenge', 'Kết quả', 'Flag'],
+                       rows)
+    if not show_all:
+        Logger.info('(Flag đang bị che — dùng --all để hiện đầy đủ.)')
+
+
+def handle_sniper(args):
+    """``ctf sniper`` — preload flag, nộp tự động đúng giờ G (P2-6).
+
+    Handler mỏng: dựng SubmitService (tự resolve URL từ workspace) +
+    SniperService rồi gọi run(). Cảnh báo automation do service tự in;
+    Ctrl-C được service bắt sạch (in target còn lại) — đây chỉ là lớp chặn
+    phòng thủ với exit code 130.
+    """
+    from .services.sniper_service import SniperService
+    from .services.submit_service import SubmitService
+
+    cookie_val, token_val = get_auth_for_workspace(args.workspace)
+    try:
+        submitter = SubmitService(cookie=cookie_val, token=token_val,
+                                  workspace_dir=args.workspace)
+    except Exception as e:
+        Logger.error(f'Initialization error: {e}')
+        sys.exit(1)
+
+    svc = SniperService(WorkspaceRepo(args.workspace), submitter)
+    try:
+        svc.run(poll_interval=float(getattr(args, 'poll', 10) or 10),
+                start_at=getattr(args, 'start_at', None),
+                retry_wrong=bool(getattr(args, 'retry_wrong', False)))
+    except KeyboardInterrupt:
+        Logger.info('👋 Sniper dừng — target còn lại vẫn giữ trong sniper.json.')
+        sys.exit(130)
+
+
+def handle_serve(args):
+    """``ctf serve`` — dashboard web read-only (P2-4).
+
+    Mặc định bind 127.0.0.1 (KHÔNG expose LAN); Ctrl-C tắt server sạch
+    (WebDashboard.serve tự xử lý). Port bận → OSError → exit 1.
+    """
+    if not os.path.isdir(args.workspace):
+        Logger.error(f"Workspace không tồn tại: {args.workspace}")
+        sys.exit(1)
+    from .services.web_dashboard import WebDashboard
+
+    port = int(getattr(args, 'port', WebDashboard.DEFAULT_PORT))
+    Logger.info(f'🌐 Dashboard sẵn sàng — mở http://127.0.0.1:{port}/ '
+                f'trong trình duyệt.')
+    try:
+        WebDashboard(WorkspaceRepo(args.workspace)).serve(port=port)
+    except OSError as e:
+        Logger.error(str(e))
+        sys.exit(1)
+    except KeyboardInterrupt:
+        pass
+    Logger.info('👋 Dashboard đã tắt.')
+
+
 def _prompt_yes_no(question: str) -> bool:
     """Hỏi y/N trên tty — chỉ trả True khi user gõ y/yes.
 

@@ -363,3 +363,299 @@ class TestStorageCommand(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNewServiceCommands(unittest.TestCase):
+    """Phase 7c — wire 5 lệnh mới: sync / export-pack / history / sniper /
+    serve. Parse args + mock service assert đúng tham số + exit code
+    thiếu workspace = 1."""
+
+    MISSING_WS = "/nonexistent_ws_phase7"
+
+    def _parser(self):
+        from ctf_downloader.cli import build_unified_parser
+
+        return build_unified_parser()
+
+    # ---- parse args ----
+    def test_parse_sync_defaults_and_verify(self):
+        ns = self._parser().parse_args(["sync"])
+        self.assertEqual(ns.workspace, ".")
+        self.assertFalse(ns.verify)
+        ns = self._parser().parse_args(["sync", "-w", "ws", "--verify"])
+        self.assertEqual(ns.workspace, "ws")
+        self.assertTrue(ns.verify)
+
+    def test_parse_export_pack(self):
+        ns = self._parser().parse_args(
+            ["export-pack", "-w", "ws", "--out", "/tmp/out"])
+        self.assertEqual(ns.workspace, "ws")
+        self.assertEqual(ns.out, "/tmp/out")
+
+    def test_parse_history_redacted_by_default(self):
+        ns = self._parser().parse_args(["history", "-w", "ws"])
+        self.assertFalse(ns.show_all)
+        ns = self._parser().parse_args(["history", "-w", "ws", "--all"])
+        self.assertTrue(ns.show_all)
+
+    def test_parse_sniper_defaults_and_flags(self):
+        ns = self._parser().parse_args(["sniper"])
+        self.assertEqual(ns.workspace, ".")
+        self.assertIsNone(ns.start_at)
+        self.assertFalse(ns.retry_wrong)
+        self.assertEqual(ns.poll, 10)
+        ns = self._parser().parse_args(
+            ["sniper", "-w", "ws", "--start-at", "2026-08-30T00:00:00Z",
+             "--retry-wrong", "--poll", "5"])
+        self.assertEqual(ns.workspace, "ws")
+        self.assertEqual(ns.start_at, "2026-08-30T00:00:00Z")
+        self.assertTrue(ns.retry_wrong)
+        self.assertEqual(ns.poll, 5)
+
+    def test_parse_serve_default_port(self):
+        ns = self._parser().parse_args(["serve"])
+        self.assertEqual(ns.workspace, ".")
+        self.assertEqual(ns.port, 8689)
+        ns = self._parser().parse_args(["serve", "-w", "ws", "--port", "9999"])
+        self.assertEqual(ns.workspace, "ws")
+        self.assertEqual(ns.port, 9999)
+
+    def test_sync_alias_now_points_to_sync_command_not_watch(self):
+        # Alias 'sync' chuyển từ watch sang lệnh sync metadata 2 chiều (P2-1).
+        ns = self._parser().parse_args(["sync"])
+        self.assertEqual(ns.subcommand, "sync")
+
+    # ---- handler: mock service assert đúng tham số ----
+    def test_handle_sync_calls_pull_service_with_resolved_platform(self):
+        import contextlib
+        import io
+
+        from ctf_downloader import cli_commands
+        from ctf_downloader.services.platform_resolver import PlatformResolver
+        from ctf_downloader.services.pull_service import PullService
+
+        platform = object()
+        ns = Namespace(workspace="somews", verify=False)
+        with patch.object(cli_commands, "get_auth_for_workspace",
+                          return_value=(None, None)) as m_auth, \
+             patch.object(PlatformResolver, "for_workspace",
+                          return_value=(None, platform, None)) as m_resolve, \
+             patch.object(PullService, "sync_workspace",
+                          return_value={"ok": True}) as m_sync:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                cli_commands.handle_sync(ns)
+        m_auth.assert_called_once_with("somews")
+        _, kwargs = m_resolve.call_args
+        self.assertIsNone(kwargs.get("cookie"))
+        m_sync.assert_called_once()
+        self.assertIs(m_sync.call_args.args[1], platform)
+
+    def test_handle_sync_verify_runs_verify(self):
+        import contextlib
+        import io
+
+        from ctf_downloader import cli_commands
+        from ctf_downloader.services.platform_resolver import PlatformResolver
+        from ctf_downloader.services.pull_service import PullService
+
+        ns = Namespace(workspace="somews", verify=True)
+        with patch.object(cli_commands, "get_auth_for_workspace",
+                          return_value=(None, None)), \
+             patch.object(PlatformResolver, "for_workspace",
+                          return_value=(None, object(), None)), \
+             patch.object(PullService, "sync_workspace",
+                          return_value={"ok": True}), \
+             patch.object(PullService, "verify",
+                          return_value={"unsolved_locally_solved_remotely":
+                                        []}) as m_verify:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                cli_commands.handle_sync(ns)
+        m_verify.assert_called_once()
+
+    def test_handle_sync_failure_exits_1(self):
+        from ctf_downloader import cli_commands
+        from ctf_downloader.services.platform_resolver import PlatformResolver
+        from ctf_downloader.services.pull_service import PullService
+
+        ns = Namespace(workspace="somews", verify=False)
+        with patch.object(cli_commands, "get_auth_for_workspace",
+                          return_value=(None, None)), \
+             patch.object(PlatformResolver, "for_workspace",
+                          side_effect=ValueError("no url")), \
+             patch.object(PullService, "sync_workspace") as m_sync:
+            with self.assertRaises(SystemExit) as cm:
+                cli_commands.handle_sync(ns)
+        self.assertEqual(cm.exception.code, 1)
+        m_sync.assert_not_called()
+
+    def test_handle_export_pack_warns_then_builds_zip_path(self):
+        import contextlib
+        import io
+        from pathlib import Path
+
+        from ctf_downloader import cli_commands
+        from ctf_downloader.services.writeup_exporter import WriteupExporter
+
+        pack = Path("/tmp/out/ws_writeup_20260824")
+        ns = Namespace(workspace="ws", out="/tmp/out")
+        with patch.object(WriteupExporter, "collect",
+                          return_value=[object()]), \
+             patch.object(WriteupExporter, "validate",
+                          return_value=["⚠️ [web] chall: thiếu flag"]) as m_val, \
+             patch.object(WriteupExporter, "build_pack",
+                          return_value=pack) as m_pack:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                cli_commands.handle_export_pack(ns)
+        m_val.assert_called_once()
+        m_pack.assert_called_once_with("/tmp/out")
+        out = buf.getvalue()
+        self.assertIn("⚠️ [web] chall: thiếu flag", out)
+        self.assertIn(str(pack) + ".zip", out)
+
+    def test_handle_export_pack_no_entries_exits_1(self):
+        from ctf_downloader import cli_commands
+        from ctf_downloader.services.writeup_exporter import WriteupExporter
+
+        ns = Namespace(workspace="ws", out=None)
+        with patch.object(WriteupExporter, "collect", return_value=[]), \
+             patch.object(WriteupExporter, "validate", return_value=[]), \
+             patch.object(WriteupExporter, "build_pack",
+                          side_effect=ValueError("trống")):
+            with self.assertRaises(SystemExit) as cm:
+                cli_commands.handle_export_pack(ns)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_handle_history_renders_table_with_redacted_flag(self):
+        import contextlib
+        import io
+
+        from ctf_downloader import cli_commands
+        from ctf_downloader.storage.workspace_repo import WorkspaceRepo
+
+        hist = {"entries": [
+            {"flag": "PTITCTF{sup3r_secret}", "challenge_id": 12,
+             "result": "correct", "timestamp": "2026-08-24T09:00:00Z"},
+            {"flag": "FLAG{dead}", "challenge_id": "warmup",
+             "result": "incorrect", "timestamp": "2026-08-24T09:05:00Z"},
+        ]}
+        ns = Namespace(workspace=".", show_all=False)
+        with patch.object(WorkspaceRepo, "load_submit_history",
+                          return_value=hist), \
+             patch.object(WorkspaceRepo, "find_challenge",
+                          return_value={"name": "Chall A"}):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                cli_commands.handle_history(ns)
+        out = buf.getvalue()
+        self.assertIn("Chall A", out)
+        self.assertIn("🚩✔", out)
+        self.assertIn("⛔", out)
+        self.assertIn("PTIT***", out)
+        self.assertNotIn("sup3r_secret", out)
+
+    def test_handle_history_all_reveals_flag(self):
+        import contextlib
+        import io
+
+        from ctf_downloader import cli_commands
+        from ctf_downloader.storage.workspace_repo import WorkspaceRepo
+
+        hist = {"entries": [
+            {"flag": "PTITCTF{sup3r_secret}", "challenge_id": 12,
+             "result": "correct", "timestamp": "2026-08-24T09:00:00Z"},
+        ]}
+        ns = Namespace(workspace=".", show_all=True)
+        with patch.object(WorkspaceRepo, "load_submit_history",
+                          return_value=hist), \
+             patch.object(WorkspaceRepo, "find_challenge",
+                          return_value={"name": "Chall A"}):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                cli_commands.handle_history(ns)
+        self.assertIn("PTITCTF{sup3r_secret}", buf.getvalue())
+
+    def test_handle_history_empty_is_graceful_no_exit(self):
+        import contextlib
+        import io
+
+        from ctf_downloader import cli_commands
+        from ctf_downloader.storage.workspace_repo import WorkspaceRepo
+
+        ns = Namespace(workspace=".", show_all=False)
+        with patch.object(WorkspaceRepo, "load_submit_history",
+                          return_value={"entries": []}):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                cli_commands.handle_history(ns)  # KHÔNG SystemExit
+        self.assertIn("Chưa có lịch sử submit", buf.getvalue())
+
+    def test_handle_sniper_calls_service_run_with_flags(self):
+        from ctf_downloader import cli_commands
+        from ctf_downloader.services.sniper_service import SniperService
+        from ctf_downloader.services.submit_service import SubmitService
+
+        ns = Namespace(workspace="ws", start_at="2026-08-30T00:00:00Z",
+                       retry_wrong=True, poll=5)
+        with patch.object(cli_commands, "get_auth_for_workspace",
+                          return_value=("ck", "tk")), \
+             patch.object(SubmitService, "__init__",
+                          return_value=None) as m_init, \
+             patch.object(SniperService, "run", return_value={}) as m_run:
+            cli_commands.handle_sniper(ns)
+        _, kwargs = m_init.call_args
+        self.assertEqual(kwargs.get("workspace_dir"), "ws")
+        self.assertEqual(kwargs.get("cookie"), "ck")
+        run_kwargs = m_run.call_args.kwargs
+        self.assertEqual(run_kwargs.get("poll_interval"), 5.0)
+        self.assertEqual(run_kwargs.get("start_at"), "2026-08-30T00:00:00Z")
+        self.assertTrue(run_kwargs.get("retry_wrong"))
+
+    def test_handle_sniper_submit_init_error_exits_1(self):
+        from ctf_downloader import cli_commands
+        from ctf_downloader.services.sniper_service import SniperService
+        from ctf_downloader.services.submit_service import SubmitService
+
+        ns = Namespace(workspace="ws", start_at=None, retry_wrong=False,
+                       poll=10)
+        with patch.object(cli_commands, "get_auth_for_workspace",
+                          return_value=(None, None)), \
+             patch.object(SubmitService, "__init__",
+                          side_effect=ValueError("no url")), \
+             patch.object(SniperService, "run") as m_run:
+            with self.assertRaises(SystemExit) as cm:
+                cli_commands.handle_sniper(ns)
+        self.assertEqual(cm.exception.code, 1)
+        m_run.assert_not_called()
+
+    def test_handle_serve_starts_dashboard_with_port(self):
+        import contextlib
+        import io
+
+        from ctf_downloader import cli_commands
+        from ctf_downloader.services.web_dashboard import WebDashboard
+
+        ns = Namespace(workspace=".", port=8123)
+        with patch.object(WebDashboard, "serve") as m_serve:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                cli_commands.handle_serve(ns)
+        m_serve.assert_called_once_with(port=8123)
+        self.assertIn("http://127.0.0.1:8123/", buf.getvalue())
+
+    # ---- exit code thiếu workspace = 1 (end-to-end qua main.py) ----
+    def test_new_commands_missing_workspace_exit_1(self):
+        for argv in (["sync"], ["export-pack"], ["history"], ["sniper"],
+                     ["serve"]):
+            with self.subTest(cmd=argv[0]):
+                r = _run(["main.py"] + argv +
+                         ["-w", self.MISSING_WS])
+                self.assertEqual(r.returncode, 1,
+                                 f"{argv}: {r.stdout + r.stderr}")

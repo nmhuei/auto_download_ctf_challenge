@@ -7,15 +7,20 @@ import sys
 from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test cũ
     get_auth_for_workspace,
     handle_doctor,
+    handle_export_pack,
     handle_hoard,
+    handle_history,
     handle_instance,
     handle_note,
     handle_pull,
     handle_rank,
     handle_register,
+    handle_serve,
+    handle_sniper,
     handle_status,
     handle_storage,
     handle_submit,
+    handle_sync,
     handle_tag,
     handle_watch,
     handle_workspaces,
@@ -164,7 +169,8 @@ Quick Examples:
     rank_parser.add_argument('--no-docs', action='store_true', help='Do not write/update RANKING.md or SUMMARY.md')
 
     # 7. WATCH / EVENT WINDOW — auto-sync trong window giải + keep-alive
-    watch_parser = subparsers.add_parser('watch', aliases=['sync'], help='👀 Auto-sync challenges/scoreboard/notices trong event window (+ keep-alive instance)')
+    #    (alias 'sync' đã nhường cho lệnh `ctf sync` — sync metadata 2 chiều)
+    watch_parser = subparsers.add_parser('watch', help='👀 Auto-sync challenges/scoreboard/notices trong event window (+ keep-alive instance)')
     watch_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
     watch_parser.add_argument('--once', action='store_true', help='Chạy đúng 1 vòng rồi exit (entrypoint cho cron/systemd bọc ngoài)')
     watch_parser.add_argument('--no-scoreboard', action='store_true', help='Tắt tick scoreboard')
@@ -216,6 +222,43 @@ Quick Examples:
     storage_arch.add_argument('-y', '--yes', action='store_true',
                               help='Bỏ qua confirm archive (bắt buộc khi non-interactive); xoá workspace gốc vẫn cần xác nhận riêng')
 
+    # 11. SYNC — đồng bộ metadata 2 chiều workspace <-> platform (P2-1)
+    sync_parser = subparsers.add_parser('sync', aliases=['resync'],
+                                        help='🔄 Đồng bộ metadata động (points/solves/connection) workspace ↔ platform; không đụng status/flag/file')
+    sync_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
+    sync_parser.add_argument('--verify', action='store_true',
+                             help='Chạy thêm verify: liệt kê challenge solved trên server nhưng local chưa (drift)')
+
+    # 12. EXPORT-PACK — đóng gói writeup thành pack zip (P2-3)
+    exp_parser = subparsers.add_parser('export-pack',
+                                       help='📦 Đóng gói writeup các challenge đã solve thành pack markdown + zip')
+    exp_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
+    exp_parser.add_argument('--out', default='.', help='Thư mục lưu pack zip (default: thư mục hiện tại)')
+
+    # 13. HISTORY — lịch sử submit từ submit_history.json
+    hist_parser = subparsers.add_parser('history', aliases=['log'],
+                                        help='📜 Xem lịch sử submit flag của workspace (flag bị che mặc định)')
+    hist_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
+    hist_parser.add_argument('--all', dest='show_all', action='store_true',
+                             help='Hiện flag đầy đủ (mặc định chỉ 4 ký tự đầu + ***)')
+
+    # 14. SNIPER — preload flag, nộp tự động đúng giờ G (P2-6)
+    sniper_parser = subparsers.add_parser('sniper',
+                                          help='🎯 Preload flag và nộp tự động ngay giây đầu window mở (first-blood race)')
+    sniper_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
+    sniper_parser.add_argument('--start-at', dest='start_at',
+                               help='Thời điểm mở giải ISO-8601/epoch — bắt buộc nếu challenges.json thiếu event_window.start')
+    sniper_parser.add_argument('--retry-wrong', dest='retry_wrong', action='store_true',
+                               help='Cho phép thử lại target sai (tối đa 3 lần/target, qua gate force)')
+    sniper_parser.add_argument('--poll', type=int, default=10,
+                               help='Chu kỳ poll khi chờ giờ G / backoff, giây (default: 10)')
+
+    # 15. SERVE — dashboard web read-only
+    serve_parser = subparsers.add_parser('serve', aliases=['web'],
+                                         help='🌐 Chạy dashboard web read-only cho workspace (bind 127.0.0.1)')
+    serve_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
+    serve_parser.add_argument('--port', type=int, default=8689, help='Port HTTP (default: 8689)')
+
     return parser
 
 
@@ -254,7 +297,7 @@ def main():
         handle_tag(args)
     elif cmd in ['rank', 'scoreboard', 'leaderboard']:
         handle_rank(args)
-    elif cmd in ['watch', 'sync']:
+    elif cmd == 'watch':
         handle_watch(args)
     elif cmd in ['doctor', 'health', 'checkup']:
         handle_doctor(args)
@@ -262,6 +305,16 @@ def main():
         handle_register(args)
     elif cmd in ['storage', 'du', 'archive']:
         handle_storage(args)
+    elif cmd in ['sync', 'resync']:
+        handle_sync(args)
+    elif cmd == 'export-pack':
+        handle_export_pack(args)
+    elif cmd in ['history', 'log']:
+        handle_history(args)
+    elif cmd == 'sniper':
+        handle_sniper(args)
+    elif cmd in ['serve', 'web']:
+        handle_serve(args)
     elif cmd in ['menu', 'ui', 'console']:
         launch_interactive_menu(workspace_path=args.workspace, cookie=args.cookie, token=args.token)
     else:
