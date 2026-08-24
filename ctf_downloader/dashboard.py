@@ -1,61 +1,49 @@
 import os
-import json
-import re
-from typing import Dict, Any, List, Optional
-from .storage.constants import SOLVED_MARKERS_DONE, SOLVED_TODO
-from .utils.logger import Logger
+from typing import Any, Dict, List, Optional
+
+from .storage.workspace_repo import WorkspaceRepo
+
 
 class CTFDashboard:
     def __init__(self, workspace_path: str):
         self.workspace_path = os.path.abspath(workspace_path)
+        self.repo = WorkspaceRepo(self.workspace_path)
         self.challenges_data = self._load_challenges_data()
         self.local_challenges = self._scan_local_challenges()
 
     def _load_challenges_data(self) -> Dict[str, Any]:
-        json_path = os.path.join(self.workspace_path, 'challenges.json')
-        if os.path.exists(json_path):
-            try:
-                with open(json_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return {}
+        return self.repo.read_challenges()
 
     def _scan_local_challenges(self) -> List[Dict[str, Any]]:
         results = []
-        for root, _, files in os.walk(self.workspace_path):
-            if 'metadata.json' in files:
-                try:
-                    with open(os.path.join(root, 'metadata.json'), 'r', encoding='utf-8') as f:
-                        m = json.load(f)
-                    
-                    # Check solved state from writeup/README.md, README.md, or metadata
-                    is_solved = bool(m.get('solved_by_me', False))
-                    for rp in [os.path.join(root, 'writeup', 'README.md'), os.path.join(root, 'README.md')]:
-                        if os.path.exists(rp):
-                            with open(rp, 'r', encoding='utf-8') as rf:
-                                rtxt = rf.read()
-                                if any(marker in rtxt for marker in SOLVED_MARKERS_DONE):
-                                    is_solved = True
-                                    break
-                                elif not is_solved and SOLVED_TODO in rtxt:
-                                    is_solved = False
+        for meta_path in self.repo.iter_challenges():
+            try:
+                m = self.repo.read_metadata(meta_path)
+                if not m:
+                    continue
+                root = meta_path.parent
 
-                    m['solved_by_me'] = is_solved
-                    m['_folder'] = root
-                    m['_rel_folder'] = os.path.relpath(root, self.workspace_path)
-                    
-                    # Count local files in challenge/ subdirectory or root
-                    c_subdir = os.path.join(root, 'challenge')
-                    if os.path.isdir(c_subdir):
-                        local_files = [f for f in os.listdir(c_subdir) if f not in ['__pycache__', '.git']]
-                    else:
-                        local_files = [f for f in os.listdir(root) if f not in ['metadata.json', 'README.md', 'solve.py', 'challenge', 'solver', 'writeup', 'script', 'scripts', '__pycache__']]
-                    m['_local_files_count'] = len(local_files)
+                # Solved state: metadata + marker trong writeup/README.md hoặc README.md
+                is_solved = bool(m.get('solved_by_me', False))
+                readme_paths = [root / 'writeup' / 'README.md', root / 'README.md']
+                if self.repo.read_solved_state(readme_paths):
+                    is_solved = True
 
-                    results.append(m)
-                except Exception:
-                    pass
+                m['solved_by_me'] = is_solved
+                m['_folder'] = str(root)
+                m['_rel_folder'] = os.path.relpath(root, self.workspace_path)
+
+                # Count local files in challenge/ subdirectory or root
+                c_subdir = root / 'challenge'
+                if c_subdir.is_dir():
+                    local_files = [f for f in os.listdir(c_subdir) if f not in ['__pycache__', '.git']]
+                else:
+                    local_files = [f for f in os.listdir(root) if f not in ['metadata.json', 'README.md', 'solve.py', 'challenge', 'solver', 'writeup', 'script', 'scripts', '__pycache__']]
+                m['_local_files_count'] = len(local_files)
+
+                results.append(m)
+            except Exception:
+                pass
         return results
 
     def get_summary_stats(self) -> Dict[str, Any]:
@@ -78,7 +66,6 @@ class CTFDashboard:
                 by_cat[cat]['earned'] += pts
             by_cat[cat]['challenges'].append(c)
 
-
         ctf_info = self.challenges_data.get('ctf_info', {}) if isinstance(self.challenges_data, dict) else {}
         return {
             'title': ctf_info.get('title') or os.path.basename(self.workspace_path),
@@ -100,14 +87,14 @@ class CTFDashboard:
         title = stats['title']
         platform = stats['platform'].upper()
         rate = stats['completion_rate']
-        
+
         print('=' * 85)
         print(f" 🏆 CTF WORKSPACE: {title} [{platform}]")
         if stats['user'] or stats['team']:
             team_str = f" | Team: {stats['team']}" if stats['team'] else ''
             print(f" 👤 User: {stats['user']}{team_str}")
         print(f" 📊 Progress: {stats['solved_challenges']}/{stats['total_challenges']} Solved ({rate:.1f}%) | Points: {stats['earned_points']}/{stats['total_points']}")
-        
+
         bar_len = 30
         filled_len = int(bar_len * rate // 100)
         bar = '█' * filled_len + '░' * (bar_len - filled_len)
@@ -118,15 +105,15 @@ class CTFDashboard:
         for cat, data in sorted(categories.items()):
             if filter_cat and cat.lower() not in [c.lower() for c in filter_cat]:
                 continue
-            
+
             c_list = data['challenges']
             if only_unsolved:
                 c_list = [c for c in c_list if not c.get('solved_by_me')]
             elif only_solved:
                 c_list = [c for c in c_list if c.get('solved_by_me')]
-            
+
             if only_container:
-                c_list = [c for c in c_list if c.get('instance_info', {}).get('is_container') or c.get('type') == 'DynamicContainer' or c.get('raw', {}).get('type') == 'DynamicContainer']
+                c_list = [c for c in c_list if self.repo.is_container(c)]
 
             if not c_list:
                 continue
@@ -138,21 +125,21 @@ class CTFDashboard:
             for idx, c in enumerate(c_list):
                 is_last = (idx == len(c_list) - 1)
                 prefix = '└── ' if is_last else '├── '
-                
+
                 status_icon = '✅' if c.get('solved_by_me') else '⏳'
                 status_str = 'Solved' if c.get('solved_by_me') else 'Unsolved'
-                
+
                 c_id = c.get('id', '?')
                 c_name = c.get('name', 'Unknown')
                 c_pts = c.get('points', 0)
                 solves = c.get('solves_count', c.get('solves', '-'))
                 files_count = c.get('_local_files_count', 0)
-                
+
                 # Check container tag
-                is_cont = c.get('instance_info', {}).get('is_container') or c.get('type') == 'DynamicContainer' or c.get('raw', {}).get('type') == 'DynamicContainer'
+                is_cont = self.repo.is_container(c)
                 cont_str = ' [🐳 Container]' if is_cont else ''
                 files_str = f' [{files_count} file(s)]' if files_count > 0 else ''
-                
+
                 print(f"  {prefix}[{status_icon} {status_str:<8}] {c_id:>3}. {c_name:<32} ({c_pts:>4} pts) - {str(solves):>3} solves{cont_str}{files_str}")
 
         print('\n' + '=' * 85)

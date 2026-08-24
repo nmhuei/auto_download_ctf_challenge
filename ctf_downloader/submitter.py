@@ -1,25 +1,22 @@
 import os
 import re
 import sys
-import json
 import time
-import shutil
 from typing import Optional, Union, Dict, Any, List, Tuple
 from rich.prompt import Prompt
 
 from .config import DownloaderConfig
 from .utils.logger import Logger, console
-from .utils.http_client import create_session
+from .services.session_factory import create_session
 from .utils.flag_format import extract_flag_format, validate_flag
 from .platforms.detector import PlatformDetector
 from .platforms.base import BasePlatform
+from .storage.workspace_repo import WorkspaceRepo
 
 NO_FORMAT_MESSAGE = (
     "Chưa xác định được flag format cho giải này. "
     "Hãy nhập bằng --flag-format hoặc nhập tay khi được hỏi."
 )
-
-SUBMIT_HISTORY_FILE = "submit_history.json"
 
 # Throttle: khoảng cách tối thiểu giữa 2 lần submit trong cùng process (giây)
 THROTTLE_BY_PLATFORM = {
@@ -47,6 +44,7 @@ class FlagSubmitter:
         flag_format: Optional[str] = None,
     ):
         self.workspace_dir = os.path.abspath(workspace_dir) if workspace_dir else None
+        self.repo = WorkspaceRepo(self.workspace_dir) if self.workspace_dir else None
         self.url = url or self._resolve_url_from_workspace()
         self.cookie = cookie
         self.token = token
@@ -74,33 +72,10 @@ class FlagSubmitter:
         self._last_submit_monotonic: Optional[float] = None
 
     def _resolve_url_from_workspace(self) -> Optional[str]:
+        # WorkspaceRepo hợp nhất ctf_info.url + fallback submit_endpoint
         if not self.workspace_dir or not os.path.exists(self.workspace_dir):
             return None
-        json_path = os.path.join(self.workspace_dir, "challenges.json")
-        if os.path.exists(json_path):
-            try:
-                with open(json_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if data.get("platform_url"):
-                        return data.get("platform_url")
-                    ctf_info = data.get("ctf_info", {})
-                    if ctf_info.get("url"):
-                        return ctf_info.get("url")
-            except Exception:
-                pass
-        # Search metadata.json in subdirectories
-        import glob
-        for meta_f in glob.glob(os.path.join(self.workspace_dir, "*", "*", "metadata.json")):
-            try:
-                with open(meta_f, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if data.get("submit_endpoint"):
-                        from urllib.parse import urlparse
-                        p = urlparse(data["submit_endpoint"])
-                        return f"{p.scheme}://{p.netloc}"
-            except Exception:
-                pass
-        return None
+        return self.repo.resolve_platform_url()
 
     def _load_challenges(self):
         """
@@ -108,19 +83,15 @@ class FlagSubmitter:
         """
         # Try local challenges.json first
         if self.workspace_dir:
-            json_path = os.path.join(self.workspace_dir, "challenges.json")
-            if os.path.exists(json_path):
-                try:
-                    with open(json_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        for c in data.get("challenges", []):
-                            cid = c.get("id")
-                            name = c.get("name", "")
-                            self.challenges_cache[str(cid)] = c
-                            self.challenges_cache[name.lower().strip()] = c
-                        return
-                except Exception:
-                    pass
+            data = self.repo.read_challenges()
+            challs = data.get("challenges", [])
+            if challs:
+                for c in challs:
+                    cid = c.get("id")
+                    name = c.get("name", "")
+                    self.challenges_cache[str(cid)] = c
+                    self.challenges_cache[name.lower().strip()] = c
+                return
 
         # Fetch live if not in local cache
         try:
@@ -165,47 +136,27 @@ class FlagSubmitter:
         except Exception:
             return False
 
-    def _challenges_json_path(self) -> Optional[str]:
-        if not self.workspace_dir:
-            return None
-        return os.path.join(self.workspace_dir, "challenges.json")
-
     def _cached_flag_format(self) -> Tuple[Optional[str], Optional[str]]:
         """
         Đọc flag format + nguồn từ cache trong challenges.json (ctf_info).
         """
-        path = self._challenges_json_path()
-        if not path or not os.path.exists(path):
+        if not self.repo:
             return None, None
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            ctf_info = data.get("ctf_info", {}) or {}
-            fmt = ctf_info.get("flag_format")
-            source = ctf_info.get("flag_format_source")
-            if fmt and str(fmt).strip():
-                return str(fmt).strip(), source
-        except Exception:
-            pass
+        ctf_info = self.repo.read_challenges().get("ctf_info") or {}
+        fmt = ctf_info.get("flag_format")
+        source = ctf_info.get("flag_format_source")
+        if fmt and str(fmt).strip():
+            return str(fmt).strip(), source
         return None, None
 
     def _save_flag_format_to_cache(self, fmt_regex: str, source: str) -> bool:
         """
         Lưu flag format + nguồn vào challenges.json (ctf_info) để lần sau không phải hỏi lại.
         """
-        path = self._challenges_json_path()
-        if not path:
+        if not self.repo:
             return False
         try:
-            data = {}
-            if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            ctf_info = data.setdefault("ctf_info", {})
-            ctf_info["flag_format"] = fmt_regex
-            ctf_info["flag_format_source"] = source
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            self.repo.update_ctf_info(flag_format=fmt_regex, flag_format_source=source)
             return True
         except Exception as e:
             Logger.warning(f"Không thể lưu flag format vào cache: {e}")
@@ -259,42 +210,24 @@ class FlagSubmitter:
     # Submit history / blacklist
     # ------------------------------------------------------------------
 
-    def _history_path(self) -> Optional[str]:
-        if not self.workspace_dir:
-            return None
-        return os.path.join(self.workspace_dir, SUBMIT_HISTORY_FILE)
-
     def _load_submit_history(self):
         """
-        Load submit_history.json. File hỏng -> coi như rỗng nhưng giữ backup .bak.
+        Load submit_history.json. File hỏng (kể cả JSON hợp lệ nhưng không phải
+        dict) -> coi như rỗng; WorkspaceRepo đã lưu backup .bak.
         """
-        path = self._history_path()
-        entries: List[Dict[str, Any]] = []
-        if path and os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                raw = data.get("entries", []) if isinstance(data, dict) else []
-                entries = [e for e in raw if isinstance(e, dict)]
-            except Exception:
-                try:
-                    shutil.copyfile(path, path + ".bak")
-                    Logger.warning(f"{SUBMIT_HISTORY_FILE} hỏng — coi như rỗng (đã lưu backup .bak).")
-                except Exception:
-                    Logger.warning(f"{SUBMIT_HISTORY_FILE} hỏng — coi như rỗng.")
-                entries = []
-        self.submit_history = entries
+        if not self.repo:
+            self.submit_history = []
+            return
+        hist = self.repo.load_submit_history()
+        self.submit_history = [e for e in hist.get("entries", []) if isinstance(e, dict)]
 
     def _save_submit_history(self):
-        path = self._history_path()
-        if not path:
+        if not self.repo:
             return
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump({"entries": self.submit_history}, f, indent=2, ensure_ascii=False)
+            self.repo.save_submit_history({"entries": self.submit_history})
         except Exception as e:
-            Logger.warning(f"Không thể lưu {SUBMIT_HISTORY_FILE}: {e}")
+            Logger.warning(f"Không thể lưu submit_history.json: {e}")
 
     def _find_history_entry(self, flag: str) -> Optional[Dict[str, Any]]:
         fl = (flag or "").strip()
@@ -494,18 +427,14 @@ class FlagSubmitter:
                 found.append(m.group(0))
             return found
 
-        for root, dirs, files in os.walk(self.workspace_dir):
-            if "metadata.json" not in files:
-                continue
-
-            meta_path = os.path.join(root, "metadata.json")
-            readme_path = os.path.join(root, "README.md")
-            flag_txt_path = os.path.join(root, "flag.txt")
+        for meta_path in self.repo.iter_challenges():
+            root = meta_path.parent
 
             try:
-                with open(meta_path, "r", encoding="utf-8") as f:
-                    meta = json.load(f)
+                meta = self.repo.read_metadata(meta_path)
             except Exception:
+                continue
+            if not meta:
                 continue
 
             chall_id = meta.get("id")
@@ -518,13 +447,14 @@ class FlagSubmitter:
             found_flags = set()
 
             # Check flag.txt if exists
-            if os.path.exists(flag_txt_path):
+            flag_txt_path = root / "flag.txt"
+            if flag_txt_path.exists():
                 with open(flag_txt_path, "r", encoding="utf-8") as f:
                     found_flags.update(extract_full_matches(f.read()))
 
             # Check README.md or writeup/README.md
-            for r_candidate in [os.path.join(root, "writeup", "README.md"), os.path.join(root, "README.md"), os.path.join(root, "challenge", "README.md")]:
-                if os.path.exists(r_candidate):
+            for r_candidate in [root / "writeup" / "README.md", root / "README.md", root / "challenge" / "README.md"]:
+                if r_candidate.exists():
                     with open(r_candidate, "r", encoding="utf-8") as f:
                         found_flags.update(extract_full_matches(f.read()))
 
@@ -562,35 +492,32 @@ class FlagSubmitter:
         if not self.workspace_dir:
             return
 
-        for root, dirs, files in os.walk(self.workspace_dir):
-            if "metadata.json" in files:
-                meta_path = os.path.join(root, "metadata.json")
-                try:
-                    with open(meta_path, "r", encoding="utf-8") as f:
-                        meta = json.load(f)
+        for meta_path in self.repo.iter_challenges():
+            meta = self.repo.read_metadata(meta_path)
+            if not meta or str(meta.get("id")) != str(challenge_id):
+                continue
 
-                    if str(meta.get("id")) == str(challenge_id):
-                        meta["solved_by_me"] = True
-                        meta["submitted_flag"] = flag
-                        with open(meta_path, "w", encoding="utf-8") as f:
-                            json.dump(meta, f, indent=2, ensure_ascii=False)
+            try:
+                meta["solved_by_me"] = True
+                meta["submitted_flag"] = flag
+                self.repo.write_metadata(meta_path, meta)
 
-                        for r_candidate in [os.path.join(root, "writeup", "README.md"), os.path.join(root, "README.md")]:
-                            if os.path.exists(r_candidate):
-                                with open(r_candidate, "r", encoding="utf-8") as f:
-                                    r_text = f.read()
+                root = meta_path.parent
+                r_candidates = [root / "writeup" / "README.md", root / "README.md"]
+                # Marker solved + placeholder flag trong README
+                existing = [r for r in r_candidates if r.exists()]
+                self.repo.write_solved_state(existing, solved=True)
+                for r_candidate in existing:
+                    with open(r_candidate, "r", encoding="utf-8") as f:
+                        r_text = f.read()
+                    if "FLAG{...}" in r_text:
+                        with open(r_candidate, "w", encoding="utf-8") as f:
+                            f.write(r_text.replace("FLAG{...}", flag))
 
-                                r_text = r_text.replace("- [ ] Solved", "- [x] Solved")
-                                if "FLAG{...}" in r_text:
-                                    r_text = r_text.replace("FLAG{...}", flag)
-
-                                with open(r_candidate, "w", encoding="utf-8") as f:
-                                    f.write(r_text)
-
-                        Logger.success(f"Updated local documentation for [bold cyan]{challenge_name}[/bold cyan] -> Solved ✅")
-                        break
-                except Exception:
-                    pass
+                Logger.success(f"Updated local documentation for [bold cyan]{challenge_name}[/bold cyan] -> Solved ✅")
+                break
+            except Exception:
+                pass
 
     def submit_single_flag(
         self,

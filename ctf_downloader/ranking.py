@@ -7,9 +7,10 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
 
-from .storage.constants import LIVE_RANK_PREFIX, SUMMARY_FILES_LINE_PREFIX
+from .storage.constants import LIVE_RANK_PREFIX
+from .storage.workspace_repo import WorkspaceRepo
 from .utils.logger import Logger, console
-from .utils.http_client import create_session
+from .services.session_factory import create_session
 from .platforms.detector import PlatformDetector
 
 class RankingManager:
@@ -25,6 +26,7 @@ class RankingManager:
         self.cookie = cookie
         self.token = token
         self.timeout = timeout
+        self.repo = WorkspaceRepo(self.workspace_path) if self.workspace_path else None
         self.url = url or self._resolve_url()
 
         if not self.url:
@@ -36,17 +38,7 @@ class RankingManager:
     def _resolve_url(self) -> Optional[str]:
         if not self.workspace_path or not os.path.exists(self.workspace_path):
             return None
-        json_p = os.path.join(self.workspace_path, "challenges.json")
-        if os.path.exists(json_p):
-            try:
-                with open(json_p, "r", encoding="utf-8") as f:
-                    d = json.load(f)
-                    c_info = d.get("ctf_info", {})
-                    if c_info.get("url"):
-                        return c_info.get("url")
-            except Exception:
-                pass
-        return None
+        return self.repo.resolve_platform_url()
 
     def fetch_ranking(self) -> Dict[str, Any]:
         Logger.info("Fetching live leaderboard and ranking from CTF platform...")
@@ -172,24 +164,9 @@ class RankingManager:
         lines.append("")
         with open(ranking_md_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
-        
+
         Logger.info(f"Updated live ranking document: [bold cyan]{os.path.relpath(ranking_md_path, self.workspace_path)}[/bold cyan]")
 
-        # 2. Update SUMMARY.md
-        summary_path = os.path.join(self.workspace_path, "SUMMARY.md")
-        if os.path.exists(summary_path):
-            try:
-                with open(summary_path, "r", encoding="utf-8") as f:
-                    stext = f.read()
-
-                rank_badge = f"{LIVE_RANK_PREFIX} `#{my_rank}` / `{total_teams}` (Team: `{my_team}`)"
-                if LIVE_RANK_PREFIX in stext:
-                    import re
-                    stext = re.sub(r"-\s*\*\*Live Rank\*\*:[^\n]+", rank_badge, stext)
-                elif SUMMARY_FILES_LINE_PREFIX in stext:
-                    stext = stext.replace(SUMMARY_FILES_LINE_PREFIX, f"{rank_badge}\n{SUMMARY_FILES_LINE_PREFIX}")
-
-                with open(summary_path, "w", encoding="utf-8") as f:
-                    f.write(stext)
-            except Exception:
-                pass
+        # 2. Update SUMMARY.md via WorkspaceRepo (chèn/thay dòng Live Rank)
+        rank_badge = f"{LIVE_RANK_PREFIX} `#{my_rank}` / `{total_teams}` (Team: `{my_team}`)"
+        self.repo.patch_summary_live_rank(rank_badge)
