@@ -7,7 +7,11 @@ hoặc ở interactive_menu.
 """
 import os
 import sys
+import textwrap
 from typing import Optional
+
+from rich.console import Console
+from rich.text import Text
 
 from .config import DownloaderConfig
 from .interactive_menu import launch_interactive_menu
@@ -18,6 +22,11 @@ from .services.rank_service import RankService
 from .services.status_service import StatusService
 from .services.submit_service import SubmitService
 from .storage.workspace_repo import WorkspaceRepo
+from .ui.theme import ERROR as _ERROR_COLOR
+from .ui.theme import FG_FAINT as _FAINT_COLOR
+from .ui.theme import FG_MUTED as _MUTED_COLOR
+from .ui.theme import INFO as _INFO_COLOR
+from .ui.theme import SOLVED as _SOLVED_COLOR
 from .utils.logger import Logger, console
 
 
@@ -103,7 +112,82 @@ def handle_tag(args):
 
 
 def handle_workspaces(args):
-    StatusService.scan_all_workspaces(args.dir)
+    """``ctf workspaces`` — bảng mọi workspace (PHOSPHOR, không viền dọc).
+
+    StatusService.scan_all_workspaces vẫn là nguồn dữ liệu DUY NHẤT (quy tắc
+    delegation Phase 7); log legacy ``[*] Scanning...`` + bảng cũ của service
+    được nuốt (redirect stdout) rồi handler tự vẽ: heading UPPERCASE faint +
+    path info literal, bảng borderless (box=None) và footer muted với số
+    solved dạng ``✔ N/M`` — không cyan ``[*]``, không viền kẻ dọc.
+    """
+    import contextlib
+    import io as _io
+
+    from rich.table import Table
+    from rich.text import Text as _Text
+
+    from .ui.theme import load_theme
+
+    base_dir = os.path.abspath(os.path.expanduser(args.dir))
+
+    with contextlib.redirect_stdout(_io.StringIO()):
+        try:
+            rows = list(StatusService.scan_all_workspaces(args.dir))
+        except Exception as e:
+            Logger.error(f'Không scan được workspace: {e}')
+            sys.exit(1)
+    if not rows and not os.path.exists(base_dir):
+        Logger.warning(f'Directory {base_dir} does not exist.')
+        return
+
+    ws_console = Console(theme=load_theme(None))
+    ws_console.print()
+    head = _Text("WORKSPACES", style=_FAINT_COLOR)
+    head.append("  ·  ", style=_FAINT_COLOR)
+    head.append(base_dir, style=_INFO_COLOR)   # path thật → info literal
+    ws_console.print(head)
+
+    table = Table(
+        box=None, show_header=True, show_edge=False,
+        header_style=_FAINT_COLOR, padding=(0, 2), pad_edge=False)
+    table.add_column("WORKSPACE", no_wrap=False)
+    table.add_column("PLATFORM", no_wrap=True)
+    table.add_column("PROGRESS", no_wrap=True)
+    table.add_column("SOLVED", no_wrap=True, justify="right")
+
+    total_solved = 0
+    total_challs = 0
+    for stats in rows:
+        total_solved += stats['solved_challenges']
+        total_challs += stats['total_challenges']
+
+        name_cell = _Text(str(stats['title'])[:35], style="fg.base")
+        if stats.get('_ended'):
+            name_cell.append(" · ended", style=_MUTED_COLOR)
+
+        rate = stats['completion_rate']
+        progress_cell = StatusService._meter_only(rate, 10)
+        progress_cell.append(f" {rate:.0f}%", style=_MUTED_COLOR)
+
+        # Green chỉ đi kèm glyph ✔ (luật palette §3).
+        solved_cell = _Text("✔ ", style=_SOLVED_COLOR)
+        solved_cell.append(str(stats['solved_challenges']), style="fg.base")
+        solved_cell.append(f"/{stats['total_challenges']}",
+                           style=_MUTED_COLOR)
+
+        table.add_row(
+            name_cell,
+            _Text(str(stats['platform'])[:10].lower(), style=_MUTED_COLOR),
+            progress_cell,
+            solved_cell,
+        )
+
+    ws_console.print(table)
+    footer = _Text(
+        f"{len(rows)} workspaces · {total_solved}/{total_challs} "
+        f"challs solved", style=_MUTED_COLOR)
+    ws_console.print(footer)
+    ws_console.print()
 
 
 def handle_instance(args):
@@ -553,21 +637,81 @@ def _redact_flag(flag) -> str:
     return flag[:4] + '***'
 
 
+def _emit_section_heading(title: str, console_=None) -> None:
+    """Heading section PHOSPHOR: UPPERCASE faint (chrome neutral)."""
+    target = console_ or console
+    target.print(Text(title.upper(), style=_FAINT_COLOR))
+
+
+def _emit_wrapped(segments, indent="  ", console_=None) -> None:
+    """In một dòng gồm nhiều ``(text, style)`` với word-wrap có chủ đích:
+    continuation line được thụt ``indent`` (2 spaces mặc định), KHÔNG treo
+    ở cột 0 khi terminal hẹp."""
+    target = console_ or console
+    width = getattr(target, 'width', None) or 80
+    avail = max(30, int(width) - len(indent))
+
+    words = []
+    for text, style in segments:
+        for word in str(text).split(" "):
+            if word:
+                words.append((word, style))
+
+    lines = []
+    current, cur_len = [], 0
+    for word, style in words:
+        extra = len(word) + (1 if current else 0)
+        if current and cur_len + extra > avail:
+            lines.append(current)
+            current, cur_len = [(word, style)], len(word)
+        else:
+            current.append((word, style))
+            cur_len += extra
+    if current:
+        lines.append(current)
+
+    for i, line_words in enumerate(lines):
+        line = Text("" if i == 0 else indent)
+        for j, (word, style) in enumerate(line_words):
+            if j:
+                line.append(" ")
+            line.append(word, style=style)
+        target.print(line)
+
+
+def _emit_empty_state(message: str, literal: str = "", tail: str = "") -> None:
+    """EmptyState chung: dòng ``·`` muted + literal/path info (chỉ khi là
+    path/literal thật — không bao giờ cyan ``[*]`` trần). Wrap an toàn qua
+    :func:`_emit_wrapped`."""
+    segments = [("· ", _MUTED_COLOR), (message, _MUTED_COLOR)]
+    if literal:
+        segments.append((literal, _INFO_COLOR))
+    if tail:
+        segments.append((tail, _MUTED_COLOR))
+    _emit_wrapped(segments)
+
+
 def handle_history(args):
     """``ctf history`` — bảng lịch sử submit từ submit_history.json.
 
     Flag bị che mặc định (4 ký tự đầu + ***) chống lộ khi share screen;
-    ``--all`` hiện đầy đủ. Workspace chưa từng submit → thông báo thân thiện,
-    KHÔNG lỗi.
+    ``--all`` hiện đầy đủ. Workspace chưa từng submit → EmptyState thân thiện
+    (heading UPPERCASE faint + dòng ``·`` muted), KHÔNG lỗi.
     """
     if not os.path.isdir(args.workspace):
         Logger.error(f"Workspace không tồn tại: {args.workspace}")
         sys.exit(1)
     repo = WorkspaceRepo(args.workspace)
     entries = repo.load_submit_history().get('entries') or []
+    _emit_section_heading("LỊCH SỬ SUBMIT")
     if not entries:
-        Logger.info(f"Chưa có lịch sử submit nào trong workspace "
-                    f"'{args.workspace}' (submit_history.json chưa tồn tại).")
+        # Path/filename thật mới được màu info literal (quy tắc palette §3).
+        ws_path = os.path.abspath(args.workspace)
+        _emit_empty_state(
+            "Chưa có lịch sử submit trong workspace ",
+            literal=ws_path,
+            tail=" — submit_history.json chưa tồn tại.",
+        )
         return
 
     show_all = bool(getattr(args, 'show_all', False))
@@ -678,23 +822,49 @@ def handle_storage(args):
         return
 
     usages = StorageManager.scan_usage(args.base_dir)
-    # format_report trả markup rich-ready (cột Total màu theo ngưỡng, dòng
-    # TOTAL đậm) — in qua rich console để resolve, không print() thô.
+    # format_report trả markup rich-ready (glyph ngưỡng !/✗ ở cột NOTE, nhãn
+    # faint) — in qua rich console để resolve, không print() thô.
     # soft_wrap=True: bảng rộng không bị ngắt dòng giữa các cột ở terminal
     # hẹp (giữ hành vi print() cũ).
+    # highlight=False: tắt ReprHighlighter của rich — không tô cyan tự do
+    # lên các con số trong bảng (palette §3: số liệu neutral).
     console.print(
         StorageManager.format_report(usages, threshold_mb=args.threshold_mb),
-        soft_wrap=True)
+        soft_wrap=True, highlight=False)
 
     suggestions = StorageManager.suggest_actions(
         args.base_dir, threshold_mb=args.threshold_mb
     )
-    meaningful = [s for s in suggestions if not s.startswith('✅')]
+    meaningful = [s for s in suggestions if not s.startswith('✔')]
     if meaningful:
-        print()
-        console.print('[bold]Gợi ý:[/bold]')
-        for s in meaningful:
-            console.print(f'- {s}')
+        _render_suggestions(meaningful)
+
+
+def _render_suggestions(items):
+    """Gợi ý storage dạng list PHOSPHOR: heading UPPERCASE faint, glyph
+    semantic (! warn / ℹ info) màu đúng luật, continuation line wrap với
+    indent 2 spaces (không treo dòng ở cột 0)."""
+    width = getattr(console, 'width', None) or 80
+    console.print()
+    console.print(Text('GỢI Ý', style=_FAINT_COLOR))
+    for s in items:
+        glyph, gstyle, body = '', '', s
+        if s.startswith('! '):
+            glyph, gstyle, body = '!', '#EAC54F', s[2:]
+        elif s.startswith('ℹ '):
+            glyph, gstyle, body = 'ℹ', _INFO_COLOR, s[2:]
+        chunks = textwrap.wrap(
+            body, width=max(40, int(width) - 4),
+            break_on_hyphens=False) or [body]
+        line = Text()
+        if glyph:
+            line.append(glyph + ' ', style=gstyle)
+        else:
+            line.append('- ', style=_MUTED_COLOR)
+        line.append(chunks[0])
+        console.print(line)
+        for chunk in chunks[1:]:
+            console.print(Text('  ' + chunk))
 
 
 def _handle_storage_archive(args, StorageManager, human_size):
@@ -729,7 +899,7 @@ def _handle_storage_archive(args, StorageManager, human_size):
         sys.exit(1)
 
     Logger.success(
-        f"📦 Đã archive → {result['archive_path']} "
+        f"Đã archive → {result['archive_path']} "
         f"({human_size(result['original_bytes'])} → "
         f"{human_size(result['archived_bytes'])}, "
         f"ratio {result['ratio']:.2%})"
@@ -741,6 +911,6 @@ def _handle_storage_archive(args, StorageManager, human_size):
             f"Xoá workspace gốc '{args.workspace_name}'? "
             f"(rename an toàn vào _archives)"):
         trash = StorageManager.delete_workspace(ws_path)
-        Logger.success(f"🗑️ Đã chuyển workspace vào thùng rác: {trash}")
+        Logger.success(f"Đã chuyển workspace vào thùng rác: {trash}")
     else:
         Logger.info('Giữ nguyên workspace gốc.')

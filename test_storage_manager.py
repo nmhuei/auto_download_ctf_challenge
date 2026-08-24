@@ -3,7 +3,7 @@
 Kiểm tra thuần trên cây workspace giả lập trong tmpdir:
 - scan_usage: số liệu đúng (os.truncate sparse), breakdown theo đường dẫn,
   largest_files, challenge_count, ended từ mirror Event Window.
-- format_report: sort giảm dần, human-readable, marker ⚠️/🏁.
+- format_report: sort giảm dần, human-readable, glyph ngưỡng !/✗.
 - archive_workspace: tar.gz exclude đúng (__pycache__, *.pyc, .pytest_cache,
   *.part, *.tmp, .ctf/watch_state.json), ratio đúng, git_remote push thật
   tới ``git init --bare`` local (không mạng).
@@ -177,13 +177,26 @@ class TestFormatReport(StorageTestBase):
         self.assertIn("512 B", report)  # small workspace human-readable
         self.assertIn("TOTAL", report)
 
-    def test_warn_and_flag_markers(self):
-        over = self._usage(name="over", total_bytes=2 * 1024 * 1024)
+    def test_threshold_glyph_markers(self):
+        # ≥2× ngưỡng → ✗ error; 1×–2× → ! warn; đã kết thúc → nhãn "ended".
+        over2x = self._usage(name="over2x", total_bytes=2 * 1024 * 1024)
+        mid = self._usage(
+            name="mid", total_bytes=int(1.5 * 1024 * 1024))
         ended_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=5)
         done = self._usage(name="done", ended=ended_at)
-        report = StorageManager.format_report([over, done], threshold_mb=1)
-        self.assertIn("⚠️", report)
-        self.assertIn("🏁", report)
+        report = StorageManager.format_report(
+            [over2x, mid, done], threshold_mb=1)
+        self.assertIn("✗", report, "thiếu glyph ✗ cho workspace ≥2× ngưỡng")
+        self.assertIn("!", report, "thiếu glyph ! cho workspace 1-2× ngưỡng")
+        self.assertIn("ended", report)
+
+    def test_no_rainbow_on_sizes(self):
+        """Số liệu neutral: KHÔNG markup success/warning/error/bold quanh size."""
+        big = self._usage(name="big", total_bytes=5 * 1024 * 1024)
+        report = StorageManager.format_report([big], threshold_mb=1)
+        for tag in ("[success]", "[warning]", "[bold]",
+                    "[green]", "[yellow]", "[red]", "[cyan]"):
+            self.assertNotIn(tag, report)
 
     def test_human_size_units(self):
         self.assertEqual(human_size(0), "0 B")
@@ -368,7 +381,8 @@ class TestSuggestActions(StorageTestBase):
     def test_all_good_message_when_clean(self):
         self.make_beta("tiny")
         actions = StorageManager.suggest_actions(self.base)
-        self.assertTrue(any("✅" in a for a in actions))
+        self.assertTrue(any(a.startswith("✔") for a in actions),
+                        f"thiếu dòng all-good glyph ✔: {actions}")
 
 
 class TestParseEventEnd(unittest.TestCase):

@@ -7,8 +7,9 @@ Trách nhiệm (spec storage-manager):
   lượng, breakdown theo loại (attachments/writeups/solvers/misc), top file
   lớn nhất, số challenge và thời điểm giải ended (từ mirror
   ``challenges.json → ctf_info.event_window.end`` của feature Event Window).
-- **format_report**: bảng rich-ready sắp theo size giảm dần, size
-  human-readable (B/KiB/MiB/GiB), đánh dấu ⚠️ vượt ngưỡng và 🏁 đã ended.
+- **format_report**: bảng text PHOSPHOR sắp theo size giảm dần, size
+  human-readable (B/KiB/MiB/GiB); vượt ngưỡng đánh dấu bằng glyph
+  ``!``/``✗`` và workspace ended bằng nhãn ``ended`` muted.
 - **archive_workspace**: đóng gói tar.gz (exclude rác runtime) và tuỳ chọn
   push lên git remote user cấu hình. KHÔNG tự tạo remote trên dịch vụ nào —
   chỉ thao tác git subprocess với remote được truyền vào.
@@ -41,6 +42,10 @@ from rich.markup import escape
 
 from ..platforms.base import normalize_epoch_to_utc
 from ..storage.workspace_repo import WorkspaceRepo
+from ..ui.theme import ERROR as _ERROR_COLOR
+from ..ui.theme import FG_FAINT as _FAINT_COLOR
+from ..ui.theme import FG_MUTED as _MUTED_COLOR
+from ..ui.theme import WARN as _WARN_COLOR
 
 # Thư mục con chuẩn của một challenge (workspace layout:
 # <ws>/<Category>/<Chall>/{challenge,script,solver,writeup}/)
@@ -221,101 +226,102 @@ class StorageManager:
     def format_report(
         usages: Sequence[WorkspaceUsage], threshold_mb: int = 1024
     ) -> str:
-        """Bảng rich-ready: workspace sắp theo size giảm dần + dòng tổng.
+        """Bảng text PHOSPHOR: workspace sắp theo size giảm dần + dòng tổng.
 
-        Cột: icon 📦📦📄🖥️ cho breakdown, 💾 cho tổng. ⚠️ đánh dấu workspace
-        vượt ``threshold_mb``, 🏁 đánh dấu workspace đã ended. Cột 💾 Total
-        được bọc markup màu theo ngưỡng (markup semantic của ui.style.PALETTE,
-        resolve khi caller in qua rich console): xanh < 50% ngưỡng, vàng
-        < 100%, đỏ vượt ngưỡng. Dòng TOTAL in đậm.
+        - Nhãn cột UPPERCASE faint (ATTACH/WRITEUP/SOLVER/TOTAL) — không
+          emoji chrome; số liệu neutral (không tô màu theo mức dung lượng).
+        - Vượt ngưỡng ``threshold_mb`` chỉ được đánh dấu bằng glyph semantic
+          ở cột NOTE: ``!`` amber khi ≥ 1× ngưỡng, ``✗`` error khi ≥ 2× —
+          màu warn/error luôn đi kèm glyph. Workspace đã ended: nhãn chữ
+          ``ended`` muted.
+        - Dòng TOTAL dùng nhãn faint, KHÔNG bold đột ngột.
         """
         threshold_bytes = int(threshold_mb) * 1024 * 1024
         rows = sorted(usages, key=lambda u: u.total_bytes, reverse=True)
 
         name_w = max(
-            [len("Workspace")]
-            + [len(StorageManager._display_name(u)) for u in rows]
-        )
-        headers = ["Workspace", "📦 Attach", "📄 Writeup", "🖥️ Solver", "💾 Total"]
-        # Giá trị THÔ dùng để tính độ rộng cột (markup không ăn vào padding).
+            [len("WORKSPACE")]
+            + [len(u.name) for u in rows]
+        ) if rows else len("WORKSPACE")
+        headers = ["ATTACH", "WRITEUP", "SOLVER", "TOTAL"]
+        # Giá trị THÔ (plain) dùng để tính độ rộng cột.
         col_raw = [
             [human_size(u.breakdown.get("attachments", 0)) for u in rows],
             [human_size(u.breakdown.get("writeups", 0)) for u in rows],
             [human_size(u.breakdown.get("solvers", 0)) for u in rows],
             [human_size(u.total_bytes) for u in rows],
         ]
-
-        def _total_markup(total_bytes: int) -> str:
-            if threshold_bytes <= 0:
-                return human_size(total_bytes)
-            ratio = total_bytes / threshold_bytes
-            tone = ("success" if ratio < 0.5
-                    else "warning" if ratio < 1.0 else "error")
-            return f"[{tone}]{human_size(total_bytes)}[/{tone}]"
-
-        col_cells = [
-            list(col)
-            for col in col_raw[:-1]
-        ] + [
-            [_total_markup(u.total_bytes) for u in rows]
-        ]
         size_w = [
             max([len(h)] + [len(v) for v in col]) if rows else len(h)
-            for h, col in zip(headers[1:], col_raw)
+            for h, col in zip(headers, col_raw)
         ]
 
-        lines: List[str] = []
+        def _note_markup(usage: WorkspaceUsage) -> str:
+            notes: List[str] = []
+            if threshold_bytes > 0:
+                ratio = usage.total_bytes / threshold_bytes
+                if ratio >= 2:
+                    notes.append(f"[{_ERROR_COLOR}]✗[/{_ERROR_COLOR}]")
+                elif ratio >= 1:
+                    notes.append(f"[{_WARN_COLOR}]![/{_WARN_COLOR}]")
+            now = _dt.datetime.now(_TIMEZONE)
+            if usage.ended is not None and usage.ended <= now:
+                notes.append(f"[{_MUTED_COLOR}]ended[/{_MUTED_COLOR}]")
+            return " ".join(notes)
+
+        note_cells = [_note_markup(u) for u in rows]
+        note_w = max(
+            [len("NOTE")]
+            + [len(_re.sub(r"\[[^\]]*\]", "", n)) for n in note_cells]
+        ) if rows else len("NOTE")
+
+        faint, muted = _FAINT_COLOR, _MUTED_COLOR
+        lines: List[str] = [
+            f"[{faint}]STORAGE[/{faint}]"
+            f"[{muted}] · ngưỡng {threshold_mb} MiB/workspace"
+            f" · ✗ ≥2× · ! ≥1×[/{muted}]"
+        ]
         header = (
-            f"{headers[0]:<{name_w}}  "
-            + "  ".join(f"{h:>{w}}" for h, w in zip(headers[1:], size_w))
-            + "  Challs  Note"
+            f"[{faint}]{'WORKSPACE':<{name_w}}[/{faint}]  "
+            + "  ".join(
+                f"[{faint}]{h:>{w}}[/{faint}]"
+                for h, w in zip(headers, size_w)
+            )
+            + f"  [{faint}]{'CHALLS':>6}[/{faint}]  "
+            + f"[{faint}]{f'NOTE':<{note_w}}[/{faint}]"
         )
         lines.append(header)
-        lines.append("-" * len(header))
+        lines.append("-" * StorageManager._visible_len(header))
         grand = 0
         for idx, usage in enumerate(rows):
             grand += usage.total_bytes
-            notes: List[str] = []
-            if usage.total_bytes > threshold_bytes:
-                notes.append("⚠️")
-            if usage.ended is not None and usage.ended <= _dt.datetime.now(_TIMEZONE):
-                notes.append("🏁")
-            note_s = " ".join(notes)
             cells = "  ".join(
-                f"{StorageManager._pad_rich(col_cells[c][idx], size_w[c])}"
-                for c in range(len(col_cells))
+                f"{col_raw[c][idx]:>{size_w[c]}}" for c in range(len(col_raw))
             )
             lines.append(
-                f"{escape(StorageManager._display_name(usage)):<{name_w}}  {cells}"
-                f"  {usage.challenge_count:>6}  {note_s}"
+                f"{escape(usage.name):<{name_w}}  {cells}"
+                f"  {usage.challenge_count:>6}  {note_cells[idx]}"
             )
-        lines.append("-" * len(header))
         total_line = (
-            f"{'💾 TOTAL':<{name_w}}  "
+            f"[{faint}]{'TOTAL':<{name_w}}[/{faint}]  "
             + "  ".join(" " * w for w in size_w[:-1])
             + f"{human_size(grand):>{size_w[-1]}}"
         )
-        lines.append(f"[bold]{total_line}[/bold]")
+        lines.append(total_line)
         if not rows:
-            lines.append("(không có workspace nào)")
+            lines.append(f"[{muted}](không có workspace nào)[/{muted}]")
         return "\n".join(lines)
 
     @staticmethod
-    def _pad_rich(markup_cell: str, width: int) -> str:
-        """Căn phải một cell có thể chứa markup rich theo độ rộng HIỂN THỊ
-        (độ dài chuỗi trừ các tag ``[...]``)."""
-        visible = len(_re.sub(r"\[/?[a-z]+\]", "", markup_cell))
-        pad = " " * max(0, width - visible)
-        return pad + markup_cell
+    def _visible_len(markup: str) -> int:
+        """Độ dài hiển thị của chuỗi markup rich (bỏ mọi tag ``[...]``)."""
+        return len(_re.sub(r"\[[^\]]*\]", "", markup))
 
     @staticmethod
     def _display_name(usage: WorkspaceUsage) -> str:
-        """Tên hiển thị: gắn marker ⚠️/🏁 ngay đầu tên để sort/filter dễ nhìn."""
-        marks = ""
-        now = _dt.datetime.now(_TIMEZONE)
-        if usage.ended is not None and usage.ended <= now:
-            marks += "🏁"
-        return f"{marks}{usage.name}"
+        """Tên hiển thị của workspace (không glyph/emoji — marker ngữ nghĩa
+        nằm ở cột NOTE của :meth:`format_report`)."""
+        return usage.name
 
     # ------------------------------------------------------------------
     # 3. archive_workspace
@@ -544,13 +550,13 @@ class StorageManager:
                 if days > cls.ARCHIVE_AFTER_DAYS:
                     end_s = usage.ended.strftime("%Y-%m-%d")
                     actions.append(
-                        f"📦 Workspace '{usage.name}' đã kết thúc từ {end_s} "
+                        f"ℹ Workspace '{usage.name}' đã kết thúc từ {end_s} "
                         f"({days} ngày trước) — nên archive để giải phóng "
                         f"{human_size(usage.total_bytes)}."
                     )
             if usage.total_bytes > threshold_bytes:
                 actions.append(
-                    f"⚠️ Workspace '{usage.name}' vượt ngưỡng "
+                    f"! Workspace '{usage.name}' vượt ngưỡng "
                     f"{threshold_mb} MiB (hiện {human_size(usage.total_bytes)}) "
                     f"— cân nhắc archive hoặc dọn solver/misc."
                 )
@@ -563,17 +569,17 @@ class StorageManager:
             used_pct = disk.used / disk.total * 100 if disk.total else 0
             if used_pct >= 90:
                 actions.append(
-                    f"🖥️ Đĩa đã dùng {used_pct:.0f}% "
+                    f"! Đĩa đã dùng {used_pct:.0f}% "
                     f"(còn trống {human_size(disk.free)}) — nên archive bớt."
                 )
             elif total_bytes > disk.free and total_bytes > 0:
                 actions.append(
-                    f"💾 Tổng workspace ({human_size(total_bytes)}) lớn hơn chỗ "
+                    f"! Tổng workspace ({human_size(total_bytes)}) lớn hơn chỗ "
                     f"trống trên đĩa ({human_size(disk.free)}) — archive sớm."
                 )
 
         if not actions:
-            actions.append("✅ Mọi thứ ổn — không có hành động nào cần thiết.")
+            actions.append("✔ Mọi thứ ổn — không có hành động nào cần thiết.")
         return actions
 
     # ------------------------------------------------------------------

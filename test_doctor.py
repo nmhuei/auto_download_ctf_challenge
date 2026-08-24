@@ -1,8 +1,8 @@
-"""P1-3 — ``ctf doctor`` 🩺 health-check platform trước giờ giải.
+"""P1-3 — ``ctf doctor`` health-check platform trước giờ giải.
 
 Chạy: python3 -m pytest test_doctor.py -q
 Toàn bộ HTTP được mock qua session giả — KHÔNG gọi mạng thật.
-Các case: all-pass | auth-fail | network-dead | render chứa icon.
+Các case: all-pass | auth-fail | network-dead | render glyph PHOSPHOR.
 """
 import io
 import unittest
@@ -97,7 +97,7 @@ URL = "https://ctf.test/"
 
 
 # ----------------------------------------------------------------------
-# 1. All-pass — mọi check ✅
+# 1. All-pass — mọi check ✔
 # ----------------------------------------------------------------------
 
 class TestDoctorAllPass(unittest.TestCase):
@@ -131,7 +131,7 @@ class TestDoctorAllPass(unittest.TestCase):
 
 
 # ----------------------------------------------------------------------
-# 2. Auth-fail — cookie hết hạn → chỉ check Auth ❌
+# 2. Auth-fail — cookie hết hạn → chỉ check Auth ✗
 # ----------------------------------------------------------------------
 
 class TestDoctorAuthFail(unittest.TestCase):
@@ -161,7 +161,7 @@ class TestDoctorAuthFail(unittest.TestCase):
 
 
 # ----------------------------------------------------------------------
-# 3. Network-dead — mọi check ❌ nhưng report vẫn render đủ
+# 3. Network-dead — mọi check ✗ nhưng report vẫn render đủ
 # ----------------------------------------------------------------------
 
 class TestDoctorNetworkDead(unittest.TestCase):
@@ -196,30 +196,40 @@ class TestDoctorNetworkDead(unittest.TestCase):
 # ----------------------------------------------------------------------
 
 class TestDoctorRender(unittest.TestCase):
-    def test_render_contains_icons_and_summary(self):
+    def test_render_contains_glyphs_and_summary(self):
         svc = HealthService()
         report = svc.check(URL, cookie="session=abc", session=ctfd_session())
         out = capture_render(report)
 
-        for icon in ("🌐", "🔍", "🔑", "🧩", "⏱️", "🏴"):
-            self.assertIn(icon, out, f"thiếu icon {icon} trong render")
+        # Glyph semantic ✔ một lần mỗi dòng đạt; heading CHECK/KẾT QUẢ faint.
+        self.assertIn("✔", out)
+        self.assertIn("CHECK", out)
+        self.assertIn("KẾT QUẢ", out)
         self.assertIn("Tổng kết: 6/6 checks pass", out)
         self.assertIn("sẵn sàng cho giờ giải", out)
         self.assertIn(URL, out)
+        # Không emoji chrome (quy tắc glyph PHOSPHOR).
+        for bad in ("🌐", "🔍", "🔑", "🧩", "⏱️", "🏴",
+                    "✅", "❌", "🩺", "🔴"):
+            self.assertNotIn(bad, out, f"còn emoji chrome {bad} trong render")
 
-    def test_partial_report_summary(self):
+    def test_partial_report_diagnostic_mini(self):
         report = DoctorReport(url=URL)
-        report.add("A", True, "ok", icon="🌐")
-        report.add("B", False, "bad", icon="🔑")
+        report.add("A", True, "ok")
+        report.add("B", False, "nguyên nhân X",
+                   fix="chạy lệnh fix --flag-format")
         out = capture_render(report)
         self.assertIn("Tổng kết: 1/2 checks pass", out)
-        self.assertIn("❌", out)
-        self.assertIn("✅", out)
+        # Diagnostic mini: ✗ tên → ╰─▶ nguyên nhân → ℹ lệnh fix.
+        self.assertIn("✗", out)
+        self.assertIn("╰─▶", out)
+        self.assertIn("ℹ", out)
+        self.assertIn("--flag-format", out)
 
     def test_doctor_check_fields(self):
-        chk = DoctorCheck(name="X", ok=True, detail="d", icon="🧩")
-        self.assertEqual((chk.name, chk.ok, chk.detail, chk.icon),
-                         ("X", True, "d", "🧩"))
+        chk = DoctorCheck(name="X", ok=True, detail="d", fix="fix cmd")
+        self.assertEqual((chk.name, chk.ok, chk.detail, chk.fix),
+                         ("X", True, "d", "fix cmd"))
 
 
 if __name__ == "__main__":
