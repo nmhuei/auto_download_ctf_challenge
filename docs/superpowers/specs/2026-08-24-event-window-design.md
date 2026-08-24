@@ -144,3 +144,13 @@ Với challenge dynamic mà flag sinh theo instance (không theo teamToken), t�
 **R-B. Lỗi 502 qua entry KHÔNG có nghĩa là container đã chết.**
 Một số platform trả 502 từ lớp limit/proxy của instance trong khi backend vẫn chạy bình thường.
 → Quy tắc health-check: 502/503/504 từ entry KHÔNG được tính là dấu hiệu chết; chỉ tin (a) trạng thái API chính thức (status Destroyed / expectStopAt quá khứ), hoặc (b) TCP connect fail NHIỀU lần liên tiếp (≥3 lần cách nhau ≥30s). Trước khi kết luận dead phải cross-check status API; nếu API vẫn báo Running + còn hạn → chỉ hiển thị ⚠️ "502 tạm thời (limit)" chứ không restart.
+
+### Nguyên tắc số 1 của Instance feature (user nhấn mạnh)
+
+**NHIỆM VỤ CHÍNH là DUY TRÌ KẾT NỐI đến instance — không gây khó dễ cho phía solver.**
+
+Định hướng thiết kế:
+1. **Least-disruption**: thang ưu tiên hành động = gia hạn im lặng → re-attach entry mới (patch HOST/PORT) → restart (chỉ khi chắc chắn chết và không vi phạm R-A). Mọi thao tác khác đều phục vụ mục tiêu "solver đang chạy không bị ngắt".
+2. **Invisible maintenance**: extend thành công chỉ log 1 dòng 🔄, KHÔNG spam; đếm ngược hiển thị nhẹ nhàng ở dashboard.
+3. **Reconnect tự động**: entry đổi IP/port sau pod-restart hoặc qua PlatformProxy bridge → tool phát hiện (poll status 60s) và patch lại HOST/PORT vào solve.py/metadata NGAY, kèm in lệnh nc mới — solver chỉ cần chạy lại script chứ không phải mò IP thủ công.
+4. Restart/rebuild là phương sách cuối; mọi quyết định phá vỡ kết nối hiện có phải đi qua R-A (flag rotate warning).
