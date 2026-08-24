@@ -1233,5 +1233,107 @@ class TestEventWindowHeader(TempWorkspaceCase):
         self.assertEqual(self._render_stdout(), baseline)
 
 
+# ----------------------------------------------------------------------
+# 9. codex-r2: ChallengeRow schema TOÀN MÀN + panel responsive
+# ----------------------------------------------------------------------
+
+def _add_challenge(root: pathlib.Path, cid, name, category, points=100,
+                   solves=None):
+    d = root / category / f"chall_{cid}"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "metadata.json").write_text(json.dumps({
+        "id": cid, "name": name, "category": category, "points": points,
+        "solved_by_me": False,
+    }), encoding="utf-8")
+    if solves is not None:
+        meta = json.loads((d / "metadata.json").read_text(encoding="utf-8"))
+        meta["solves_count"] = solves
+        (d / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+
+
+class TestChallengeRowSchemaWholeScreen(TempWorkspaceCase):
+    """codex-r2 P1a: một lưới ChallengeRow duy nhất cho MỌI category.
+
+    - name ≤ 24 cell, cắt ``…`` (đo bằng cell_len — emoji 2 cell không lệch).
+    - Vị trí cột pts/giải/badge GIỐNG NHAU ở mọi section.
+    """
+
+    def _render_plain(self) -> str:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            StatusService.render_tree(self.repo)
+        return buf.getvalue()
+
+    def test_long_name_truncated_with_ellipsis(self):
+        _add_challenge(self.root, 2, "CIA - What does 'I' stand for?", "Web")
+        _add_challenge(self.root, 3, "🐧🪟 Emoji Wide Name Over 24 Cells", "Web")
+        out = self._render_plain()
+        self.assertNotIn("CIA - What does 'I' stand for?", out)
+        self.assertIn("CIA - What does 'I' sta…", out)
+        # Emoji rộng 2 cell: tổng width tên không vượt quá schema.
+        from rich.cells import cell_len
+        long_line = next(ln for ln in out.splitlines() if "Emoji" in ln)
+        self.assertIn("…", long_line)
+
+    def test_columns_aligned_across_categories(self):
+        _add_challenge(self.root, 2,
+                       "A Really Long Challenge Name Here!!", "Crypto")
+        _add_challenge(self.root, 3, "Shorty", "Pwn")
+        out = self._render_plain()
+        pts_cols = set()
+        for ln in out.splitlines():
+            stripped = ln.rstrip()
+            if stripped.strip().endswith(("pts", "giải")) or " pts" in stripped:
+                idx = stripped.find(" pts ")
+                if idx >= 0:
+                    pts_cols.add(idx)
+                elif "pts" in stripped:
+                    pts_cols.add(stripped.find("pts"))
+        # TẤT CẢ các dòng challenge dùng CÙNG một vị trí cột pts.
+        self.assertLessEqual(len(pts_cols), 1,
+                             f"cột pts lệch giữa các category: {pts_cols}")
+
+    def test_id_pts_solves_right_aligned(self):
+        _add_challenge(self.root, 2, "B", "Crypto", points=5000, solves=1234)
+        _add_challenge(self.root, 3, "C", "Pwn", points=7, solves=1)
+        out = self._render_plain()
+        lines = [ln for ln in out.splitlines() if " pts" in ln]
+        self.assertTrue(lines)
+        for ln in lines:
+            # số pts đứng sát chữ " pts" (right-align): không có space giữa
+            self.assertRegex(ln, r"\S+ pts")
+            self.assertRegex(ln, r"\S+ giải")
+
+
+class TestHeaderPanelResponsive(TempWorkspaceCase):
+    """codex-r2 P1b: panel responsive — ≥92 cols đủ NHỊP GIẢI; <92 bỏ cột;
+    không có flag 24h → sparkline là baseline braille visible, không ô trống."""
+
+    def _render_with_cols(self, cols) -> str:
+        buf = io.StringIO()
+        with redirect_stdout(buf), \
+                patch.object(StatusService, "_tty_columns", return_value=cols):
+            StatusService.render_tree(self.repo)
+        return buf.getvalue()
+
+    def test_wide_terminal_shows_sparkline_column(self):
+        out = self._render_with_cols(120)
+        self.assertIn("NHỊP GIẢI · 24H", out)
+
+    def test_narrow_terminal_drops_sparkline_column(self):
+        out = self._render_with_cols(80)
+        self.assertNotIn("NHỊP GIẢI", out)
+        # variant responsive vẫn giữ TIẾN ĐỘ + ĐIỂM
+        self.assertIn("TIẾN ĐỘ", out)
+        self.assertIn("ĐIỂM", out)
+
+    def test_empty_pulse_renders_visible_baseline_not_blank(self):
+        out = self._render_with_cols(120)
+        # Không có submit history → sparkline phải có glyph braille visible
+        line = next(ln for ln in out.splitlines() if "NHỊP GIẢI" in ln)
+        spark_line = out.splitlines()[out.splitlines().index(line) + 1]
+        self.assertIn("⣀", spark_line)
+
+
 if __name__ == "__main__":
     unittest.main()

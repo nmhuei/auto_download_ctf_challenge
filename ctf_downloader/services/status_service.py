@@ -59,6 +59,14 @@ ROW_GLYPHS = {
     'file_badge': '⎘',
 }
 
+# ChallengeRow schema TOÀN MÀN (codex-r2 P1): một lưới duy nhất cho mọi
+# category — id>3, name≤24 cell (truncate ellipsis, đếm theo cell_len nên
+# emoji 2-cell như 🐧🪟 không lệch cột), pts>4, solves>3, badge cố định.
+CHALLENGE_NAME_MAX_CELLS = 24
+
+# Panel dashboard responsive: dưới ngưỡng này variant bỏ cột NHỊP GIẢI.
+PANEL_SPARKLINE_MIN_COLS = 92
+
 
 class ChallengeNotFoundError(Exception):
     """Không có challenge nào khớp identifier."""
@@ -608,9 +616,13 @@ class StatusService:
         - TIẾN ĐỘ: meter gradient amber 22 ô + ``d/d solved · x.x%``
         - ĐIỂM: ``earned / total`` (earned accent.hi) + ``hoarded n · drafts n``
         - NHỊP GIẢI · 24H: sparkline braille phẳng amber + ``+n flags``
+
+        Responsive (codex-r2): ≥92 cols → đủ 3 cột kể cả NHỊP GIẢI;
+        <92 cols → variant responsive bỏ hẳn cột NHỊP (không bao giờ để
+        cột trống). Khi không có flag nào trong cửa sổ 24h, sparkline vẽ
+        baseline braille ``⣀`` faint thay vì chuỗi rỗng vô hình.
         Subtitle đáy panel: ``platform · user[ · team][ · window]``.
         """
-        from rich.cells import cell_len as _cell_len
         from ..ui.widgets import braille_graph, gradient
         from ..ui.widgets import meter as _meter
 
@@ -644,22 +656,35 @@ class StatusService:
             f"hoarded {stats.get('hoarded_flags', 0)} · "
             f"drafts {stats.get('writeup_drafts', 0)}", style="fg.muted"))
 
-        pulse, pulse_total = cls._solve_pulse(repo)
-        spark = braille_graph(pulse if pulse else [0.0], 12)
-        spark.stylize("accent")
-        c3 = Table.grid()
-        c3.add_row(lab("nhịp giải · 24h"))
-        c3.add_row(spark)
-        c3.add_row(Text(f"+{pulse_total} flags", style="fg.muted"))
+        wide = cls._tty_columns() >= PANEL_SPARKLINE_MIN_COLS
 
-        # 3 cột cố định theo spec (30 + 22 + phần còn lại) — natural width
-        # ≈79 cols vừa mọi terminal ≥80. Lưu ý: rich cũ bỏ qua Panel.width
-        # khi expand=False nên panel tự co theo nội dung lưới.
-        grid = Table.grid(padding=(0, 4))
-        grid.add_column(width=30)
-        grid.add_column(width=22)
-        grid.add_column(width=17)   # 15 nội dung + 2 padding cột (0,4)
-        grid.add_row(c1, c2, c3)
+        if wide:
+            pulse, pulse_total = cls._solve_pulse(repo)
+            if pulse_total > 0:
+                spark = braille_graph(pulse if pulse else [0.0], 12)
+                spark.stylize("accent")
+            else:
+                # Không có dữ liệu → baseline braille visible (không để ô trống).
+                spark = Text("⣀" * 12, style="accent.deep")
+            c3 = Table.grid()
+            c3.add_row(lab("nhịp giải · 24h"))
+            c3.add_row(spark)
+            c3.add_row(Text(f"+{pulse_total} flags", style="fg.muted"))
+
+            # 3 cột cố định theo spec (30 + 22 + phần còn lại) — natural width
+            # ≈79 cols vừa mọi terminal ≥80. Lưu ý: rich cũ bỏ qua Panel.width
+            # khi expand=False nên panel tự co theo nội dung lưới.
+            grid = Table.grid(padding=(0, 4))
+            grid.add_column(width=30)
+            grid.add_column(width=22)
+            grid.add_column(width=17)   # 15 nội dung + 2 padding cột (0,4)
+            grid.add_row(c1, c2, c3)
+        else:
+            # Variant responsive <92 cols: chỉ TIẾN ĐỘ + ĐIỂM.
+            grid = Table.grid(padding=(0, 4))
+            grid.add_column(width=30)
+            grid.add_column(width=22)
+            grid.add_row(c1, c2)
 
         subtitle = Text(style="fg.muted")
         parts = [str(stats['platform']).lower()]
@@ -729,6 +754,11 @@ class StatusService:
         cls._emit(cls._header_panel(repo, stats))
         cls._emit(Text())
 
+        # ChallengeRow schema TOÀN MÀN (codex-r2 P1): gom row của MỌI category
+        # rồi căn qua MỘT lưới duy nhất — vị trí pts/solves/badge không đổi
+        # giữa các section (trước đây mỗi category tự co giãn theo tên dài).
+        sections: List[Tuple[Text, List[List[Text]]]] = []
+
         categories = stats['categories']
         for cat, data in sorted(categories.items()):
             if filter_cat and cat.lower() not in [c.lower() for c in filter_cat]:
@@ -765,13 +795,34 @@ class StatusService:
             if not c_list:
                 continue
 
-            cls._emit(cls._category_heading(
-                cat, data['solved'], data['total'],
-                data.get('earned', 0), data.get('points', 0)))
-            for line in cls._challenge_rows(repo, c_list, narrow=narrow):
+            sections.append((
+                cls._category_heading(
+                    cat, data['solved'], data['total'],
+                    data.get('earned', 0), data.get('points', 0)),
+                cls._challenge_cells(repo, c_list),
+            ))
+
+        all_rows = [row for _, rows in sections for row in rows]
+        aligns = ['left'] * len(all_rows[0]) if all_rows else []
+        # Cột id + pts + solves căn phải (spec §4.3).
+        if aligns:
+            aligns[1] = 'right'   # id
+            aligns[3] = 'right'   # pts
+            if not narrow:
+                aligns[5] = 'right'   # solves
+        # Khoảng cách theo capture §4.3: số sát đơn vị, rộng hơn trước badge.
+        gaps = ([2, 2, 2, 1, 3, 1, 3, 2] if not narrow
+                else [2, 2, 2, 1, 3, 2])
+        aligned = StatusService._aligned_grid(all_rows, aligns, gaps=gaps)
+
+        idx = 0
+        for heading, rows in sections:
+            cls._emit(heading)
+            for _line in aligned[idx:idx + len(rows)]:
                 indented = Text("  ")
-                indented.append_text(line)
+                indented.append_text(_line)
                 cls._emit(indented)
+            idx += len(rows)
             cls._emit(Text())
 
     @staticmethod
@@ -813,13 +864,32 @@ class StatusService:
             lines.append(line)
         return lines
 
-    @classmethod
-    def _challenge_rows(cls, repo: WorkspaceRepo,
-                        c_list: List[Dict[str, Any]], *,
-                        narrow: bool) -> List[Text]:
-        """ChallengeRow (spec §4.3, PHOSPHOR FIELD KIT):
+    @staticmethod
+    def _truncate_cells(name: str,
+                        limit: int = CHALLENGE_NAME_MAX_CELLS) -> str:
+        """Cắt tên challenge xuống ≤ ``limit`` cell hiển thị, kết thúc bằng
+        ellipsis. Đo bằng ``cell_len`` nên emoji rộng 2 cell (🐧 🪟) không
+        làm lệch lưới ChallengeRow."""
+        from rich.cells import cell_len as _cell_len
+        if _cell_len(name) <= limit:
+            return name
+        out: List[str] = []
+        width = 0
+        for ch in name:
+            cw = _cell_len(ch)
+            if width + cw > limit - 1:
+                break
+            out.append(ch)
+            width += cw
+        return "".join(out) + "…"
 
-        ``[state] [id>3] [name] [pts>4] pts [solves>3] giải [badges ✎⛁⎘] [note]``
+    @classmethod
+    def _challenge_cells(cls, repo: WorkspaceRepo,
+                         c_list: List[Dict[str, Any]]) -> List[List[Text]]:
+        """ChallengeRow (spec §4.3, PHOSPHOR FIELD KIT) — trả ROW THÔ (list
+        cell ``Text``), việc căn cột do :meth:`render_tree` gộp toàn màn:
+
+        ``[state] [id>3] [name≤24] [pts>4] pts [solves>3] giải [badges ✎⛁⎘] [note]``
 
         - Glyph ngữ nghĩa thay emoji: ``✔`` solved / ``◆`` working / ``·``
           unsolved; badge mỗi trục 1 glyph hoặc rỗng: ``✎`` draft · ``⛁``
@@ -831,6 +901,7 @@ class StatusService:
         """
         G = ROW_GLYPHS
         rows: List[List[Text]] = []
+        narrow = cls._tty_columns() < 80
         for c in c_list:
             status = c.get('_status') or {}
             solve = status.get('solve', 'unsolved')
@@ -844,7 +915,8 @@ class StatusService:
 
             name_st = FG_MUTED if is_solved else FG_BASE
             labels = [str(x) for x in (status.get('labels') or [])]
-            name_cell = Text(str(c.get('name', 'Unknown')), style=name_st)
+            name_cell = Text(cls._truncate_cells(str(c.get('name', 'Unknown'))),
+                             style=name_st)
             if labels:
                 name_cell.append(" #" + ",".join(labels), style="fg.muted")
 
@@ -879,18 +951,7 @@ class StatusService:
                 ]
             row += [badges, note_cell]
             rows.append(row)
-
-        aligns = ['left'] * len(rows[0]) if rows else []
-        # Cột id + pts + solves căn phải (spec §4.3).
-        if aligns:
-            aligns[1] = 'right'   # id
-            aligns[3] = 'right'   # pts
-            if not narrow:
-                aligns[5] = 'right'   # solves
-        # Khoảng cách theo capture §4.3: số sát đơn vị, rộng hơn trước badge.
-        gaps = ([2, 2, 2, 1, 3, 1, 3, 2] if not narrow
-                else [2, 2, 2, 1, 3, 2])
-        return StatusService._aligned_grid(rows, aligns, gaps=gaps)
+        return rows
 
     # ------------------------------------------------------------------ #
     # Helpers render đa chiều
