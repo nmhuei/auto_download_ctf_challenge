@@ -28,17 +28,22 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ..storage.fileio import atomic_write_json
 from ..storage.workspace_repo import WorkspaceRepo
+from ..ui.theme import (
+    ACCENT, ACCENT_DEEP, ACCENT_HI,
+    ERROR, FG_BASE, FG_FAINT, FG_MUTED, INFO, SOLVED, WARN,
+    load_theme,
+)
 from ..ui.widgets import footer_bar, gradient, meter
 from ..utils.logger import Logger
 
 try:
-    from rich.console import Group
+    from rich.console import Console, Group
     from rich.live import Live
     from rich.panel import Panel
     from rich.text import Text
     from rich.prompt import Confirm, Prompt
 except Exception:      # pragma: no cover — rich luôn có trong requirements
-    Live = Panel = Text = Group = Confirm = Prompt = None
+    Live = Panel = Text = Group = Confirm = Prompt = Console = None
 
 WATCH_STATE_VERSION = 1
 CONFIG_VERSION = 1
@@ -54,10 +59,19 @@ JITTER_FRACTION = 0.2                # ±20%
 CLOCK_SKEW_WARN_SECONDS = 120
 GRACE_DEFAULT = 300                  # wall > end+grace → final sync rồi exit
 
-# Gradient điểm mini-scoreboard (đỏ → vàng → xanh, chuẩn hoá theo #1)
-SCORE_GRADIENT_RGB = ((255, 90, 90), (255, 200, 80), (110, 220, 110))
+# Gradient điểm mini-scoreboard (amber phosphor 3 điểm: tắt đèn → accent →
+# đỉnh nhấn, chuẩn hoá theo #1) — PHOSPHOR FIELD KIT spec §3.
+SCORE_GRADIENT_RGB = ((0x6B, 0x43, 0x00), (0xFF, 0xB0, 0x00),
+                     (0xFF, 0xE4, 0x9A))
 MIN_PANEL_WIDTH = 40                 # dưới ngưỡng này ép width tối thiểu
 DEGRADE_WIDTH = 80                   # width < 80 → bỏ mini-scoreboard
+
+#: Console riêng cho panel (mẫu như status_service): mang theme PHOSPHOR
+#: để các style token ``accent.deep`` / ``fg.faint`` / ``solved`` … resolve
+#: đúng bên trong Live — Live(console=None) sẽ dùng console mặc định không
+#: có theme và render mất màu.
+_watch_console = (Console(theme=load_theme(None))
+                  if Console is not None else None)
 
 
 def utcnow() -> _dt.datetime:
@@ -969,20 +983,24 @@ class WatchService:
         )
 
     def _render_header(self) -> "Text":
-        """Header: tên giải + đồng hồ local + ⏱️ countdown + skew icon."""
+        """Header: tên giải + đồng hồ local + ⏱️ countdown + skew icon.
+
+        Màu theo PHOSPHOR: tên bold fg.base, đồng hồ ``info`` (chỗ lạnh
+        duy nhất), skew ``warn``; LIVE giữ semantic solved-green, ⏳ warn,
+        ended muted."""
         head = Text()
-        head.append(f"👀 {self._event_name()}", style="bold magenta")
+        head.append(f"👀 {self._event_name()}", style=f"bold {FG_BASE}")
         now_local = _dt.datetime.now().astimezone()
-        head.append(f"  ·  {now_local:%H:%M:%S}", style="cyan")
+        head.append(f"  ·  {now_local:%H:%M:%S}", style=INFO)
         if self.guard is not None:
             offset = float(getattr(self.guard, "_server_offset", 0.0) or 0.0)
             if abs(offset) >= 1:
-                head.append(f"  🕐 lệch server {offset:+.0f}s", style="yellow")
+                head.append(f"  🕐 lệch server {offset:+.0f}s", style=WARN)
             st = self.guard.state()
             icon, style = {
-                WindowGuard.BEFORE: ("⏳", "yellow"),
-                WindowGuard.LIVE: ("🔴 LIVE", "bold green"),
-                WindowGuard.ENDED: ("✅ ended", "dim"),
+                WindowGuard.BEFORE: ("⏳", WARN),
+                WindowGuard.LIVE: ("🔴 LIVE", f"bold {SOLVED}"),
+                WindowGuard.ENDED: ("✅ ended", FG_MUTED),
             }[st]
             head.append("\n")
             head.append(icon, style=style)
@@ -992,28 +1010,32 @@ class WatchService:
             if secs is not None and st != WindowGuard.ENDED:
                 label = ("bắt đầu sau" if st == WindowGuard.BEFORE
                          else "kết thúc sau")
-                head.append(f"  ⏱️ {label} ", style="dim")
+                head.append(f"  ⏱️ {label} ", style=FG_MUTED)
                 head.append(fmt_countdown(secs), style=style)
             # Keep-alive trackers (giữ nguyên thông tin như bản cũ)
             ka = getattr(self.keepalive, "trackers", None) or {}
             for tr in ka.values():
                 remaining = getattr(tr, "remaining", None)
                 if remaining is not None:
-                    head.append(
+                    line = Text(style=FG_MUTED)
+                    line.append(
                         f"\n🐳 {getattr(tr, 'name', '?')}: "
-                        f"{getattr(tr, 'state', '?')} · còn "
-                        f"{fmt_countdown(remaining)}")
+                        f"{getattr(tr, 'state', '?')} · còn ")
+                    line.append(fmt_countdown(remaining))
+                    head.append_text(line)
                 if getattr(tr, "platform_kind", "") != "gzctf":
                     left = (5 - tr.renew_count
                             if hasattr(tr, "renew_count") else "?")
                     if isinstance(left, int) and left <= 1:
-                        head.append(" 🔴")
+                        head.append(" 🔴", style=ERROR)
         return head
 
     def _render_notices(self, max_lines: int = 5) -> List[Any]:
-        """📢 Khu vực sự kiện gần nhất (icon loại sự kiện nằm sẵn trong feed)."""
-        parts: List[Any] = [Text("📢 Sự kiện gần nhất",
-                                 style="bold cyan")]
+        """📢 Khu vực sự kiện gần nhất (icon loại sự kiện nằm sẵn trong feed).
+
+        Nhãn khu faint UPPERCASE; glyph loại sự kiện (🩸✨💡📢) trong feed
+        giữ nguyên — màu ngữ nghĩa đi kèm từng dòng khi push vào feed."""
+        parts: List[Any] = [Text("📢 SỰ KIỆN GẦN NHẤT", style=FG_FAINT)]
         feed_tail = self._feed[-max_lines:]
         block = Text()
         if feed_tail:
@@ -1022,33 +1044,36 @@ class WatchService:
                     block.append("\n")
                 block.append(ln)
         else:
-            block.append("(chưa có sự kiện)", style="dim")
+            block.append("(chưa có sự kiện)", style=FG_FAINT)
         parts.append(block)
         return parts
 
     def _render_challenges_summary(self) -> Text:
         """✨ Tổng số bài + số bài mới phát hiện từ lần render trước."""
-        line = Text("✨ Challenges: ", style="bold cyan")
+        line = Text("✨ CHALLENGES ", style=FG_FAINT)
         total = self._known_chall_count
         baseline = getattr(self, "_rendered_chall_baseline", None)
         if total is None:
-            line.append("chưa quét", style="dim")
+            line.append("chưa quét", style=FG_FAINT)
         else:
             new_n = 0
             if baseline is not None:
                 new_n = max(0, int(total) - int(baseline))
             self._rendered_chall_baseline = total
-            line.append(str(total))
+            line.append(str(total), style=f"bold {FG_BASE}")
             if new_n > 0:
-                line.append(f"  ✨ +{new_n} bài mới tick này", style="yellow")
+                line.append(f"  ✨ +{new_n} bài mới tick này",
+                            style=ACCENT_HI)
         return line
 
     def _render_mini_scoreboard(self) -> List[Any]:
-        """🏆 Mini scoreboard top-5 — meter gradient chuẩn hoá theo điểm #1."""
+        """🏆 Mini scoreboard top-5 — meter gradient amber 3 điểm
+        (#6B4300 → #FFB000 → #FFE49A) chuẩn hoá theo điểm #1."""
         rows = list(getattr(self, "_mini_sb_rows", None) or [])[:5]
         parts: List[Any] = []
         if not rows:
-            parts.append(Text("🏆 Scoreboard: chưa có dữ liệu", style="dim"))
+            parts.append(Text("🏆 Scoreboard: chưa có dữ liệu",
+                              style=FG_FAINT))
             return parts
         try:
             top = max(float(r.get("score") or 0) for r in rows)
@@ -1056,7 +1081,7 @@ class WatchService:
             top = 0.0
         colors = gradient(*SCORE_GRADIENT_RGB)
         meter_w = 16
-        parts.append(Text("🏆 Scoreboard top-5", style="bold cyan"))
+        parts.append(Text("🏆 SCOREBOARD TOP-5", style=FG_FAINT))
         for r in rows:
             score = r.get("score")
             try:
@@ -1067,7 +1092,9 @@ class WatchService:
             row = Text()
             pos = r.get("pos", "?")
             name = str(r.get("name", "?"))[:20]
-            row.append(f"{pos:>3}. {name:<20} {score_txt:>7} ")
+            row.append(f"{pos:>3}. ", style=FG_FAINT)
+            row.append(f"{name:<20}", style=FG_BASE)
+            row.append(f" {score_txt:>7} ", style=ACCENT_HI)
             row.append(meter(pct, meter_w, colors))
             parts.append(row)
         return parts
@@ -1075,7 +1102,10 @@ class WatchService:
     def _render_panel(self, lines: List[str], width: Optional[int] = None):
         """Panel btop-layout: header clock/countdown + notices +
         mini-scoreboard + footer bar. Trả rich renderable cho Live —
-        protocol giữ nguyên (caller vẫn nhận object, không phải string)."""
+        protocol giữ nguyên (caller vẫn nhận object, không phải string).
+
+        Palette PHOSPHOR FIELD KIT: viền ``accent.deep``, tiêu đề bold
+        ``accent``, nhãn khu faint UPPERCASE."""
         if Panel is None or Text is None:
             return None
         if width is None:
@@ -1099,8 +1129,11 @@ class WatchService:
             body.append(Text())
             body.append(Text.from_markup(footer))
 
-        return Panel(Group(*body), title=f"👀 {self._event_name()}",
-                     border_style="cyan")
+        title = Text()
+        title.append("👀 ", style=ACCENT)
+        title.append(self._event_name(), style=f"bold {ACCENT}")
+        return Panel(Group(*body), title=title,
+                     border_style=ACCENT_DEEP)
 
     def _open_live(self) -> None:
         if self.use_live_ui is False or self.once or Live is None \
@@ -1109,7 +1142,8 @@ class WatchService:
             return
         panel = self._render_panel([])
         try:
-            self._live = Live(panel, refresh_per_second=2, console=None)
+            self._live = Live(panel, refresh_per_second=2,
+                              console=_watch_console)
             self._live.__enter__()
         except Exception:
             self._live = None
