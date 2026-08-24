@@ -19,6 +19,7 @@ import datetime as _dt
 import json
 import os
 import random
+import shutil
 import signal
 import sys
 import time
@@ -27,15 +28,17 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ..storage.fileio import atomic_write_json
 from ..storage.workspace_repo import WorkspaceRepo
+from ..ui.widgets import footer_bar, gradient, meter
 from ..utils.logger import Logger
 
 try:
+    from rich.console import Group
     from rich.live import Live
     from rich.panel import Panel
     from rich.text import Text
     from rich.prompt import Confirm, Prompt
 except Exception:      # pragma: no cover — rich luôn có trong requirements
-    Live = Panel = Text = Confirm = Prompt = None
+    Live = Panel = Text = Group = Confirm = Prompt = None
 
 WATCH_STATE_VERSION = 1
 CONFIG_VERSION = 1
@@ -50,6 +53,11 @@ BACKOFF_CAP = 600                    # backoff ×2 cap 600s
 JITTER_FRACTION = 0.2                # ±20%
 CLOCK_SKEW_WARN_SECONDS = 120
 GRACE_DEFAULT = 300                  # wall > end+grace → final sync rồi exit
+
+# Gradient điểm mini-scoreboard (đỏ → vàng → xanh, chuẩn hoá theo #1)
+SCORE_GRADIENT_RGB = ((255, 90, 90), (255, 200, 80), (110, 220, 110))
+MIN_PANEL_WIDTH = 40                 # dưới ngưỡng này ép width tối thiểu
+DEGRADE_WIDTH = 80                   # width < 80 → bỏ mini-scoreboard
 
 
 def utcnow() -> _dt.datetime:
@@ -845,6 +853,8 @@ class WatchService:
     def _tick_scoreboard(self, window_active: bool = True,
                          final: bool = False) -> List[str]:
         result = self.platform.fetch_scoreboard() or {}
+        # UI-only stash cho mini-scoreboard (không đổi logic tick đã review)
+        self._mini_sb_rows = list(result.get("standings") or [])[:8]
         my_rank, my_score = result.get("my_rank"), result.get("my_score")
         total = result.get("total_teams") or len(result.get("standings") or [])
 
@@ -927,25 +937,170 @@ class WatchService:
     # ------------------------------------------------------------------ #
     # UI
     # ------------------------------------------------------------------ #
-    def _render_panel(self, lines: List[str]):
+    def _event_name(self) -> str:
+        """Tên giải: challenges.json (nguồn chân lý workspace) trước, sau đó
+        platform.ctf_info; fallback 'ctf watch'."""
+        try:
+            info = self.repo.read_challenges().get("ctf_info") or {}
+            name = info.get("title")
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+        except Exception:
+            pass
+        return "ctf watch"
+
+    def _panel_snapshot(self) -> tuple:
+        """Chữ ký dữ liệu panel cho skip-refresh (btop: không redraw khi nội
+        dung không đổi). Giấy phép thay đổi duy nhất được tính là dữ liệu:
+        giây wall-clock — đồng hồ/countdown phải tick từng giây."""
+        return (
+            int(time.time()),
+            tuple(self._feed[-5:]),
+            tuple((r.get("pos"), r.get("name"), r.get("score"))
+                  for r in (getattr(self, "_mini_sb_rows", None) or [])[:5]),
+            self._known_chall_count,
+            tuple(
+                (getattr(tr, "name", ""), getattr(tr, "state", ""),
+                 getattr(tr, "remaining", None))
+                for tr in (getattr(getattr(self, "keepalive", None),
+                                   "trackers", {}) or {}).values()
+            ),
+            self.guard.state() if self.guard is not None else None,
+        )
+
+    def _render_header(self) -> "Text":
+        """Header: tên giải + đồng hồ local + ⏱️ countdown + skew icon."""
+        head = Text()
+        head.append(f"👀 {self._event_name()}", style="bold magenta")
+        now_local = _dt.datetime.now().astimezone()
+        head.append(f"  ·  {now_local:%H:%M:%S}", style="cyan")
+        if self.guard is not None:
+            offset = float(getattr(self.guard, "_server_offset", 0.0) or 0.0)
+            if abs(offset) >= 1:
+                head.append(f"  🕐 lệch server {offset:+.0f}s", style="yellow")
+            st = self.guard.state()
+            icon, style = {
+                WindowGuard.BEFORE: ("⏳", "yellow"),
+                WindowGuard.LIVE: ("🔴 LIVE", "bold green"),
+                WindowGuard.ENDED: ("✅ ended", "dim"),
+            }[st]
+            head.append("\n")
+            head.append(icon, style=style)
+            secs = (self.guard.seconds_to_start()
+                    if st == WindowGuard.BEFORE
+                    else self.guard.seconds_to_end())
+            if secs is not None and st != WindowGuard.ENDED:
+                label = ("bắt đầu sau" if st == WindowGuard.BEFORE
+                         else "kết thúc sau")
+                head.append(f"  ⏱️ {label} ", style="dim")
+                head.append(fmt_countdown(secs), style=style)
+            # Keep-alive trackers (giữ nguyên thông tin như bản cũ)
+            ka = getattr(self.keepalive, "trackers", None) or {}
+            for tr in ka.values():
+                remaining = getattr(tr, "remaining", None)
+                if remaining is not None:
+                    head.append(
+                        f"\n🐳 {getattr(tr, 'name', '?')}: "
+                        f"{getattr(tr, 'state', '?')} · còn "
+                        f"{fmt_countdown(remaining)}")
+                if getattr(tr, "platform_kind", "") != "gzctf":
+                    left = (5 - tr.renew_count
+                            if hasattr(tr, "renew_count") else "?")
+                    if isinstance(left, int) and left <= 1:
+                        head.append(" 🔴")
+        return head
+
+    def _render_notices(self, max_lines: int = 5) -> List[Any]:
+        """📢 Khu vực sự kiện gần nhất (icon loại sự kiện nằm sẵn trong feed)."""
+        parts: List[Any] = [Text("📢 Sự kiện gần nhất",
+                                 style="bold cyan")]
+        feed_tail = self._feed[-max_lines:]
+        block = Text()
+        if feed_tail:
+            for ln in feed_tail:
+                if block.plain:
+                    block.append("\n")
+                block.append(ln)
+        else:
+            block.append("(chưa có sự kiện)", style="dim")
+        parts.append(block)
+        return parts
+
+    def _render_challenges_summary(self) -> Text:
+        """✨ Tổng số bài + số bài mới phát hiện từ lần render trước."""
+        line = Text("✨ Challenges: ", style="bold cyan")
+        total = self._known_chall_count
+        baseline = getattr(self, "_rendered_chall_baseline", None)
+        if total is None:
+            line.append("chưa quét", style="dim")
+        else:
+            new_n = 0
+            if baseline is not None:
+                new_n = max(0, int(total) - int(baseline))
+            self._rendered_chall_baseline = total
+            line.append(str(total))
+            if new_n > 0:
+                line.append(f"  ✨ +{new_n} bài mới tick này", style="yellow")
+        return line
+
+    def _render_mini_scoreboard(self) -> List[Any]:
+        """🏆 Mini scoreboard top-5 — meter gradient chuẩn hoá theo điểm #1."""
+        rows = list(getattr(self, "_mini_sb_rows", None) or [])[:5]
+        parts: List[Any] = []
+        if not rows:
+            parts.append(Text("🏆 Scoreboard: chưa có dữ liệu", style="dim"))
+            return parts
+        try:
+            top = max(float(r.get("score") or 0) for r in rows)
+        except (TypeError, ValueError):
+            top = 0.0
+        colors = gradient(*SCORE_GRADIENT_RGB)
+        meter_w = 16
+        parts.append(Text("🏆 Scoreboard top-5", style="bold cyan"))
+        for r in rows:
+            score = r.get("score")
+            try:
+                pct = (float(score) / top * 100.0) if top > 0 else 0.0
+                score_txt = str(score)
+            except (TypeError, ValueError):
+                pct, score_txt = 0.0, str(score)
+            row = Text()
+            pos = r.get("pos", "?")
+            name = str(r.get("name", "?"))[:20]
+            row.append(f"{pos:>3}. {name:<20} {score_txt:>7} ")
+            row.append(meter(pct, meter_w, colors))
+            parts.append(row)
+        return parts
+
+    def _render_panel(self, lines: List[str], width: Optional[int] = None):
+        """Panel btop-layout: header clock/countdown + notices +
+        mini-scoreboard + footer bar. Trả rich renderable cho Live —
+        protocol giữ nguyên (caller vẫn nhận object, không phải string)."""
         if Panel is None or Text is None:
             return None
-        head = "👀 ctf watch"
-        if self.guard is not None:
-            st = self.guard.state()
-            icon = {"before": "⏳", "live": "🔴 LIVE", "ended": "✅ ended"}[st]
-            head += f" · {icon}"
-            if self.keepalive is not None:
-                for tr in self.keepalive.trackers.values():
-                    if tr.remaining is not None:
-                        head += (f"\n🐳 {tr.name}: {tr.state} · còn "
-                                 f"{fmt_countdown(tr.remaining)}")
-                    if tr.platform_kind != "gzctf":
-                        left = 5 - tr.renew_count if hasattr(tr, "renew_count") else "?"
-                        if isinstance(left, int) and left <= 1:
-                            head += " 🔴"
-        body = Text("\n".join([head] + ([""] + self._feed[-8:] if self._feed else [])))
-        return Panel(body, title="ctf watch", border_style="cyan")
+        if width is None:
+            try:
+                width = shutil.get_terminal_size((100, 24)).columns
+            except Exception:   # pragma: no cover — fallback hiếm gặp
+                width = 100
+        width = max(MIN_PANEL_WIDTH, int(width))
+
+        body: List[Any] = [self._render_header(), Text()]
+        body.extend(self._render_notices())
+        body.append(Text())
+        body.append(self._render_challenges_summary())
+        if width >= DEGRADE_WIDTH:
+            body.append(Text())
+            body.extend(self._render_mini_scoreboard())
+
+        footer = footer_bar([("q", "thoát"), ("p", "pause"),
+                             ("r", "refresh-now")], width - 4)
+        if footer:
+            body.append(Text())
+            body.append(Text.from_markup(footer))
+
+        return Panel(Group(*body), title=f"👀 {self._event_name()}",
+                     border_style="cyan")
 
     def _open_live(self) -> None:
         if self.use_live_ui is False or self.once or Live is None \
@@ -964,6 +1119,10 @@ class WatchService:
             self._feed.append(ln)
             Logger.info(ln) if self._live is None else None
         if self._live is not None and self._render_panel:
+            snap = self._panel_snapshot()
+            if snap == getattr(self, "_last_panel_snap", None):
+                return   # btop: dữ liệu & giây đồng hồ chưa đổi → bỏ redraw
+            self._last_panel_snap = snap
             try:
                 self._live.update(self._render_panel(lines))
             except Exception:

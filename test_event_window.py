@@ -6,9 +6,11 @@ Chạy: python3 -m pytest test_event_window.py -q
 Toàn bộ HTTP được mock — KHÔNG gọi mạng thật.
 """
 import datetime as _dt
+import io
 import json
 import os
 import pathlib
+import re
 import signal
 import subprocess
 import sys
@@ -1402,6 +1404,145 @@ class TestRCTFPagination(unittest.TestCase):
         result = p.fetch_scoreboard()
         self.assertEqual(result["my_rank"], "101th")
         self.assertEqual(result["my_score"], 10000 - 100)
+
+
+# ----------------------------------------------------------------------
+# Watch panel render — btop layout (header clock + notices +
+# mini-scoreboard + footer). Toàn bộ render mock, không gọi mạng.
+# ----------------------------------------------------------------------
+
+def _render_plain(renderable, width=100):
+    """Render rich renderable ra text thuần (không ANSI) để assert."""
+    from rich.console import Console
+    buf = io.StringIO()
+    console = Console(width=width, file=buf, force_terminal=False,
+                      legacy_windows=False)
+    console.print(renderable)
+    return buf.getvalue()
+
+
+class TestRenderPanelBtop(TempWorkspaceCase):
+    def _svc(self):
+        svc = WatchService(str(self.ws), once=True, use_live_ui=False)
+        svc.platform = FakeWatchPlatform()
+        now = _dt.datetime.now(_dt.timezone.utc)
+        svc.guard = WindowGuard(now - _dt.timedelta(hours=1),
+                                now + _dt.timedelta(hours=4))
+        return svc
+
+    # -- countdown format + trạng thái window --------------------------
+    def test_render_contains_countdown_and_status(self):
+        svc = self._svc()
+        panel = svc._render_panel([])
+        self.assertIsNotNone(panel)
+        text = _render_plain(panel)
+        # fmt_countdown: "3h59m59s" hoặc "59m59s"
+        self.assertIsNotNone(
+            re.search(r"\d+h\d{2}m\d{2}s|\d{1,2}m\d{2}s", text),
+            f"không thấy countdown trong:\n{text}")
+        self.assertIn("🔴 LIVE", text)
+        self.assertIn("kết thúc sau", text)
+        self.assertIn("PTIT CTF 2026", text)   # tên giải từ challenges.json
+
+    def test_render_before_state_counts_to_start(self):
+        svc = self._svc()
+        now = _dt.datetime.now(_dt.timezone.utc)
+        svc.guard = WindowGuard(now + _dt.timedelta(minutes=30),
+                                now + _dt.timedelta(hours=4))
+        text = _render_plain(svc._render_panel([]))
+        self.assertIn("⏳", text)
+        self.assertIn("bắt đầu sau", text)
+
+    def test_render_clock_skew_icon_when_offset_present(self):
+        svc = self._svc()
+        self.assertNotIn("🕐", _render_plain(svc._render_panel([])))
+        svc.guard.apply_server_offset(150.0)
+        self.assertIn("🕐", _render_plain(svc._render_panel([])))
+
+    def test_render_ended_state_dimmed(self):
+        svc = self._svc()
+        now = _dt.datetime.now(_dt.timezone.utc)
+        svc.guard = WindowGuard(now - _dt.timedelta(hours=5),
+                                now - _dt.timedelta(hours=2))
+        text = _render_plain(svc._render_panel([]))
+        self.assertIn("✅ ended", text)
+        self.assertNotIn("🔴 LIVE", text)
+
+    # -- footer bindings ------------------------------------------------
+    def test_footer_bindings_present(self):
+        svc = self._svc()
+        text = _render_plain(svc._render_panel([], width=100))
+        for binding in ("q thoát", "p pause", "r refresh-now"):
+            self.assertIn(binding, text,
+                          f"thiếu binding '{binding}' trong footer")
+
+    # -- mini-scoreboard: top-5 + meter gradient chuẩn hoá theo #1 ------
+    def test_mini_scoreboard_top5_and_full_meter_for_first(self):
+        svc = self._svc()
+        svc._mini_sb_rows = [{"pos": i + 1, "name": f"Team{i}",
+                              "score": 500 - 100 * i} for i in range(6)]
+        text = _render_plain(svc._render_panel([], width=100))
+        for i in range(5):
+            self.assertIn(f"Team{i}", text)
+        self.assertNotIn("Team5", text)          # chỉ top-5
+        meter_w = 16
+        self.assertIn("█" * meter_w, text)       # #1 → meter đầy (100%)
+
+    def test_mini_scoreboard_empty_placeholder_when_no_data(self):
+        svc = self._svc()
+        text = _render_plain(svc._render_panel([], width=100))
+        self.assertIn("chưa có dữ liệu", text)
+
+    # -- challenges summary ----------------------------------------------
+    def test_challenges_summary_new_count_this_tick(self):
+        svc = self._svc()
+        svc._known_chall_count = 3
+        first = _render_plain(svc._render_panel([]))   # baseline
+        self.assertNotIn("✨ +", first)
+        svc._known_chall_count = 5                     # tick mới +2 bài
+        second = _render_plain(svc._render_panel([]))
+        self.assertIn("✨ +2", second)
+
+    # -- skip-refresh theo snapshot --------------------------------------
+    def test_snapshot_skip_refresh_when_data_unchanged(self):
+        import ctf_downloader.services.watch_service as wsm
+        svc = self._svc()
+        fake_live = MagicMock()
+        fake_live.update.reset_mock()
+        svc._live = fake_live
+        with patch.object(wsm.time, "time", return_value=1000.0):
+            svc._refresh_live(["📢 thông báo"])   # lần đầu → update
+            svc._refresh_live([])                  # cùng giây + cùng dữ liệu → skip
+            self.assertEqual(fake_live.update.call_count, 1)
+        with patch.object(wsm.time, "time", return_value=1005.0):
+            svc._refresh_live([])                  # giây mới (đồng hồ tick) → update
+            self.assertEqual(fake_live.update.call_count, 2)
+
+    def test_snapshot_skip_redraws_on_data_change_same_second(self):
+        import ctf_downloader.services.watch_service as wsm
+        svc = self._svc()
+        fake_live = MagicMock()
+        svc._live = fake_live
+        with patch.object(wsm.time, "time", return_value=1000.0):
+            svc._refresh_live(["📢 a"])
+            svc._refresh_live(["📢 b"])            # feed đổi dù cùng giây
+            self.assertEqual(fake_live.update.call_count, 2)
+
+    # -- degrade: width < 80 bỏ scoreboard -------------------------------
+    def test_degrade_narrow_drops_scoreboard_keeps_notices_countdown(self):
+        svc = self._svc()
+        svc._mini_sb_rows = [{"pos": i + 1, "name": f"T{i}", "score": 100 * i}
+                             for i in range(5)]
+        svc._feed.append("📢 hello")
+        wide = _render_plain(svc._render_panel([], width=100), width=100)
+        narrow = _render_plain(svc._render_panel([], width=70), width=70)
+        self.assertIn("🏆", wide)
+        self.assertIn("█", wide)
+        self.assertNotIn("🏆", narrow)
+        self.assertNotIn("█", narrow)
+        # notices + countdown vẫn còn ở bản degrade
+        self.assertIn("📢 hello", narrow)
+        self.assertIn("🔴 LIVE", narrow)
 
 
 if __name__ == "__main__":
