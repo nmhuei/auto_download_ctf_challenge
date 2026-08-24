@@ -105,3 +105,28 @@ EventWindow cũng mirror vào `challenges.json.ctf_info.event_window` cho SUMMAR
 - Không push-notification desktop (v1 chỉ terminal).
 - Không tự sinh systemd unit/crontab.
 - Không submit flag tự động theo lịch (sniper mode — backlog P2 riêng).
+
+## 9. Instance Keep-Alive (bổ sung theo yêu cầu user)
+
+Hai cơ chế cốt lõi của instance: (1) **bật** (start) đã có; (2) **duy trì** (extend) cần tự động hoá:
+
+### Lệnh
+- `ctf instance --id N --auto-extend` — giữ sống 1 container
+- `ctf instance --auto-extend-all` — giữ sống mọi container running của workspace
+- `ctf watch` — tick keep-alive là một task trong scheduler (interval 60s)
+
+### Cơ chế per-platform
+| Platform | Dữ liệu | Cửa sổ extend | Giới hạn |
+|---|---|---|---|
+| GZCTF | `expectStopAt` (challenge detail context.closeTime) | chỉ nhận trong RenewalWindow ~10' cuối (mặc định); gọi sớm → 400 | +ExtensionDuration/lần (mặc định 120'); vô hạn lượt |
+| CTFd whale | GET container `remaining_time` | renew bất kỳ lúc nào (PATCH) | `docker_max_renew_count` mặc định 5 lần |
+
+### Hành vi WatchKeepAlive.tick()
+1. Đọc `expectStopAt`/`remaining_time` mọi container đang tracking → dashboard hiển thị đếm ngược ⏱️.
+2. Khi remaining <= RenewalWindow (GZCTF) hoặc < 10' (whale): tự gọi extend, ghi log "🔄 Extended flask-jail +120m".
+3. Whale: đếm renew_count; còn ≤1 lượt → icon 🔴 cảnh báo; hết lượt mà remaining thấp → 📢 "container sẽ chết sau X phút — không extend được nữa".
+4. Container chết bất ngờ (status Destroyed khi poll): cập nhật metadata.instance_info.status + 📢 báo.
+5. Sau end-of-window (EventWindow hết): dừng auto-extend trừ khi practice_mode=true.
+
+### Testing
+Mock platform: tick đúng thời điểm cửa sổ (không sớm hơn — tránh 400 GZCTF); whale hết lượt → không gọi PATCH nữa; poll phát hiện Destroyed → sync local.
