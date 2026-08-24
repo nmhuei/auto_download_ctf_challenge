@@ -1,20 +1,20 @@
+"""Unified CLI: định nghĩa argparse + dispatch. Logic command nằm ở cli_commands
+(lớp mỏng gọi services); script legacy nằm ở cli_legacy."""
+import argparse
 import os
 import sys
-import argparse
-from typing import Optional
-from rich.prompt import Prompt, Confirm
 
-from .config import DownloaderConfig
-from .core import CTFDownloader
-from .submitter import FlagSubmitter
-from .instance_manager import InstanceManager
-from .dashboard import CTFDashboard
+from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test cũ
+    get_auth_for_workspace,
+    handle_instance,
+    handle_pull,
+    handle_rank,
+    handle_status,
+    handle_submit,
+    handle_workspaces,
+)
 from .interactive_menu import launch_interactive_menu
-from .services.auth_service import AuthService
-from .utils.logger import Logger, console
 
-def get_auth_for_workspace(ws_path: str, cookie_arg: Optional[str], token_arg: Optional[str]):
-    return AuthService.resolve(ws_path, cookie_arg=cookie_arg, token_arg=token_arg)
 
 def build_unified_parser():
     parser = argparse.ArgumentParser(
@@ -122,183 +122,6 @@ Quick Examples:
 
     return parser
 
-def handle_pull(args):
-    if args.interactive or not args.url:
-        launch_interactive_menu()
-        return
-
-    cookie_val = args.cookie
-    if cookie_val and os.path.isfile(cookie_val):
-        with open(cookie_val, 'r', encoding='utf-8') as f:
-            cookie_val = f.read().strip()
-
-    config = DownloaderConfig(
-        url=args.url,
-        cookie=cookie_val,
-        token=args.token,
-        output_dir=args.output,
-        threads=args.threads,
-        download_third_party=not args.no_third_party,
-        create_solve_template=not args.no_template,
-        force_redownload=args.force,
-        timeout=args.timeout,
-        categories=args.category,
-        exclude_categories=args.exclude
-    )
-
-    try:
-        downloader = CTFDownloader(config)
-        success = downloader.run()
-        if not success:
-            sys.exit(1)
-    except KeyboardInterrupt:
-        console.print("[bold red][!] Download aborted by user.[/bold red]")
-        sys.exit(130)
-    except Exception as e:
-        Logger.error(f'Fatal error during pull: {e}')
-        sys.exit(1)
-
-def handle_status(args):
-    dash = CTFDashboard(args.workspace)
-    dash.render_tree(
-        filter_cat=args.category,
-        only_unsolved=args.unsolved,
-        only_solved=args.solved,
-        only_container=args.container
-    )
-
-def handle_workspaces(args):
-    base_dir = os.path.abspath(os.path.expanduser(args.dir))
-    print('=' * 85)
-    print(f' 📁 SCANNING ALL CTF WORKSPACES IN: {base_dir}')
-    print('=' * 85)
-    print(f'{"CTF Competition":<35} | {"Platform":<10} | {"Solved/Total":<14} | {"Progress":<15}')
-    print('=' * 85)
-    
-    if not os.path.exists(base_dir):
-        Logger.warning(f'Directory {base_dir} does not exist.')
-        return
-
-    for entry in sorted(os.listdir(base_dir)):
-        full_p = os.path.join(base_dir, entry)
-        if os.path.isdir(full_p):
-            dash = CTFDashboard(full_p)
-            stats = dash.get_summary_stats()
-            if stats['total_challenges'] > 0:
-                title = stats['title'][:35]
-                plat = stats['platform'][:10].upper()
-                solv_str = f"{stats['solved_challenges']}/{stats['total_challenges']}"
-                rate = stats['completion_rate']
-                bar = '█' * int(8 * rate // 100) + '░' * (8 - int(8 * rate // 100))
-                prog_str = f'[{bar}] {rate:.0f}%'
-                print(f'{title:<35} | {plat:<10} | {solv_str:<14} | {prog_str:<15}')
-    print('=' * 85)
-
-def handle_instance(args):
-    cookie_val, token_val = get_auth_for_workspace(args.workspace, args.cookie, args.token)
-
-    try:
-        mgr = InstanceManager(args.workspace, cookie=cookie_val, token=token_val)
-    except Exception as e:
-        Logger.error(f'Initialization error: {e}')
-        sys.exit(1)
-
-    # 1. List
-    if args.action == 'list' or args.list:
-        containers = mgr.list_containers()
-        if not containers:
-            Logger.info('No dynamic container challenges found in workspace.')
-            return
-        Logger.info(f'Found {len(containers)} dynamic container challenges:')
-        print('='*75)
-        print(f'{"ID":<8} | {"Category":<12} | {"Name":<30} | {"Solves":<8}')
-        print('='*75)
-        for c in containers:
-            solves = c.get('solves_count', c.get('solves', '-'))
-            c_id = str(c.get('id', '?'))
-            c_cat = c.get('category', 'Misc')
-            u_name = c.get('name', 'Unknown')[:30]
-            print(f"{c_id:<8} | {c_cat:<12} | {u_name:<30} | {str(solves):<8}")
-        print('='*75)
-        return
-
-    # 2. Interactive — menu gom về InstanceService.interactive_pick (dùng chung
-    #    với instance.py / interactive_menu)
-    if args.interactive or (not args.action and not args.id and not args.name):
-        mgr.interactive_pick()
-        return
-
-    # 3. Direct action
-    target_chall = mgr.find_challenge(challenge_id=args.id, challenge_name=args.name)
-    if not target_chall:
-        Logger.error(f'Challenge not found for ID={args.id}, Name={args.name}')
-        sys.exit(1)
-    cid = target_chall.get('id')
-
-    act = args.action or 'start'
-    if act == 'start':
-        mgr.start_instance(cid)
-    elif act == 'stop':
-        mgr.stop_instance(cid)
-    elif act == 'extend':
-        mgr.extend_instance(cid)
-    elif act == 'status':
-        st = mgr.get_status(cid)
-        Logger.info(f'Status for ID {cid}:')
-        for k, v in st.items():
-            print(f'  {k}: {v}')
-
-def handle_submit(args):
-    cookie_val, token_val = get_auth_for_workspace(args.workspace, args.cookie, args.token)
-
-    submitter = FlagSubmitter(
-        url=args.url,
-        cookie=cookie_val,
-        token=token_val,
-        workspace_dir=args.workspace,
-        flag_format=getattr(args, 'flag_format', None)
-    )
-
-    if args.auto:
-        submitter.auto_submit_all(force=getattr(args, 'force', False))
-        return
-
-    chall_id = args.id or (args.target if args.target and args.target.isdigit() else None)
-    chall_name = args.name or (args.target if args.target and not args.target.isdigit() else None)
-    flag_value = args.flag or args.flag_val
-    force_flag = getattr(args, 'force', False)
-
-    if args.interactive or (not chall_id and not chall_name and not flag_value):
-        submitter.interactive_submit(force=force_flag)
-        return
-
-    if not flag_value:
-        Logger.error('Please specify the flag string with -f or as an argument.')
-        sys.exit(1)
-
-    success, message = submitter.submit_single_flag(
-        challenge_id=chall_id,
-        challenge_name=chall_name,
-        flag_value=flag_value,
-        force=force_flag
-    )
-    if not success:
-        sys.exit(1)
-
-def handle_rank(args):
-    from .ranking import RankingManager
-    cookie_val, token_val = get_auth_for_workspace(args.workspace, args.cookie, args.token)
-    try:
-        mgr = RankingManager(
-            workspace_path=args.workspace,
-            url=args.url,
-            cookie=cookie_val,
-            token=token_val
-        )
-        mgr.display_and_update(top_n=args.top, update_docs=not args.no_docs)
-    except Exception as e:
-        Logger.error(f'Failed to fetch ranking: {e}')
-        sys.exit(1)
 
 def main():
     if len(sys.argv) == 1:
@@ -333,6 +156,7 @@ def main():
         launch_interactive_menu(workspace_path=args.workspace, cookie=args.cookie, token=args.token)
     else:
         launch_interactive_menu()
+
 
 if __name__ == '__main__':
     main()

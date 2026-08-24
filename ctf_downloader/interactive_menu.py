@@ -10,6 +10,7 @@ from .core import CTFDownloader
 from .config import DownloaderConfig
 from .utils.logger import Logger, console
 
+from .services.status_service import StatusService
 from .storage.global_config import (  # noqa: F401 — re-export để giữ tương thích
     CONFIG_DIR,
     GLOBAL_CONFIG_FILE,
@@ -401,27 +402,9 @@ class CTFInteractiveConsole:
 
     def _menu_scan_workspaces(self):
         base_dir = os.path.expanduser('~/Workspace/CTF')
-        print('\n' + '=' * 85)
-        print(f' 📁 TỔNG KẾT TOÀN BỘ CÁC GIẢI ĐẤU TRONG: {base_dir}')
-        print('=' * 85)
-        print(f'{"Tên Giải Đấu":<35} | {"Nền tảng":<10} | {"Đã giải/Tổng":<14} | {"Tiến độ":<15}')
-        print('=' * 85)
-        
-        if os.path.exists(base_dir):
-            for entry in sorted(os.listdir(base_dir)):
-                full_p = os.path.join(base_dir, entry)
-                if os.path.isdir(full_p):
-                    dash = CTFDashboard(full_p)
-                    stats = dash.get_summary_stats()
-                    if stats.get('total_challenges', 0) > 0:
-                        title = stats.get('title', entry)[:35]
-                        plat = stats.get('platform', 'generic')[:10].upper()
-                        solv_str = f"{stats.get('solved_challenges', 0)}/{stats.get('total_challenges', 0)}"
-                        rate = stats.get('completion_rate', 0)
-                        bar = '█' * int(8 * rate // 100) + '░' * (8 - int(8 * rate // 100))
-                        prog_str = f'[{bar}] {rate:.0f}%'
-                        print(f'{title:<35} | {plat:<10} | {solv_str:<14} | {prog_str:<15}')
-        print('=' * 85)
+        # Bản duy nhất của bảng scan nằm ở StatusService.scan_all_workspaces
+        # (dùng chung với cli handle_workspaces / manage.py -A)
+        StatusService.scan_all_workspaces(base_dir)
         input('\nNhấn Enter để quay lại...')
 
     def _menu_configure_auth(self):
