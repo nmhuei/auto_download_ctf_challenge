@@ -629,15 +629,18 @@ class InstanceKeepAlive:
                        entry: Optional[str] = None) -> None:
         if self.repo is None:
             return
-        for meta_path in self.repo.iter_challenges():
-            meta = self.repo.read_metadata(meta_path)
-            if not meta or str(meta.get("id")) != str(tracker.challenge_id):
-                continue
+        now_str = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        def _mutate(meta: dict) -> dict:
+            meta = dict(meta) if isinstance(meta, dict) else {}
+            if str(meta.get("id")) != str(tracker.challenge_id):
+                # Không phải challenge đích: giữ nguyên (no-op).
+                return meta
             inst = meta.get("instance_info")
             if not isinstance(inst, dict):
                 inst = {}
             inst["status"] = status
-            inst["last_updated"] = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            inst["last_updated"] = now_str
             if entry:
                 inst["active_instance"] = entry
                 inst["remaining_time"] = tracker.remaining
@@ -645,11 +648,17 @@ class InstanceKeepAlive:
                 inst["active_instance"] = None
                 inst["remaining_time"] = 0
             meta["instance_info"] = inst
+            return meta
+
+        for meta_path in self.repo.iter_challenges():
             try:
-                self.repo.write_metadata(meta_path, meta)
+                # update_metadata: read-mutate-write dưới cùng lockfile flock
+                # với update_status (tránh lost update đa tiến trình).
+                updated = self.repo.update_metadata(meta_path, _mutate)
             except Exception:
-                pass
-            break
+                continue
+            if str(updated.get("id")) == str(tracker.challenge_id):
+                break
 
 
 # Alias theo tên trong spec §9

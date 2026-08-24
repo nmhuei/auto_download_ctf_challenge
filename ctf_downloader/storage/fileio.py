@@ -57,8 +57,15 @@ def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, Non
     - BOM UTF-8 ở đầu file được tự động bỏ qua (utf-8-sig).
     - Gọi mutator(state); nếu mutator trả None thì giữ nguyên state.
     - Ghi lại bằng atomic write (trong phạm vi lock), trả về dict cuối cùng.
+    - Nếu đích là symlink: resolve sang ĐÍCH THẬT trước khi tính lock path và
+      ghi (nhất quán với atomic_write_text) — os.replace lên path symlink sẽ
+      thay thế link bằng file thường, target gốc không bao giờ được cập nhật.
+      Resolve trước cũng đảm bảo mọi caller qua symlink khác nhau dùng CÙNG
+      một lock file (lock của target thật).
     """
     p = Path(path)
+    if p.is_symlink():
+        p = p.resolve()
     p.parent.mkdir(parents=True, exist_ok=True)
     lock_path = p.with_name(p.name + ".lock")
 

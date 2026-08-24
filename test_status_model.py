@@ -993,5 +993,160 @@ class TestComputeStatusInfPointsGuard(TempWorkspaceCase):
                       f"description độc tự nâng writeup: {st['writeup']}")
 
 
+# ----------------------------------------------------------------------
+# Wave-3 cleanup: sync_via_repo qua update_metadata + symlink-consistent
+# locked_update_json
+# ----------------------------------------------------------------------
+
+class TestSyncViaRepoUsesUpdateMetadata(unittest.TestCase):
+    """_sync_via_repo PHẢI đi qua repo.update_metadata (flock cùng lockfile
+    với update_status) — read_metadata + write_metadata unlocked gây lost
+    update đa tiến trình."""
+
+    def _make_keepalive(self, repo):
+        from ctf_downloader.services.instance_keepalive import (
+            InstanceKeepAlive, InstanceTracker)
+
+        tracker = InstanceTracker("chall-1", "Chall 1")
+        tracker.remaining = 120.0
+        ka = InstanceKeepAlive(svc=MagicMock(), repo=repo)
+        return ka, tracker
+
+    def test_goes_through_update_metadata_not_write(self):
+        captured = {}
+
+        class FakeRepo:
+            def iter_challenges(self):
+                return ["/ws/Web/chall_a/metadata.json"]
+
+            def update_metadata(self, path, mutator):
+                captured["path"] = path
+                meta = {"id": "chall-1",
+                        "instance_info": {"status": "running"}}
+                return mutator(meta)
+
+        repo = FakeRepo()
+        repo.write_metadata = MagicMock()
+        ka, tracker = self._make_keepalive(repo)
+        ka._sync_via_repo(tracker, status="stopped")
+
+        self.assertEqual(captured.get("path"),
+                         "/ws/Web/chall_a/metadata.json")
+        repo.write_metadata.assert_not_called()
+
+    def test_mutator_updates_instance_info(self):
+        class FakeRepo:
+            def iter_challenges(self):
+                return ["/ws/Web/chall_a/metadata.json"]
+
+            def update_metadata(self, path, mutator):
+                return mutator({"id": "chall-1"})
+
+        ka, tracker = self._make_keepalive(FakeRepo())
+        ka._sync_via_repo(tracker, status="running", entry="tcp://h:1")
+
+        # Kiểm tra mutation bằng cách chạy lại mutator qua repo ghi ra file.
+        out = {}
+
+        class CaptureRepo:
+            def iter_challenges(self):
+                return ["/ws/metadata.json"]
+
+            def update_metadata(self, path, mutator):
+                out["meta"] = mutator({"id": "chall-1"})
+                return out["meta"]
+
+        ka2, _ = self._make_keepalive(CaptureRepo())
+        ka2._sync_via_repo(tracker, status="running", entry="tcp://h:1")
+        inst = out["meta"]["instance_info"]
+        self.assertEqual(inst["status"], "running")
+        self.assertEqual(inst["active_instance"], "tcp://h:1")
+        self.assertIn("last_updated", inst)
+
+    def test_skips_non_matching_id_without_error(self):
+        seen = []
+
+        class FakeRepo:
+            def iter_challenges(self):
+                return ["/ws/a/metadata.json", "/ws/b/metadata.json"]
+
+            def update_metadata(self, path, mutator):
+                seen.append(path)
+                return mutator({"id": "other"})
+
+
+        ka, tracker = self._make_keepalive(FakeRepo())
+        ka._sync_via_repo(tracker, status="stopped")  # không raise
+        self.assertEqual(seen, ["/ws/a/metadata.json", "/ws/b/metadata.json"])
+
+
+class TestLockedUpdateJsonSymlink(TempWorkspaceCase):
+    """locked_update_json phải nhất quán với atomic_write_text về symlink:
+    resolve sang đích thật trước khi tính lock path + ghi — link giữ nguyên."""
+
+    def test_symlink_preserved_target_updated(self):
+        target = self.root / "_shared" / "metadata.json"
+        target.parent.mkdir(exist_ok=True)
+        target.write_text(json.dumps({"id": 1, "n": 0}), encoding="utf-8")
+
+        if self.meta_path.exists() or self.meta_path.is_symlink():
+            self.meta_path.unlink()
+        os.symlink(target, self.meta_path)
+
+        from ctf_downloader.storage.fileio import locked_update_json
+        result = locked_update_json(
+            self.meta_path, lambda m: {**m, "n": m.get("n", 0) + 1})
+
+        self.assertTrue(self.meta_path.is_symlink(),
+                        "os.replace đã thay symlink bằng file thường")
+        self.assertEqual(os.path.realpath(self.meta_path), str(target))
+        self.assertEqual(result["n"], 1)
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["n"], 1)
+        self.assertFalse((self.root / "Web" / "chall_a" / "metadata.json.tmp").exists())
+
+    def test_lock_file_lives_beside_real_target(self):
+        target = self.root / "_shared" / "metadata.json"
+        target.parent.mkdir(exist_ok=True)
+        target.write_text(json.dumps({"id": 1}), encoding="utf-8")
+
+        if self.meta_path.exists() or self.meta_path.is_symlink():
+            self.meta_path.unlink()
+        os.symlink(target, self.meta_path)
+
+        from ctf_downloader.storage.fileio import locked_update_json
+        locked_update_json(self.meta_path, lambda m: {**m})
+
+        self.assertTrue((target.parent / "metadata.json.lock").exists(),
+                        "lock phải tính trên đích thật (dùng chung lockfile "
+                        "với caller đi đường dẫn khác)")
+        self.assertFalse(
+            (self.meta_path.parent / "metadata.json.lock").exists())
+
+    def test_multiprocess_no_lost_update_through_symlink(self):
+        """Nhiều process increment cùng counter qua symlink — không mất update."""
+        target = self.root / "_shared" / "metadata.json"
+        target.parent.mkdir(exist_ok=True)
+        target.write_text(json.dumps({"n": 0}), encoding="utf-8")
+
+        link = self.root / "link_meta.json"
+        os.symlink(target, link)
+
+        root_dir = os.path.dirname(os.path.abspath(__file__))
+        script = (
+            "import sys; sys.path.insert(0, %r)\n"
+            "from ctf_downloader.storage.fileio import locked_update_json\n"
+            "for _ in range(10):\n"
+            "    locked_update_json(sys.argv[1], lambda m: {**m, 'n': m.get('n', 0) + 1})\n"
+        ) % root_dir
+
+        procs = [subprocess.Popen([sys.executable, "-c", script, str(link)])
+                 for _ in range(4)]
+        for p in procs:
+            self.assertEqual(p.wait(timeout=60), 0)
+
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["n"], 40,
+                         "lost update: các process ghi đè lẫn nhau")
+
+
 if __name__ == "__main__":
     unittest.main()
