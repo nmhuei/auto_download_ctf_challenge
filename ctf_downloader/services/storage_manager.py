@@ -17,15 +17,22 @@ Trách nhiệm (spec storage-manager):
   chỉ dành cho CLI gọi sau khi user confirm).
 - **suggest_actions**: gợi ý tiếng Việt (archive ws ended >7 ngày, warn vượt
   ngưỡng, cảnh báo đĩa gần đầy).
+- **export_workspace**: xuất zip bản chia sẻ/kho KHÔNG lộ flag (strip-secrets):
+  redact flag thật trong README/writeup thành ``[REDACTED]``, bỏ ``flag.txt``
+  và ``submit_history.json``, xoá field ``submitted_flag`` khỏi metadata.json.
+  KHÔNG đụng workspace gốc — chỉ tạo zip.
 
 Method thuần, không dính I/O mạng, dễ test trong tmpdir.
 """
 import datetime as _dt
 import fnmatch
+import json as _json
 import os
+import re as _re
 import shutil
 import subprocess
 import tarfile
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -50,6 +57,19 @@ DEFAULT_EXCLUDE_PATHS = (".ctf/watch_state.json",)
 
 _ARCHIVE_DIR_NAME = "_archives"
 _DELETED_PREFIX = "_DELETED_"
+
+# --- Export strip-secrets (P1-5) -----------------------------------------
+# Placeholder giữ nguyên khi redact (không phải flag thật)
+_EXPORT_PLACEHOLDER_MARKER = "[REDACTED]"
+# Regex generic flag: <prefix chữ/số/gạch dưới>{nội dung không chứa brace}
+_GENERIC_FLAG_RE = _re.compile(
+    r"([A-Za-z][A-Za-z0-9_]{1,31})\{([^{}\n]{2,120})\}"
+)
+# File text redact được: README* hoặc *.md/*.txt, hoặc bất kỳ file nào nằm
+# trong thư mục writeup/
+_REDACTABLE_NAME_PATTERNS = ("README*", "*.md", "*.txt")
+# File bị loại KHỎI zip hoàn toàn khi strip_secrets
+_STRIP_ENTIRE_FILES = ("flag.txt", "submit_history.json")
 
 _TIMEZONE = _dt.timezone.utc
 
@@ -524,3 +544,197 @@ class StorageManager:
         if not actions:
             actions.append("✅ Mọi thứ ổn — không có hành động nào cần thiết.")
         return actions
+
+    # ------------------------------------------------------------------
+    # 6. export_workspace (P1-5: zip strip-flags)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def export_workspace(
+        ws_path: str | os.PathLike,
+        out_path: str | os.PathLike | None = None,
+        *,
+        strip_secrets: bool = True,
+    ) -> Dict[str, Any]:
+        """Xuất workspace thành zip bản chia sẻ/kho, tuỳ chọn strip secrets.
+
+        Tạo ``<name>_export_<YYYYMMDD>.zip`` (mặc định cạnh ``_archives``,
+        hoặc đúng đường dẫn ``out_path`` — nếu ``out_path`` là thư mục hiện
+        có thì đặt file mặc định bên trong).
+
+        Exclude giống archive_workspace: ``__pycache__/``, ``*.pyc``,
+        ``.pytest_cache/``, ``.git/``, ``*.part``, ``*.tmp``,
+        ``.ctf/watch_state.json``.
+
+        ``strip_secrets=True``:
+        - README/writeup text: flag thật → ``[REDACTED]`` (regex generic +
+          ``challenges.json → ctf_info.flag_format`` nếu đọc được; placeholder
+          ``FLAG{...}`` giữ nguyên);
+        - mọi ``flag.txt``: loại khỏi zip;
+        - ``submit_history.json``: loại nguyên file;
+        - ``metadata.json``: xoá key ``submitted_flag`` (parse JSON → ghi lại).
+
+        KHÔNG đụng workspace gốc — chỉ đọc. Trả
+        ``{zip_path, files_count, stripped_count}`` với ``stripped_count``
+        là tổng số chỗ đã redact/loại bỏ.
+        """
+        src = Path(ws_path).expanduser().resolve()
+        if not src.is_dir():
+            raise StorageError(f"Workspace không tồn tại: {src}")
+
+        stamp = _dt.datetime.now(_TIMEZONE).strftime("%Y%m%d")
+        default_name = f"{src.name}_export_{stamp}.zip"
+        if out_path is None:
+            dest_dir = src.parent / _ARCHIVE_DIR_NAME
+            zip_path = dest_dir / default_name
+        else:
+            out = Path(out_path).expanduser()
+            if out.is_dir():
+                zip_path = out / default_name
+            else:
+                zip_path = out
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+
+        flag_format_re = (
+            StorageManager._load_flag_format_regex(src)
+            if strip_secrets else None
+        )
+
+        files_count = 0
+        stripped_count = 0
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for root, dirnames, filenames in os.walk(src):
+                dirnames[:] = sorted(
+                    d for d in dirnames
+                    if d not in DEFAULT_EXCLUDE_DIRS
+                    and not StorageManager._dir_excluded(root, d, src, [])
+                )
+                for fname in sorted(filenames):
+                    fpath = Path(root) / fname
+                    rel = fpath.relative_to(src).as_posix()
+                    if StorageManager._file_excluded(rel, []):
+                        continue
+
+                    if strip_secrets:
+                        if fname in _STRIP_ENTIRE_FILES:
+                            stripped_count += 1
+                            continue
+                        payload, redacted = StorageManager._transform_for_export(
+                            fpath, fname, rel, flag_format_re
+                        )
+                        stripped_count += redacted
+                    else:
+                        try:
+                            payload = fpath.read_bytes()
+                        except OSError:
+                            continue
+
+                    zf.writestr(rel, payload)
+                    files_count += 1
+
+        return {
+            "zip_path": str(zip_path),
+            "files_count": files_count,
+            "stripped_count": stripped_count,
+        }
+
+    # -- helpers cho export_workspace -------------------------------------
+
+    @staticmethod
+    def _load_flag_format_regex(ws_path: Path) -> Optional[_re.Pattern]:
+        """Đọc ``ctf_info.flag_format`` từ challenges.json → compiled regex.
+
+        Thiếu/không đọc được/hỏng regex → ``None`` (fallback còn generic).
+        Bỏ anchor ``^``/``$`` vì flag trong writeup thường nằm giữa dòng.
+        """
+        try:
+            data = WorkspaceRepo(ws_path).read_challenges()
+            fmt = ((data.get("ctf_info") or {}).get("flag_format")) or None
+            if not fmt or not isinstance(fmt, str):
+                return None
+            body = fmt.strip()
+            if body.startswith("^"):
+                body = body[1:]
+            if body.endswith("$"):
+                body = body[:-1]
+            return _re.compile(body)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _is_redactable_text(fname: str, rel: str) -> bool:
+        """True nếu là file text đáng redact: README*/*.md/*.txt hoặc nằm
+        trong thư mục ``writeup/``."""
+        parts = Path(rel).parts
+        if any(part == "writeup" for part in parts[:-1]):
+            return True
+        return any(fnmatch.fnmatch(fname, pat) for pat in _REDACTABLE_NAME_PATTERNS)
+
+    @staticmethod
+    def _redact_text(text: str, flag_format_re: Optional[_re.Pattern]) -> Tuple[str, int]:
+        """Thay flag thật bằng ``[REDACTED]``, giữ placeholder ``FLAG{...}``.
+
+        Trả ``(text_mới, số_lần_redact)``.
+        """
+        count = 0
+
+        def _generic_sub(match: "_re.Match") -> str:
+            nonlocal count
+            inner = match.group(2)
+            if inner == "...":  # placeholder FLAG{...} — giữ nguyên
+                return match.group(0)
+            count += 1
+            return _EXPORT_PLACEHOLDER_MARKER
+
+        result = _GENERIC_FLAG_RE.sub(_generic_sub, text)
+
+        if flag_format_re is not None:
+            def _format_sub(match: "_re.Match") -> str:
+                nonlocal count
+                # Đoạn khớp có thể đã bị generic redact trước đó — không đếm kép.
+                if match.group(0) == _EXPORT_PLACEHOLDER_MARKER:
+                    return match.group(0)
+                count += 1
+                return _EXPORT_PLACEHOLDER_MARKER
+
+            result = flag_format_re.sub(_format_sub, result)
+
+        return result, count
+
+    @staticmethod
+    def _transform_for_export(
+        fpath: Path,
+        fname: str,
+        rel: str,
+        flag_format_re: Optional[_re.Pattern],
+    ) -> Tuple[bytes, int]:
+        """Chuẩn bị nội dung một file cho zip strip-secrets.
+
+        Trả ``(bytes_ghi_vào_zip, số_redact)``. metadata.json mất key
+        ``submitted_flag`` tính 1 redact; file nhị phân/giữ nguyên → 0.
+        """
+        if fname == "metadata.json":
+            try:
+                raw = fpath.read_text(encoding="utf-8-sig")
+                data = _json.loads(raw)
+            except (OSError, ValueError):
+                return fpath.read_bytes(), 0
+            if isinstance(data, dict) and "submitted_flag" in data:
+                del data["submitted_flag"]
+                return (_json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8"), 1
+            return raw.encode("utf-8"), 0
+
+        if StorageManager._is_redactable_text(fname, rel):
+            try:
+                raw = fpath.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                return fpath.read_bytes(), 0
+            except OSError:
+                return b"", 0
+            new_text, n = StorageManager._redact_text(raw, flag_format_re)
+            return new_text.encode("utf-8"), n
+
+        try:
+            return fpath.read_bytes(), 0
+        except OSError:
+            return b"", 0

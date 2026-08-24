@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import zipfile
 import tempfile
 import unittest
 
@@ -397,6 +398,143 @@ class TestParseEventEnd(unittest.TestCase):
         self.assertEqual(
             parse_event_end(end.strftime("%Y-%m-%dT%H:%M:%SZ")),
             end)
+
+
+class TestExportWorkspace(unittest.TestCase):
+    """P1-5: export_workspace zip strip-secrets."""
+
+    REAL_FLAG = "PTITCTF{sup3r_s3cr3t}"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="storage_export_test_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.base = os.path.join(self.tmp, "CTF")
+        self.ws = os.path.join(self.base, "gamma")
+        self._make_ws(self.ws)
+
+    def _make_ws(self, ws):
+        _write(os.path.join(ws, "challenges.json"), json.dumps({
+            "ctf_info": {
+                "event_window": {"start": 1756000000, "end": 1756086400},
+                "flag_format": r"^PTITCTF\{.+\}$",
+            },
+        }))
+        # flag.txt phải bị loại khỏi zip
+        _write(os.path.join(ws, "Web", "chall1", "challenge", "handout.zip"), b"PK")
+        _write(os.path.join(ws, "Web", "chall1", "flag.txt"),
+               f"FLAG={self.REAL_FLAG}\n")
+        # README chứa flag thật (2 lần) + placeholder FLAG{...} giữ nguyên
+        _write(os.path.join(ws, "Web", "chall1", "writeup", "README.md"),
+               f"# Writeup\nFlag la {self.REAL_FLAG}\n"
+               f"Lai la {self.REAL_FLAG} nua.\nPlaceholder FLAG{{...}} giu nguyen.\n")
+        # metadata.json có submitted_flag -> bị xoá key
+        _write(os.path.join(ws, "Web", "chall1", "metadata.json"), json.dumps({
+            "name": "chall1",
+            "submitted_flag": self.REAL_FLAG,
+            "status": "solved",
+        }))
+        # submit_history.json -> bị loại nguyên file
+        _write(os.path.join(ws, "Web", "chall1", "submit_history.json"), json.dumps(
+            {"entries": [{"flag": self.REAL_FLAG, "correct": True}]}))
+        # runtime junk -> excluded như archive
+        _write(os.path.join(ws, "Web", "chall1", "__pycache__", "x.pyc"), b"junk")
+
+    def _read_zip(self, zip_path):
+        entries = {}
+        with zipfile.ZipFile(zip_path) as zf:
+            for name in zf.namelist():
+                entries[name] = zf.read(name)
+        return entries
+
+    def test_strip_secrets_removes_all_traces(self):
+        result = StorageManager.export_workspace(self.ws)
+        self.assertEqual(
+            set(result), {"zip_path", "files_count", "stripped_count"})
+        entries = self._read_zip(result["zip_path"])
+
+        # flag.txt + submit_history.json biến mất; junk excluded
+        self.assertNotIn("Web/chall1/flag.txt", entries)
+        self.assertNotIn("Web/chall1/submit_history.json", entries)
+        self.assertNotIn("Web/chall1/__pycache__/x.pyc", entries)
+
+        # README: không còn flag thật, có [REDACTED], placeholder giữ nguyên
+        readme = entries["Web/chall1/writeup/README.md"].decode("utf-8")
+        self.assertNotIn(self.REAL_FLAG, readme)
+        self.assertEqual(readme.count("[REDACTED]"), 2)
+        self.assertIn("FLAG{...}", readme)
+
+        # metadata.json sạch submitted_flag, giữ key khác
+        meta = json.loads(entries["Web/chall1/metadata.json"].decode("utf-8"))
+        self.assertNotIn("submitted_flag", meta)
+        self.assertEqual(meta["name"], "chall1")
+        self.assertEqual(meta["status"], "solved")
+
+        # Không leak flag ở bất kỳ entry nào còn lại
+        blob = b"\n".join(entries.values())
+        self.assertNotIn(self.REAL_FLAG.encode(), blob)
+
+        # stripped_count: 2 (README) + 1 (metadata) + 1 (flag.txt) + 1 (history)
+        self.assertEqual(result["stripped_count"], 5)
+        # files_count khớp số entry thực tế trong zip
+        self.assertEqual(result["files_count"], len(entries))
+
+    def test_workspace_original_untouched(self):
+        StorageManager.export_workspace(self.ws)
+        self.assertEqual(
+            open(os.path.join(self.ws, "Web", "chall1", "flag.txt")).read(),
+            f"FLAG={self.REAL_FLAG}\n")
+        readme = open(
+            os.path.join(self.ws, "Web", "chall1", "writeup", "README.md")
+        ).read()
+        self.assertIn(self.REAL_FLAG, readme)
+        meta = json.load(open(os.path.join(self.ws, "Web", "chall1", "metadata.json")))
+        self.assertEqual(meta["submitted_flag"], self.REAL_FLAG)
+
+    def test_strip_secrets_false_keeps_everything(self):
+        result = StorageManager.export_workspace(self.ws, strip_secrets=False)
+        self.assertEqual(result["stripped_count"], 0)
+        entries = self._read_zip(result["zip_path"])
+        self.assertIn("Web/chall1/flag.txt", entries)
+        self.assertIn("Web/chall1/submit_history.json", entries)
+        readme = entries["Web/chall1/writeup/README.md"].decode("utf-8")
+        self.assertIn(self.REAL_FLAG, readme)
+        self.assertNotIn("[REDACTED]", readme)
+        meta = json.loads(entries["Web/chall1/metadata.json"].decode("utf-8"))
+        self.assertEqual(meta["submitted_flag"], self.REAL_FLAG)
+
+    def test_default_name_and_location_and_out_path_dir(self):
+        result = StorageManager.export_workspace(self.ws)
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d")
+        expected = os.path.join(
+            self.base, "_archives", f"gamma_export_{stamp}.zip")
+        self.assertEqual(result["zip_path"], expected)
+        self.assertTrue(os.path.isfile(expected))
+
+        out_dir = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(out_dir)
+        result2 = StorageManager.export_workspace(self.ws, out_path=out_dir)
+        self.assertEqual(os.path.dirname(result2["zip_path"]), out_dir)
+        self.assertTrue(os.path.isfile(result2["zip_path"]))
+
+    def test_flag_format_from_challenges_json_used(self):
+        # Flag KHÔNG khớp regex generic (không có {...}) — chỉ bắt được nhờ
+        # ctf_info.flag_format trong challenges.json.
+        ws2 = os.path.join(self.base, "delta")
+        _write(os.path.join(ws2, "challenges.json"), json.dumps(
+            {"ctf_info": {"flag_format": r"SECRET_[a-z]+"}}))
+        _write(os.path.join(ws2, "notes", "README.md"),
+               "The flag is SECRET_hunter2 ok\n")
+        result = StorageManager.export_workspace(ws2)
+        with zipfile.ZipFile(result["zip_path"]) as zf:
+            text = zf.read("notes/README.md").decode("utf-8")
+        self.assertNotIn("SECRET_hunter2", text)
+        self.assertIn("[REDACTED]", text)
+        self.assertGreaterEqual(result["stripped_count"], 1)
+
+    def test_missing_workspace_raises(self):
+        with self.assertRaises(StorageError):
+            StorageManager.export_workspace(
+                os.path.join(self.base, "nope"))
 
 
 if __name__ == "__main__":
