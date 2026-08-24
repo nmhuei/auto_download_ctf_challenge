@@ -3,6 +3,7 @@ import json
 from collections import defaultdict
 from typing import List, Dict, Any
 from ..platforms.base import Challenge, CTFInfo
+from ..storage.constants import SUMMARY_FILES_LINE
 from ..utils.sanitize import sanitize_folder_name
 
 class SummaryGenerator:
@@ -44,7 +45,7 @@ class SummaryGenerator:
         lines.append(f"- **Total Challenges**: {len(challenges)}")
         lines.append(f"- **Total Categories**: {len(by_category)}")
         lines.append(f"- **Total Points Available**: {total_points}")
-        lines.append(f"- **Total Files Downloaded**: {total_files}\n")
+        lines.append(SUMMARY_FILES_LINE.format(total_files=total_files))
 
         # Category Breakdown Table
         lines.append("## 📊 Categories Overview\n")

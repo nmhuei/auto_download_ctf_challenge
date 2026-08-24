@@ -7,6 +7,7 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
 
+from .storage.constants import LIVE_RANK_PREFIX
 from .utils.logger import Logger, console
 from .utils.http_client import create_session
 from .platforms.detector import PlatformDetector
@@ -181,8 +182,8 @@ class RankingManager:
                 with open(summary_path, "r", encoding="utf-8") as f:
                     stext = f.read()
 
-                rank_badge = f"- **Live Rank**: `#{my_rank}` / `{total_teams}` (Team: `{my_team}`)"
-                if "- **Live Rank**:" in stext:
+                rank_badge = f"{LIVE_RANK_PREFIX} `#{my_rank}` / `{total_teams}` (Team: `{my_team}`)"
+                if LIVE_RANK_PREFIX in stext:
                     import re
                     stext = re.sub(r"-\s*\*\*Live Rank\*\*:[^\n]+", rank_badge, stext)
                 elif "- **Total Files Downloaded**:" in stext:

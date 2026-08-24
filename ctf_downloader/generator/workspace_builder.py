@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 from ..platforms.base import Challenge
 from ..extractors.link_extractor import ExtractedLink, ConnectionInfo
 from ..extractors.text_parser import TextParser
+from ..storage.constants import FLAG_PLACEHOLDER, TARGET_CONNECTION_FMT
 from ..utils.sanitize import sanitize_folder_name
 from ..utils.logger import Logger
 
@@ -194,7 +195,7 @@ class WorkspaceBuilder:
         lines.append("## 🚩 Flag & Solution\n")
         status_box = "[x]" if challenge.solved_by_me else "[ ]"
         lines.append(f"- {status_box} Solved\n")
-        lines.append("```\nFLAG{...}\n```\n")
+        lines.append(f"```\n{FLAG_PLACEHOLDER}\n```\n")
         lines.append("### Writeup / Notes\n")
         lines.append("*(Write your solution steps and notes here)*\n")
 
@@ -313,7 +314,7 @@ if __name__ == '__main__':
 
 ## 🔍 Reconnaissance & Vulnerability Analysis
 
-- Target Connection: `{challenge.connection_info or '-'}`
+{TARGET_CONNECTION_FMT.format(info=challenge.connection_info or '-')}
 - Category: `{challenge.category}`
 - Key observations & vulnerability hypothesis:
   *(Document reverse engineering, source code review, or protocol analysis here)*
@@ -333,6 +334,6 @@ python3 ../solver/solve.py
 ## 🚩 Flag
 
 - Status: `- [ ] Solved`
-- Flag: `FLAG{{...}}`
+- Flag: `{FLAG_PLACEHOLDER}`
 """
 

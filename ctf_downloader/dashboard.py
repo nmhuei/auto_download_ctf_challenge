@@ -2,6 +2,7 @@ import os
 import json
 import re
 from typing import Dict, Any, List, Optional
+from .storage.constants import SOLVED_MARKERS_DONE, SOLVED_TODO
 from .utils.logger import Logger
 
 class CTFDashboard:
@@ -34,10 +35,10 @@ class CTFDashboard:
                         if os.path.exists(rp):
                             with open(rp, 'r', encoding='utf-8') as rf:
                                 rtxt = rf.read()
-                                if '- [x] Solved' in rtxt or '- [X] Solved' in rtxt or '✅ Solved' in rtxt or 'Status: ✅' in rtxt:
+                                if any(marker in rtxt for marker in SOLVED_MARKERS_DONE):
                                     is_solved = True
                                     break
-                                elif not is_solved and '- [ ] Solved' in rtxt:
+                                elif not is_solved and SOLVED_TODO in rtxt:
                                     is_solved = False
 
                     m['solved_by_me'] = is_solved
