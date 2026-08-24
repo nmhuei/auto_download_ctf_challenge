@@ -136,7 +136,8 @@ def handle_instance(args):
 
     act = args.action or 'start'
     if act == 'start':
-        svc.start_instance(cid)
+        _start_instance_with_ra_consent(svc, cid,
+                                        assume_yes=bool(getattr(args, 'yes', False)))
     elif act == 'stop':
         svc.stop_instance(cid)
     elif act == 'extend':
@@ -214,6 +215,46 @@ def handle_hoard(args):
     if not ok:
         Logger.error(message)
         sys.exit(1)
+
+
+def _start_instance_with_ra_consent(svc, challenge_id, assume_yes: bool = False):
+    """R-A (spec event-window §9): start/restart khi user đang GIỮ flag của
+    bài dynamic mà recreate CÓ ĐỔI FLAG (whale/platform không rõ) → bắt buộc
+    xác nhận (hoặc --yes); restart xong xoá flag cũ + state found_unverified
+    + note rotate qua InstanceKeepAlive.manual_restart_approved. GZCTF giữ
+    flag → start bình thường."""
+    from .services.instance_keepalive import InstanceKeepAlive
+
+    try:
+        ka = InstanceKeepAlive(svc, repo=getattr(svc, 'repo', None))
+        trackers = ka.discover_containers()
+    except Exception:
+        ka, trackers = None, []
+    tracker = next((t for t in trackers
+                    if str(t.challenge_id) == str(challenge_id)), None)
+
+    if tracker is None:
+        # Không phải container đang track → start thường
+        svc.start_instance(challenge_id)
+        return
+
+    flag = ka._flag_status(tracker)
+    holds_flag = bool(flag.get('value')) or flag.get('state', 'none') != 'none'
+    if holds_flag and ka.restart_rotates_flag(tracker):
+        ok, msg = ka.interactive_restart(tracker, assume_yes=assume_yes)
+        if ok:
+            Logger.success(f'🔄 Đã restart {tracker.name} — flag cũ hết hiệu lực.')
+            try:
+                svc.get_status(challenge_id)   # sync entry mới vào metadata
+            except Exception:
+                pass
+        elif msg == 'cancelled':
+            Logger.info('Đã huỷ restart — giữ nguyên flag hiện có.')
+        else:
+            Logger.error(f'Restart thất bại: {msg}')
+        return
+
+    svc.start_instance(challenge_id)
 
 
 def _run_keepalive_forever(ka, targets=None):

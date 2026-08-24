@@ -169,9 +169,16 @@ class WindowGuard:
         # Anchor: monotonic nội bộ để system-clock nhảy không phá sleep
         self._mono_anchor = time.monotonic()
         self._wall_anchor = time.time()
+        self._server_offset = 0.0
 
     def wall_now(self) -> float:
-        return self._wall_anchor + (time.monotonic() - self._mono_anchor)
+        return (self._wall_anchor + (time.monotonic() - self._mono_anchor)
+                + self._server_offset)
+
+    def apply_server_offset(self, offset_seconds: float) -> None:
+        """Hiệu chỉnh wall-clock theo lệch Date header server (F-3):
+        offset > 0 nghĩa là server nhanh hơn local."""
+        self._server_offset = float(offset_seconds)
 
     @staticmethod
     def _ts(dt: Optional[_dt.datetime]) -> Optional[float]:
@@ -321,21 +328,51 @@ class WatchStateStore:
             return False
 
     def acquire_lock(self) -> bool:
-        """True = chiếm được lock. Stale-pid → chiếm lại; live-pid → False."""
+        """True = chiếm được lock. Bước chiếm quyền là NGUYÊN TỬ qua
+        ``os.open(O_CREAT|O_EXCL)`` (chống TOCTOU khi 2 process cùng lúc);
+        EEXIST → đọc pid: live-pid → False, stale-pid → dọn rồi thử lại."""
         os.makedirs(self.dir, exist_ok=True)
-        if os.path.exists(self.lock_path):
+
+        def _try_create() -> "int | None":
             try:
-                with open(self.lock_path, "r", encoding="utf-8") as f:
-                    pid = int((f.read() or "0").strip() or 0)
-            except Exception:
-                pid = 0
+                return os.open(self.lock_path,
+                               os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                return None
+
+        fd = _try_create()
+        if fd is None:
+            pid = self._read_lock_pid()
+            if pid == 0:
+                # File vừa được process khác O_EXCL tạo nhưng CHƯA kịp ghi pid
+                # → chờ ngắn rồi đọc lại trước khi kết luận stale (nếu không,
+                # mình sẽ unlink lock của người vừa tạo — mất atomic hoàn toàn).
+                for _ in range(10):
+                    time.sleep(0.05)
+                    pid = self._read_lock_pid()
+                    if pid:
+                        break
             if pid != os.getpid() and self._pid_alive(pid):
                 return False     # watch đang chạy
-        tmp = self.lock_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+            # stale / của chính process này → chiếm lại (1 lần thử nữa;
+            # nếu vẫn thua tức là process khác vừa giành được — thua sạch sẽ)
+            try:
+                os.unlink(self.lock_path)
+            except OSError:
+                pass
+            fd = _try_create()
+            if fd is None:
+                return False
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(str(os.getpid()))
-        os.replace(tmp, self.lock_path)
         return True
+
+    def _read_lock_pid(self) -> int:
+        try:
+            with open(self.lock_path, "r", encoding="utf-8") as f:
+                return int((f.read() or "0").strip() or 0)
+        except Exception:
+            return 0
 
     def release_lock(self) -> None:
         try:
@@ -390,21 +427,51 @@ def run_event_window_wizard(workspace_root: str,
 # ---------------------------------------------------------------------- #
 # Resolve event window (manual > platform > ctftime) + mirror challenges.json
 # ---------------------------------------------------------------------- #
+SOURCE_CONFLICT_SECONDS = 300   # spec §2: chênh >5 phút → cảnh báo
+
+
+def warn_source_conflict(platform_times, ctftime_times) -> List[str]:
+    """So hai nguồn thời gian; lệch >5 phút ở start/end nào → trả (và log)
+    cảnh báo rõ cả hai giá trị. Platform server luôn thắng (spec §2)."""
+    if platform_times is None or ctftime_times is None:
+        return []
+    messages = []
+    for label, a, b in (("start", platform_times.start_utc,
+                         ctftime_times.start_utc),
+                        ("end", platform_times.end_utc,
+                         ctftime_times.end_utc)):
+        if a is None or b is None:
+            continue
+        delta = abs((a - b).total_seconds())
+        if delta > SOURCE_CONFLICT_SECONDS:
+            msg = (f"⚠️ Nguồn thời gian lệch nhau {delta / 60:.0f} phút "
+                   f"(>{SOURCE_CONFLICT_SECONDS // 60}') ở '{label}': "
+                   f"{platform_times.source}="
+                   f"{a:%Y-%m-%d %H:%M}UTC vs {ctftime_times.source}="
+                   f"{b:%Y-%m-%d %H:%M}UTC — ưu tiên {platform_times.source}.")
+            messages.append(msg)
+    for msg in messages:
+        Logger.warning(msg)
+    return messages
+
+
 def resolve_event_window(platform: Any, repo: WorkspaceRepo,
                          title_hint: Optional[str] = None,
                          url_hint: Optional[str] = None,
                          interactive: bool = False,
+                         resolver: Any = None,
                          ) -> tuple:
     """Trả (EventTimes|None, candidates|None).
 
-    Thứ tự ưu tiên spec §2: manual > platform API > CTFtime. Chênh lệch
-    >5 phút giữa nguồn → cảnh báo (platform server thắng).
+    Thứ tự ưu tiên spec §2: manual > platform API > CTFtime. Có cả hai
+    nguồn → so sánh, chênh >5 phút → cảnh báo + dùng nguồn cao hơn.
     """
     from ..platforms.base import EventTimes
     from ..platforms.ctftime_resolver import CTFtimeResolver
 
     times: Optional[EventTimes] = None
     candidates = None
+    ctftime_times: Optional[EventTimes] = None
 
     fetcher = getattr(platform, "fetch_event_times", None)
     if callable(fetcher):
@@ -413,27 +480,32 @@ def resolve_event_window(platform: Any, repo: WorkspaceRepo,
         except Exception:
             times = None
 
-    if times is None:
+    # Nguồn CTFtime — vẫn lấy cả khi platform đã có (để đối chiếu xung đột)
+    try:
+        r = resolver or CTFtimeResolver()
         title = title_hint or getattr(getattr(platform, "ctf_info", None),
                                       "title", "") or ""
         base_url = url_hint or getattr(platform, "base_url", "") or ""
         cached_id = ((repo.read_challenges().get("ctf_info") or {})
                      .get("ctftime_id"))
-        resolver = CTFtimeResolver()
-        try:
-            if cached_id:
-                event = resolver.get_event(cached_id)
-                times = resolver.event_times_from(event) if event else None
-            else:
-                times, candidates = resolver.resolve_event_times(title, base_url)
-                if times is not None:
-                    try:
-                        cid = int(times.source.split(":")[1])
-                        repo.update_ctf_info(ctftime_id=cid)   # cache lần sau
-                    except (IndexError, ValueError):
-                        pass
-        except Exception:
-            times, candidates = None, None
+        if cached_id:
+            event = r.get_event(cached_id)
+            ctftime_times = r.event_times_from(event) if event else None
+        elif title or base_url:
+            ctftime_times, candidates = r.resolve_event_times(title, base_url)
+        if ctftime_times is not None and ":" in (ctftime_times.source or ""):
+            try:
+                repo.update_ctf_info(
+                    ctftime_id=int(ctftime_times.source.split(":")[1]))
+            except (IndexError, ValueError):
+                pass
+    except Exception:
+        ctftime_times, candidates = ctftime_times, candidates
+
+    if times is None:
+        times = ctftime_times
+    else:
+        warn_source_conflict(times, ctftime_times)   # F-4
 
     # Mirror vào challenges.json.ctf_info.event_window cho SUMMARY/dashboard
     if times is not None:
@@ -496,6 +568,8 @@ class WatchService:
         self.practice_mode = practice_mode
         self.use_live_ui = use_live_ui
         self.scheduler = scheduler or PollScheduler()
+        # CTFtime resolver inject được (test mock); None → tự tạo khi cần
+        self.ctftime_resolver = None
         self.repo = WorkspaceRepo(self.workspace_path)
         self.state_store = WatchStateStore(self.workspace_path)
         self.cfg_store = EventWindowConfigStore(self.workspace_path)
@@ -512,6 +586,7 @@ class WatchService:
         self._burst_until_mono: Optional[float] = None
         self._known_chall_count: Optional[int] = None
         self._last_score: Optional[tuple] = None
+        self._last_skew_check_mono: float = -10**9   # F-3 clock-skew active
 
     # ------------------------------------------------------------------ #
     # Setup
@@ -531,7 +606,8 @@ class WatchService:
         start, end = self.manual_start, self.manual_end
 
         if start is None or end is None:
-            times, _cands = resolve_event_window(self.platform, self.repo)
+            times, _cands = resolve_event_window(
+                self.platform, self.repo, resolver=self.ctftime_resolver)
             self.times = times
             if times is not None:
                 start = start or times.start_utc
@@ -599,16 +675,30 @@ class WatchService:
 
         self._open_live()
         try:
-            while not self._stop:
-                ran = self._run_round(auto_cfg)
-                if self.once:
-                    break
-                self._sleep_until_next(guard)
-            if guard is not None and guard.state() == WindowGuard.ENDED:
-                self._final_sync()
+            self._main_loop(guard, auto_cfg)
         finally:
             self._shutdown()
         return self._exit_code
+
+    def _main_loop(self, guard: Optional[WindowGuard],
+                   auto_cfg: dict) -> None:
+        """Vòng lặp chính — THOÁT khi giải kết thúc (spec §5: wall >
+        end+grace → final sync đúng 1 lần rồi exit 0; ``auto_exit_on_end=
+        false`` → chuyển idle KHÔNG tick data nữa, chờ signal)."""
+        ended_finalized = False
+        while not self._stop:
+            if guard is not None and guard.state() == WindowGuard.ENDED:
+                if not ended_finalized:
+                    ended_finalized = True
+                    # Final sync (scoreboard/rank cuối); nếu auto_exit_on_end
+                    # = false thì tự chuyển idle bên trong đến khi có signal.
+                    self._final_sync()
+                break   # exit 0 (hoặc 130 nếu signal đến giữa final/idle)
+            self._clock_skew_tick()
+            self._run_round(auto_cfg)
+            if self.once:
+                break
+            self._sleep_until_next(guard)
 
     @staticmethod
     def svc_repo(svc: Any):
@@ -698,6 +788,29 @@ class WatchService:
 
     def _checkpoint_all(self) -> None:
         self.state_store.save(self.state)
+
+    # ------------------------------------------------------------------ #
+    # Clock-skew chủ động (F-3): mỗi ~5 phút hỏi Date header server;
+    # lệch > CLOCK_SKEW_WARN_SECONDS → cảnh báo NTP + hiệu chỉnh wall_now.
+    # ------------------------------------------------------------------ #
+    def _clock_skew_tick(self) -> Optional[float]:
+        now_mono = time.monotonic()
+        if now_mono - self._last_skew_check_mono < 300:   # ~5 phút/lần
+            return None
+        self._last_skew_check_mono = now_mono
+        offset = None
+        try:
+            resp = self.platform.session.get(self.platform.base_url, timeout=10)
+            offset = WindowGuard.date_header_offset(
+                (getattr(resp, "headers", None) or {}).get("Date"))
+        except Exception:
+            return None
+        if offset is not None and abs(offset) > CLOCK_SKEW_WARN_SECONDS:
+            Logger.warning(f"🕐 Đồng hồ hệ thống lệch {offset:+.0f}s so với "
+                           f"server — kiểm tra NTP/clock sync.")
+        if offset is not None and self.guard is not None:
+            self.guard.apply_server_offset(offset)
+        return offset
 
     # ------------------------------------------------------------------ #
     # Task: notices 📢 (best-effort, CTFd notifications API)

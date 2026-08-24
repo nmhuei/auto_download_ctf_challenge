@@ -48,6 +48,8 @@ EXT_RETRY_MAX = 30
 BOOT_WAIT_MIN = 20              # giây chờ container boot sau POST
 BOOT_WAIT_MAX = 30
 RESTART_COOLDOWN = 10           # DELETE → cooldown → POST
+BOOT_HEALTH_CHECKS = 3          # M-2: tối đa 3 lần health-check sau boot
+BOOT_HEALTH_RETRY = 10          # ...cách nhau 10s trước khi tính fail
 RESTART_BACKOFF_BASE = 30
 RESTART_BACKOFF_CAP = 600
 MAX_RESTARTS = 3
@@ -116,6 +118,7 @@ class InstanceTracker:
         self.last_op_mono: Optional[float] = None     # whale ≥61s spacing
         self.restart_phase: Optional[str] = None      # cooldown|boot_wait
         self.phase_deadline: Optional[float] = None
+        self.health_checks = 0                        # M-2: đếm health-check
         self.backoff_deadline: Optional[float] = None
         self.last_escalation: Dict[str, float] = {}   # key -> mono
         self.critical_muted = False                   # CRITICAL mute cấp thấp
@@ -313,6 +316,9 @@ class InstanceKeepAlive:
 
         # ---- Running ----------------------------------------------------- #
         tracker.tcp_fail_count = 0
+        # Circuit breaker OPEN (M-1): GIVE_UP sticky — không thao tác renew nữa
+        if tracker.state == GIVE_UP:
+            return events
         # Ngưỡng DUE_SOON: 60% lifetime quan sát được (neo sau renew/restart),
         # clamp ≤600s — chưa có mốc neo thì dùng cap 10' theo spec §9.
         threshold = self.renew_threshold(tracker.est_lifetime)
@@ -357,9 +363,10 @@ class InstanceKeepAlive:
         if tracker.platform_kind != "gzctf":
             if tracker.renew_count >= WHALE_MAX_RENEWS:
                 tracker.state = GIVE_UP
-                msg = (f"📢 {tracker.name}: container sẽ chết sau "
-                       f"{int(remaining / 60) if remaining is not None else '?'} phút "
-                       f"— không extend được nữa (hết {WHALE_MAX_RENEWS} lượt renew).")
+                # M-1: message key CỐ ĐỊNH (không nhúng remaining) để
+                # escalation suppress chống spam mỗi tick
+                msg = (f"📢 {tracker.name}: container sắp chết — "
+                       f"không extend được nữa (hết {WHALE_MAX_RENEWS} lượt renew).")
                 ev = tracker.escalate(CRITICAL, msg)
                 if ev:
                     events.append(ev)
@@ -497,6 +504,26 @@ class InstanceKeepAlive:
                 pass
         return bool(success), str((info or {}).get("message", ""))
 
+    def interactive_restart(self, tracker: InstanceTracker,
+                            assume_yes: bool = False) -> Tuple[bool, str]:
+        """R-A nửa user-consent (F-2): cảnh báo restart sẽ ĐỔI FLAG, hỏi xác
+        nhận (bỏ qua khi ``--yes``), rồi mới restart + rotate bookkeeping.
+
+        Trả ``(success, message)``; message 'cancelled' nếu user từ chối.
+        """
+        flag = self._flag_status(tracker)
+        if not assume_yes:
+            held = flag.get("value") or f"(state={flag.get('state')})"
+            try:
+                print(f"⚠️  Restart sẽ ĐỔI FLAG của bài '{tracker.name}' — "
+                      f"flag bạn đang giữ ({held}) sẽ hết hiệu lực.")
+                answer = input("Tiếp tục restart? [y/N] ").strip().lower()
+            except (EOFError, OSError):
+                return False, "no-tty"
+            if answer not in ("y", "yes"):
+                return False, "cancelled"
+        return self.manual_restart_approved(tracker)
+
     def _begin_restart(self, tracker: InstanceTracker) -> List[Tuple[str, str]]:
         if tracker.restart_count >= MAX_RESTARTS:
             tracker.state = GIVE_UP
@@ -504,6 +531,7 @@ class InstanceKeepAlive:
                                             f"{MAX_RESTARTS} lần vẫn chết. Chờ user can thiệp.")
             return ([ev] if ev else [])
         tracker.state = RESTARTING
+        tracker.health_checks = 0   # M-2: reset bộ đếm health-check mỗi vòng
         tracker.restart_phase = "cooldown"
         tracker.phase_deadline = _now() + RESTART_COOLDOWN
         try:
@@ -529,7 +557,8 @@ class InstanceKeepAlive:
                 return self._restart_failed(tracker)
             return []
         if tracker.restart_phase == "boot_wait":
-            # Health check sau boot
+            # Health check sau boot (M-2: cho phép tối đa 3 lần cách 10s
+            # trước khi tính là fail — pod cần thời gian lên)
             status = self._get_status_safe(tracker)
             api_status = str((status or {}).get("status") or "unknown")
             entry = (status or {}).get("entry")
@@ -537,6 +566,7 @@ class InstanceKeepAlive:
                 tracker.state = ALIVE
                 tracker.restart_phase = None
                 tracker.tcp_fail_count = 0
+                tracker.health_checks = 0
                 fresh_remaining = self._remaining_seconds(status,
                                                           tracker.platform_kind)
                 if fresh_remaining:
@@ -546,6 +576,10 @@ class InstanceKeepAlive:
                                          (status or {}).get("time_left"))
                 return [(INFO, f"✅ {tracker.name}: container sống lại — "
                                f"entry mới [bold green]{entry}[/bold green].")]
+            tracker.health_checks += 1
+            if tracker.health_checks < BOOT_HEALTH_CHECKS:
+                tracker.phase_deadline = _now() + BOOT_HEALTH_RETRY
+                return []
             return self._restart_failed(tracker)
         return []
 

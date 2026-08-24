@@ -97,6 +97,8 @@ Quick Examples:
                              help='Giữ sống container được chọn (--id/-n): tự extend trong cửa sổ cuối, auto-restart theo R-A')
     inst_parser.add_argument('--auto-extend-all', action='store_true',
                              help='Giữ sống MỌI container running của workspace')
+    inst_parser.add_argument('-y', '--yes', action='store_true',
+                             help='Xác nhận tự động cho thao tác phá vỡ kết nối (vd restart ĐỔI FLAG theo ràng buộc R-A)')
 
     # 5. SUBMIT / FLAG
     sub_parser = subparsers.add_parser('submit', aliases=['flag'], help='Submit flag to CTF platform and update local documentation')

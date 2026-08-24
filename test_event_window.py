@@ -10,6 +10,7 @@ import json
 import os
 import pathlib
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -24,6 +25,11 @@ from ctf_downloader.platforms.ctftime_resolver import (
     CTFtimeResolver,
 )
 from ctf_downloader.platforms.ctfd import CTFdPlatform
+from ctf_downloader.services.watch_service import (
+    SOURCE_CONFLICT_SECONDS,
+    resolve_event_window,
+    warn_source_conflict,
+)
 from ctf_downloader.platforms.gzctf import GZCTFPlatform
 from ctf_downloader.platforms.rctf import RCTFPlatform
 from ctf_downloader.services import instance_keepalive as ik
@@ -585,6 +591,13 @@ class FakeInstanceService:
     def _update_local_instance_info(self, *a, **kw):
         pass
 
+    # Cho test đường CLI R-A consent (F-2)
+    def start_instance(self, cid):
+        return self.platform.start_instance(cid)
+
+    def get_status(self, cid):
+        return self.platform.get_instance_status(cid)
+
 
 def _close_time_in(seconds):
     now_ms = _dt.datetime.now(_dt.timezone.utc).timestamp() * 1000
@@ -929,6 +942,328 @@ class TestWatchServiceRound(TempWorkspaceCase):
             sigint_handler(signal.SIGINT, None)
         self.assertTrue(svc._stop)
         self.assertEqual(svc._exit_code, 130)
+
+
+# ----------------------------------------------------------------------
+# Review fixes: F-1..F-5 + M-1/M-2
+# ----------------------------------------------------------------------
+
+class CountingWatchPlatform(FakeWatchPlatform):
+    def __init__(self):
+        super().__init__()
+        self.chall_fetches = 0
+        self.score_fetches = 0
+
+    def fetch_challenges(self):
+        self.chall_fetches += 1
+        return super().fetch_challenges()
+
+    def fetch_scoreboard(self):
+        self.score_fetches += 1
+        return super().fetch_scoreboard()
+
+
+class TestF1AutoExitOnEnd(TempWorkspaceCase):
+    """F-1 [Critical]: guard ENDED → loop thoát, final sync đúng 1 lần,
+    không tick data ngoài window nữa."""
+
+    def _ended_svc(self, platform, auto_exit=True):
+        svc = WatchService(str(self.ws), once=False, use_live_ui=False)
+        svc.platform = platform
+        svc.state = svc.state_store.load()
+        now = _dt.datetime.now(_dt.timezone.utc)
+        guard = WindowGuard(now - _dt.timedelta(hours=2),
+                            now - _dt.timedelta(minutes=10),
+                            grace_seconds=300)          # ENDED rõ ràng
+        cfg = default_auto_sync_config()["auto_sync"]
+        cfg["auto_exit_on_end"] = auto_exit
+        for task in ("scoreboard", "challenges", "keepalive"):
+            svc.scheduler.register(task, 60)
+        return svc, guard, cfg
+
+    def test_ended_final_syncs_once_then_exits_no_more_ticks(self):
+        import ctf_downloader.services.watch_service as ws_mod
+        platform = CountingWatchPlatform()
+        svc, guard, cfg = self._ended_svc(platform)
+        final_calls = []
+        orig_final = svc._final_sync
+
+        def counting_final():
+            final_calls.append(1)
+            orig_final()
+
+        svc._final_sync = counting_final
+        svc._main_loop(guard, cfg)
+        self.assertEqual(len(final_calls), 1)      # final sync ĐÚNG 1 lần
+        self.assertEqual(platform.chall_fetches, 0)  # KHÔNG tick data nữa
+        self.assertEqual(platform.score_fetches, 1)  # chỉ scoreboard cuối
+
+    def test_ended_idle_when_auto_exit_false_until_signal(self):
+        import ctf_downloader.services.watch_service as ws_mod
+        platform = CountingWatchPlatform()
+        svc, guard, cfg = self._ended_svc(platform, auto_exit=False)
+        final_calls = []
+        orig_final = svc._final_sync
+
+        def counting_final():
+            final_calls.append(1)
+            orig_final()
+
+        svc._final_sync = counting_final
+
+        real_sleep = ws_mod.time.sleep
+
+        def fake_sleep(_secs):
+            svc._stop = True          # mô phỏng Ctrl-C trong idle
+        with patch.object(ws_mod.time, "sleep", side_effect=fake_sleep):
+            svc._main_loop(guard, cfg)               # phải tự thoát
+        ws_mod.time.sleep = real_sleep
+        self.assertEqual(len(final_calls), 1)      # vẫn chỉ final sync 1 lần
+        self.assertEqual(platform.chall_fetches, 0)
+
+
+class TestF2RAConsent(TempWorkspaceCase):
+    """F-2: R-A nửa user-consent — --yes / interactive_restart được wire."""
+
+    def _make_whale_with_flag(self):
+        plat = FakeCTFdPlatform()
+        plat.status = {"status": "stopped", "entry": None}
+        meta_path = self.ws / "Web" / "chall_a" / "metadata.json"
+        self.repo.update_status(
+            meta_path,
+            lambda st: {**st, "flag": {"value": "FLAG{old}", "state": "hoarded"}})
+        svc = FakeInstanceService(
+            plat, [{"id": 1, "name": "flask-jail", "_local_path": str(meta_path)}])
+        ka = ik.InstanceKeepAlive(svc, repo=self.repo)
+        tr = ka.discover_containers()[0]
+        return ka, tr, plat
+
+    def test_interactive_restart_assume_yes_rotates(self):
+        ka, tr, plat = self._make_whale_with_flag()
+        ok, _msg = ka.interactive_restart(tr, assume_yes=True)   # như `--yes`
+        self.assertTrue(ok)
+        self.assertEqual(plat.starts, 1)
+        st = self.repo.read_status(
+            pathlib.Path(tr.meta_path))
+        self.assertIsNone(st["flag"]["value"])
+        self.assertEqual(st["flag"]["state"], "found_unverified")
+        self.assertIn("rotate", st["notes"])
+
+    def test_interactive_restart_declined_does_not_start(self):
+        ka, tr, plat = self._make_whale_with_flag()
+        with patch("builtins.input", return_value="n"):
+            ok, msg = ka.interactive_restart(tr)
+        self.assertFalse(ok)
+        self.assertEqual(msg, "cancelled")
+        self.assertEqual(plat.starts, 0)
+
+    def test_cli_start_consent_wires_rotate_bookkeeping(self):
+        from ctf_downloader.cli_commands import _start_instance_with_ra_consent
+        ka_holder = {}
+        ka, tr, plat = self._make_whale_with_flag()
+
+        class SvcWithRepo(FakeInstanceService):
+            pass
+
+        svc = SvcWithRepo(plat, [{"id": 1, "name": "flask-jail",
+                                  "_local_path": tr.meta_path}])
+        svc.repo = self.repo
+        # user giữ flag + whale đổi flag + --yes → rotate bookkeeping chạy
+        _start_instance_with_ra_consent(svc, 1, assume_yes=True)
+        self.assertEqual(plat.starts, 1)
+        st = self.repo.read_status(pathlib.Path(tr.meta_path))
+        self.assertIsNone(st["flag"]["value"])
+        self.assertEqual(st["flag"]["state"], "found_unverified")
+
+    def test_cli_start_gzctf_holding_flag_starts_plainly(self):
+        # GZCTF recreate giữ flag → KHÔNG cần consent, flag nguyên vẹn
+        from ctf_downloader.cli_commands import _start_instance_with_ra_consent
+        plat = FakeGzctfPlatform()
+        plat.status = {"status": "stopped", "entry": None}
+        meta_path = self.ws / "Web" / "chall_a" / "metadata.json"
+        self.repo.update_status(
+            meta_path,
+            lambda st: {**st, "flag": {"value": "FLAG{keep}", "state": "hoarded"}})
+        svc = FakeInstanceService(
+            plat, [{"id": 1, "name": "flask-jail", "_local_path": str(meta_path)}])
+        svc.repo = self.repo
+        _start_instance_with_ra_consent(svc, 1, assume_yes=True)
+        self.assertEqual(plat.starts, 1)
+        st = self.repo.read_status(meta_path)
+        self.assertEqual(st["flag"]["value"], "FLAG{keep}")   # không xoá
+
+    def test_cli_start_declined_aborts(self):
+        from ctf_downloader.cli_commands import _start_instance_with_ra_consent
+        ka, tr, plat = self._make_whale_with_flag()
+        svc = FakeInstanceService(plat, [{"id": 1, "name": "flask-jail",
+                                          "_local_path": tr.meta_path}])
+        svc.repo = self.repo
+        with patch("builtins.input", return_value="n"):
+            _start_instance_with_ra_consent(svc, 1, assume_yes=False)
+        self.assertEqual(plat.starts, 0)
+        st = self.repo.read_status(pathlib.Path(tr.meta_path))
+        self.assertEqual(st["flag"]["value"], "FLAG{old}")   # giữ nguyên
+
+
+class TestF3ClockSkewActive(TempWorkspaceCase):
+    """F-3: Date header server được hỏi định kỳ; lệch >120s → cảnh báo +
+    hiệu chỉnh wall_now của WindowGuard."""
+
+    def test_skew_checked_applied_and_throttled(self):
+        from email.utils import formatdate
+        platform = FakeWatchPlatform()
+        server_ts = time.time() + 250       # server nhanh hơn 250s
+        platform.session.get.return_value = make_resp(
+            200, json_data={}, headers={"Date": formatdate(server_ts,
+                                                           usegmt=True)})
+        svc = WatchService(str(self.ws), once=True, use_live_ui=False)
+        svc.platform = platform
+        now = _dt.datetime.now(_dt.timezone.utc)
+        svc.guard = WindowGuard(now - _dt.timedelta(hours=1),
+                                now + _dt.timedelta(hours=5))
+
+        offset = svc._clock_skew_tick()
+        self.assertIsNotNone(offset)
+        self.assertGreater(abs(offset), 120)
+        # wall_now đã được hiệu chỉnh theo server
+        self.assertAlmostEqual(svc.guard.wall_now() - time.time(), 250, delta=5)
+        # throttle ~5 phút: gọi ngay lần nữa → bỏ qua
+        self.assertIsNone(svc._clock_skew_tick())
+        # lệch nhỏ → không cảnh báo nhưng vẫn apply
+        svc._last_skew_check_mono = -10**9
+        platform.session.get.return_value = make_resp(
+            200, json_data={},
+            headers={"Date": formatdate(time.time() + 10, usegmt=True)})
+        offset2 = svc._clock_skew_tick()
+        self.assertIsNotNone(offset2)
+        self.assertLessEqual(abs(offset2), 120)
+
+
+class TestF4SourceConflict(TempWorkspaceCase):
+    """F-4 (spec §2): platform vs CTFtime lệch >5 phút → cảnh báo cả hai."""
+
+    def test_warn_source_conflict_over_five_minutes(self):
+        base = _dt.datetime.now(_dt.timezone.utc)
+        ptimes = EventTimes(start_utc=base, confidence="high",
+                           source="gzctf:/api/game/6")
+        ctimes = EventTimes(start_utc=base + _dt.timedelta(minutes=40),
+                            confidence="medium", source="ctftime:9")
+        msgs = warn_source_conflict(ptimes, ctimes)
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("gzctf:/api/game/6", msgs[0])
+        self.assertIn("ctftime:9", msgs[0])
+        self.assertIn("ưu tiên gzctf:/api/game/6", msgs[0])
+
+    def test_no_warning_within_five_minutes_or_missing_field(self):
+        base = _dt.datetime.now(_dt.timezone.utc)
+        ptimes = EventTimes(start_utc=base, source="gzctf:/api/game/6")
+        ctimes = EventTimes(start_utc=base + _dt.timedelta(minutes=3),
+                            source="ctftime:9")
+        self.assertEqual(warn_source_conflict(ptimes, ctimes), [])
+        self.assertEqual(warn_source_conflict(ptimes, None), [])
+
+    def test_resolve_event_window_platform_wins_on_conflict(self):
+        platform = FakeWatchPlatform()   # start = now-1h, end = now+5h
+        resolver = MagicMock()
+        resolver.resolve_event_times.return_value = (
+            EventTimes(start_utc=_dt.datetime.now(_dt.timezone.utc)
+                       + _dt.timedelta(hours=3),
+                       end_utc=None, confidence="medium", source="ctftime:42"),
+            [])
+        times, cands = resolve_event_window(platform, self.repo,
+                                            title_hint="PTIT CTF 2026",
+                                            resolver=resolver)
+        self.assertIsNotNone(times)
+        self.assertEqual(times.source, "gzctf:/api/game/6")   # nguồn cao thắng
+        # mirror event_window vẫn ghi nguồn platform
+        data = self.repo.read_challenges()
+        self.assertEqual((data.get("ctf_info") or {}).get("event_window",
+                                                          {}).get("source"),
+                         "gzctf:/api/game/6")
+
+
+class TestF5LockAtomic(TempWorkspaceCase):
+    """F-5: acquire_lock nguyên tử qua O_CREAT|O_EXCL — N process cùng lúc
+    thì đúng 1 cái thắng."""
+
+    def test_two_processes_only_one_acquires(self):
+        race_ws = tempfile.mkdtemp(prefix="lockrace_")
+        child_code = (
+            "import sys, time;"
+            "from ctf_downloader.services.watch_service import WatchStateStore;"
+            "s = WatchStateStore(sys.argv[1]);"
+            "ok = s.acquire_lock();"
+            "time.sleep(1.5);"          # giữ lock đủ lâu để các rival thấy live-pid
+            "print(ok)"
+        )
+        procs = [subprocess.Popen([sys.executable, "-c", child_code, race_ws],
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL)
+                 for _ in range(4)]
+        outs = []
+        for p in procs:
+            out, _err = p.communicate(timeout=60)
+            outs.append(out.decode().strip())
+        self.assertEqual(outs.count("True"), 1)    # đúng 1 process chiếm được
+        self.assertEqual(outs.count("False"), 3)
+
+
+class TestMinorsKeepAlive(TempWorkspaceCase):
+    """M-1: GIVE_UP sticky + CRITICAL không spam; M-2: boot-wait health ×3."""
+
+    def test_m1_give_up_sticky_and_critical_suppressed(self):
+        plat = FakeCTFdPlatform()
+        plat.status = {"status": "running", "entry": "1.2.3.4:5555",
+                       "time_left": 120}
+        meta_path = self.ws / "Web" / "chall_a" / "metadata.json"
+        svc = FakeInstanceService(
+            plat, [{"id": 1, "name": "w", "_local_path": str(meta_path)}])
+        ka = ik.InstanceKeepAlive(svc, repo=self.repo)
+        tr = ka.discover_containers()[0]
+        tr.renew_count = ik.WHALE_MAX_RENEWS
+        evs1 = ka.tick_one(tr)
+        self.assertEqual(tr.state, ik.GIVE_UP)
+        self.assertTrue(any(lv == ik.CRITICAL for lv, _m in evs1))
+        # tick tiếp: sticky — không PATCH lại, không lặp CRITICAL (<300s)
+        evs2 = ka.tick_one(tr)
+        self.assertEqual(plat.extends, 0)
+        self.assertEqual(tr.state, ik.GIVE_UP)
+        self.assertFalse(any(lv == ik.CRITICAL for lv, _m in evs2))
+
+    def test_m2_boot_wait_allows_three_health_checks(self):
+        plat = FakeGzctfPlatform()
+        plat.status = {"status": "stopped", "entry": None}
+        meta_path = self.ws / "Web" / "chall_a" / "metadata.json"
+        svc = FakeInstanceService(
+            plat, [{"id": 1, "name": "g", "_local_path": str(meta_path)}])
+        ka = ik.InstanceKeepAlive(svc, repo=self.repo)
+        tr = ka.discover_containers()[0]
+        ka.tick_one(tr)                          # DEAD → begin restart
+        tr.phase_deadline = time.monotonic() - 1
+        ka.tick_one(tr)                          # POST → boot_wait
+        self.assertEqual(tr.restart_phase, "boot_wait")
+        # health fail lần 1 và 2 → retry sau 10s, CHƯA tính restart fail
+        for expected in (1, 2):
+            tr.phase_deadline = time.monotonic() - 1
+            ka.tick_one(tr)
+            self.assertEqual(tr.health_checks, expected)
+            self.assertEqual(tr.restart_count, 0)
+            self.assertEqual(tr.state, ik.RESTARTING)
+        # fail lần thứ 3 → mới chuyển RESTART_BACKOFF (+restart_count)
+        tr.phase_deadline = time.monotonic() - 1
+        ka.tick_one(tr)
+        self.assertEqual(tr.health_checks, 3)
+        self.assertEqual(tr.restart_count, 1)
+        self.assertEqual(tr.state, ik.RESTART_BACKOFF)
+        # container lên ở lần check sau → ALIVE, bộ đếm reset
+        plat.status = {"status": "running", "entry": "7.7.7.7:1234"}
+        tr.backoff_deadline = time.monotonic() - 1
+        ka.tick_one(tr)                          # backoff hết → begin restart lại
+        tr.restart_phase = "boot_wait"           # giả lập đã POST xong
+        tr.phase_deadline = time.monotonic() - 1
+        evs = ka.tick_one(tr)
+        self.assertEqual(tr.state, ik.ALIVE)
+        self.assertEqual(tr.health_checks, 0)
 
 
 if __name__ == "__main__":
