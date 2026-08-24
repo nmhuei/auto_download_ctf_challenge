@@ -9,12 +9,14 @@ Các giá trị dưới đây được copy NGUYÊN VĂN từ các literal đang
 # --- Solved-state markers (nguồn: dashboard.py:33-41) ---
 SOLVED_DONE = "- [x] Solved"
 SOLVED_TODO = "- [ ] Solved"
-SOLVED_MARKERS_DONE = ("- [x] Solved", "- [X] Solved", "✅ Solved", "Status: ✅")
+SOLVED_EMOJI_DONE = "✅ Solved"
+SOLVED_MARKERS_DONE = ("- [x] Solved", "- [X] Solved", SOLVED_EMOJI_DONE, "Status: ✅")
 
 # --- Workspace / summary templates ---
 # Nguồn: workspace_builder.py:316 — "- Target Connection: `{info}`"
 TARGET_CONNECTION_FMT = "- Target Connection: `{info}`"
 # Nguồn: summary_generator.py:47
+SUMMARY_FILES_LINE_PREFIX = "- **Total Files Downloaded**:"
 SUMMARY_FILES_LINE = "- **Total Files Downloaded**: {total_files}\n"
 # Nguồn: ranking.py:186-189
 LIVE_RANK_PREFIX = "- **Live Rank**:"
@@ -29,8 +31,10 @@ DEFAULT_CATEGORY = "Misc"
 __all__ = [
     "SOLVED_DONE",
     "SOLVED_TODO",
+    "SOLVED_EMOJI_DONE",
     "SOLVED_MARKERS_DONE",
     "TARGET_CONNECTION_FMT",
+    "SUMMARY_FILES_LINE_PREFIX",
     "SUMMARY_FILES_LINE",
     "LIVE_RANK_PREFIX",
     "SOLVE_VAR_NAMES",

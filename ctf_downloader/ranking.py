@@ -7,7 +7,7 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
 
-from .storage.constants import LIVE_RANK_PREFIX
+from .storage.constants import LIVE_RANK_PREFIX, SUMMARY_FILES_LINE_PREFIX
 from .utils.logger import Logger, console
 from .utils.http_client import create_session
 from .platforms.detector import PlatformDetector
@@ -186,8 +186,8 @@ class RankingManager:
                 if LIVE_RANK_PREFIX in stext:
                     import re
                     stext = re.sub(r"-\s*\*\*Live Rank\*\*:[^\n]+", rank_badge, stext)
-                elif "- **Total Files Downloaded**:" in stext:
-                    stext = stext.replace("- **Total Files Downloaded**:", f"{rank_badge}\n- **Total Files Downloaded**:")
+                elif SUMMARY_FILES_LINE_PREFIX in stext:
+                    stext = stext.replace(SUMMARY_FILES_LINE_PREFIX, f"{rank_badge}\n{SUMMARY_FILES_LINE_PREFIX}")
 
                 with open(summary_path, "w", encoding="utf-8") as f:
                     f.write(stext)

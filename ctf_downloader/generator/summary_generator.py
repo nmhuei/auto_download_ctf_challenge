@@ -3,7 +3,7 @@ import json
 from collections import defaultdict
 from typing import List, Dict, Any
 from ..platforms.base import Challenge, CTFInfo
-from ..storage.constants import SUMMARY_FILES_LINE
+from ..storage.constants import SOLVED_EMOJI_DONE, SUMMARY_FILES_LINE
 from ..utils.sanitize import sanitize_folder_name
 
 class SummaryGenerator:
@@ -72,7 +72,7 @@ class SummaryGenerator:
                 files_str = f"{succ_files} file(s)" if succ_files > 0 else "-"
                 
                 solves_str = str(c.solves_count) if c.solves_count is not None else "-"
-                status_str = "✅ Solved" if c.solved_by_me else "⏳ Unsolved"
+                status_str = SOLVED_EMOJI_DONE if c.solved_by_me else "⏳ Unsolved"
                 
                 lines.append(f"| **[{c.name}]({rel_path})** | {c.points} | {solves_str} | {files_str} | {status_str} | [`{clean_cat}/{clean_name}`]({clean_cat}/{clean_name}) |")
             lines.append("")

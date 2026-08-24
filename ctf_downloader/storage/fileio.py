@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Callable, Union
 
@@ -35,7 +36,12 @@ def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, Non
     """
     Đọc-mutate-ghi JSON dưới khóa độc quyền fcntl.flock(LOCK_EX).
 
-    - Mở file ở chế độ "a+" (tạo nếu chưa có), flock LOCK_EX.
+    Lock được giữ trên LOCKFILE RIÊNG `<name>.lock` (không lock file đích),
+    vì os.replace thay thế inode của file đích — flock trên file đích sẽ
+    mất tác dụng sau lần replace đầu tiên. Tmp file được tạo với tên unique
+    (tempfile.mkstemp trong cùng thư mục) để các process không ghi đè tmp
+    của nhau.
+
     - File hỏng (JSON không parse được): nội dung cũ được copy sang
       `<name>.bak` trước khi ghi đè, và state hiện tại coi như `{}`.
     - Gọi mutator(state); nếu mutator trả None thì giữ nguyên state.
@@ -43,12 +49,17 @@ def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, Non
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = p.with_name(p.name + ".lock")
 
-    with open(p, "a+", encoding="utf-8") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+    with open(lock_path, "w") as lock_f:
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
         try:
-            f.seek(0)
-            raw = f.read()
+            raw = ""
+            if p.exists():
+                try:
+                    raw = p.read_text(encoding="utf-8")
+                except OSError:
+                    raw = ""
 
             data: dict = {}
             if raw.strip():
@@ -68,16 +79,23 @@ def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, Non
             if result is not None and isinstance(result, dict):
                 data = result
 
-            # Atomic write trong phạm vi lock: ghi tmp rồi os.replace.
-            # Lưu ý: os.replace trên file đang mở "a+" là an toàn trên Linux;
-            # descriptor cũ vẫn trỏ tới inode đã bị thay thế và ta đóng ngay sau đó.
-            tmp = _tmp_path(p)
-            with open(tmp, "w", encoding="utf-8") as tf:
-                tf.write(json.dumps(data, indent=2, ensure_ascii=False))
-                tf.flush()
-                os.fsync(tf.fileno())
-            os.replace(tmp, p)
+            # Atomic write trong phạm vi lock, tmp UNIQUE trong cùng thư mục.
+            fd, tmp_name = tempfile.mkstemp(
+                dir=str(p.parent), prefix=p.name + ".", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as tf:
+                    tf.write(json.dumps(data, indent=2, ensure_ascii=False))
+                    tf.flush()
+                    os.fsync(tf.fileno())
+                os.replace(tmp_name, p)
+            except BaseException:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+                raise
 
             return data
         finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
