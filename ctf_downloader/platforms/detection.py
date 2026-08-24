@@ -65,10 +65,16 @@ def _match_html_markers(spec, html: str, low: str) -> bool:
 
 
 def detect_platform_info(base_url: str, session,
-                         cookie_hint: Optional[str] = None) -> Tuple[BasePlatform, PlatformInfo]:
+                         cookie_hint: Optional[str] = None,
+                         quiet: bool = False) -> Tuple[BasePlatform, PlatformInfo]:
     """
     Dò tìm nền tảng CTF theo pipeline 4 tầng, trả về platform instance
     (tương thích hoàn toàn với chữ ký/cách dùng cũ) kèm PlatformInfo.
+
+    ``quiet=True``: tắt toàn bộ log Logger của pipeline nhận diện (dòng
+    ``[*] Detected Platform`` 16-color và warning fallback) — dành cho các
+    surface tự render report riêng theo design system (vd ``ctf doctor``),
+    tránh lẫn rainbow/default-style vào output PHOSPHOR.
     """
     parsed, origin, clean_base_url = parse_normalized(base_url)
     info = PlatformInfo(platform_type="unknown", base_url=clean_base_url)
@@ -167,10 +173,11 @@ def detect_platform_info(base_url: str, session,
 
     # ---------------- Kết luận + dựng platform ---------------- #
     if ptype == "unknown":
-        Logger.warning("Không xác định được nền tảng. Fallback sang GenericHTMLPlatform.")
         info.add_signal("Fallback: mọi tầng nhận diện thất bại -> generic HTML scraper")
         ptype = "generic_html"
         info.capabilities["scoreboard"] = False  # scraper HTML không có scoreboard API
+        if not quiet:
+            Logger.warning("Không xác định được nền tảng. Fallback sang GenericHTMLPlatform.")
 
     spec = get_spec(ptype)
     platform = spec.cls(clean_base_url, session)
@@ -183,10 +190,11 @@ def detect_platform_info(base_url: str, session,
     # setattr mềm: các class platform không cần khai báo sẵn thuộc tính info
     platform.info = info
 
-    Logger.info(
-        f"Detected Platform: [bold green]{spec.label}[/bold green] "
-        f"(confidence: [bold yellow]{confidence}[/bold yellow])"
-    )
+    if not quiet:
+        Logger.info(
+            f"Detected Platform: [bold green]{spec.label}[/bold green] "
+            f"(confidence: [bold yellow]{confidence}[/bold yellow])"
+        )
     return platform, info
 
 

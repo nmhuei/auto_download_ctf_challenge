@@ -11,7 +11,12 @@ from ..utils.urlnorm import parse_normalized
 
 
 class PlatformDetector:
-    """Facade tĩnh uỷ quyền sang detection.py — KHÔNG chứa logic mới."""
+    """Facade tĩnh uỷ quyền sang detection.py — KHÔNG chứa logic mới.
+
+    ``detect_platform_info(..., quiet=True)`` tắt log ``[*] Detected
+    Platform`` 16-color (dùng cho surface tự render report PHOSPHOR riêng,
+    vd ``ctf doctor`` qua HealthService) — tham số đi thẳng vào detection.
+    """
 
     # Trả (parsed, origin, clean_base_url) — hợp nhất với utils.urlnorm
     _normalize = staticmethod(parse_normalized)

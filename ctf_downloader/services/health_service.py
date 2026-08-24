@@ -17,7 +17,7 @@ X/Y checks pass (amber khi chưa pass đủ).
 """
 import datetime as _dt
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from rich.text import Text
 
@@ -25,7 +25,8 @@ from ..platforms.base import EventTimes  # noqa: F401 — type hint
 from ..platforms.capabilities import PlatformInfo
 from ..platforms.registry import get_spec
 from ..ui.style import BRANCH, FAIL, OK, WARN as WARN_GLYPH
-from ..ui.theme import ACCENT, ERROR, FG_FAINT, FG_MUTED, INFO, SOLVED
+from ..ui.theme import (ACCENT, ERROR, FG_FAINT, FG_MUTED, INFO,
+                        SOLVED, WARN)
 from ..utils.flag_format import extract_flag_format
 from ..utils.logger import Logger, console as _default_console
 from .session_factory import create_session
@@ -45,12 +46,15 @@ class DoctorCheck:
     """Kết quả một check riêng lẻ của báo cáo doctor.
 
     ``fix`` (tuỳ chọn) là lệnh/hành động sửa lỗi, render sau cause chain
-    với glyph ``ℹ``.
+    với glyph ``ℹ``. ``caps`` (tuỳ chọn) là capability map dạng
+    ``(nhãn, ok)`` — render từng ``✔/✗`` tô semantic riêng thay vì nhét
+    glyph vào một chuỗi detail muted.
     """
     name: str
     ok: bool
     detail: str = ""
     fix: str = ""
+    caps: Optional[List[Tuple[str, bool]]] = None
 
 
 class DoctorReport:
@@ -61,8 +65,8 @@ class DoctorReport:
         self.checks: List[DoctorCheck] = []
 
     def add(self, name: str, ok: bool, detail: str = "",
-            fix: str = "") -> DoctorCheck:
-        chk = DoctorCheck(name=name, ok=ok, detail=detail, fix=fix)
+            fix: str = "", caps: Optional[List[Tuple[str, bool]]] = None) -> DoctorCheck:
+        chk = DoctorCheck(name=name, ok=ok, detail=detail, fix=fix, caps=caps)
         self.checks.append(chk)
         return chk
 
@@ -78,54 +82,57 @@ class DoctorReport:
         return self.total > 0 and self.passed == self.total
 
     @staticmethod
-    def _ok_row(chk: DoctorCheck) -> Text:
-        line = Text(OK + " ", style=SOLVED)
-        line.append(chk.name)
-        if chk.detail:
-            line.append(f" · {chk.detail}", style=FG_MUTED)
-        return line
-
-    @staticmethod
     def _fail_content(chk: DoctorCheck) -> Text:
-        """Diagnostic mini: tên → ``╰─▶`` nguyên nhân → ``ℹ`` lệnh fix."""
+        """Diagnostic mini: tên → ``╰─▶`` nguyên nhân → ``ℹ`` lệnh fix.
+
+        ``╰─▶`` là connector cấu trúc → muted (KHÔNG đỏ — đỏ chỉ dành cho
+        glyph kết quả ``✗``, luật vai trò màu PHOSPHOR §3). Glyph kết quả
+        đứng cột đầu, continuation line thụt 6 cột như layout bảng cũ.
+        """
         content = Text()
+        content.append(FAIL, style=ERROR)
+        content.append("     ")
         content.append(chk.name)
         if chk.detail:
-            content.append("\n")
-            content.append(BRANCH + " ", style=ERROR)
+            content.append("\n      ")
+            content.append(BRANCH + " ", style=FG_MUTED)
             content.append(chk.detail)
         if chk.fix:
-            content.append("\n")
+            content.append("\n      ")
             content.append("ℹ ", style=INFO)
             content.append(chk.fix)
         return content
 
+    @staticmethod
+    def _timestamp() -> str:
+        """Timestamp faint mép phải AppHeader — giờ local + offset UTC
+        (cùng format với cli._frame_timestamp, replicate để tránh import
+        vòng cli ↔ services)."""
+        try:
+            now = _dt.datetime.now().astimezone()
+            off_h = int(now.utcoffset().total_seconds() // 3600)
+            return f"{now:%H:%M} UTC{off_h:+d}"
+        except Exception:
+            return ""
+
     def render(self, console=None) -> None:
-        from rich.table import Table
+        from ..ui.banner import app_header
 
         out = console or _default_console
 
-        out.print()
-        title = Text()
-        title.append("ctf doctor", style="bold")
-        title.append("  ·  ", style=FG_FAINT)
-        title.append(self.url or "(chưa có URL)", style=INFO)
-        out.print(title)
-
+        # AppHeader chuẩn như các lệnh khác (spec §4.1):
+        # ▐██ CTF·TOOLKIT │ doctor · <url> ... timestamp mép phải.
+        out.print(app_header("doctor", context=self.url or "(chưa có URL)",
+                             timestamp=DoctorReport._timestamp()))
         out.print(Text("CHECK", style=FG_FAINT))
-        table = Table(
-            box=None, show_header=False, show_edge=False,
-            padding=(0, 2), pad_edge=False)
-        table.add_column(width=2, justify="left")
-        table.add_column(ratio=1)
+        # Render từng check thành Text độc lập (không rich Table) — bảng
+        # natural-width của rich vẫn đệm trắng mọi dòng tới width của dòng
+        # dài nhất; in trực tiếp thì không có padding thừa (codex-r2 P0c).
         for chk in self.checks:
             if chk.ok:
-                table.add_row(Text(OK, style=SOLVED),
-                              DoctorReport._ok_row_name(chk))
+                out.print(DoctorReport._ok_content(chk))
             else:
-                table.add_row(Text(FAIL, style=ERROR),
-                              DoctorReport._fail_content(chk))
-        out.print(table)
+                out.print(DoctorReport._fail_content(chk))
 
         out.print(Text("KẾT QUẢ", style=FG_FAINT))
         summary = f"Tổng kết: {self.passed}/{self.total} checks pass"
@@ -135,17 +142,28 @@ class DoctorReport:
             line.append(OK + " ")
             line.append(summary + " — platform sẵn sàng cho giờ giải!")
         else:
-            # Accent amber duy nhất — không vàng đột ngột hơn mức lỗi thực tế.
+            # Tổng kết accent amber; glyph ``!`` warn #EAC54F đúng vai trò
+            # riêng (không tô cả cụm một màu).
             line = Text(style=ACCENT)
-            line.append(WARN_GLYPH + " ")
+            line.append(WARN_GLYPH + " ", style=WARN)
             line.append(summary + " — xem lại các dòng ✗ phía trên.")
         out.print(line)
         out.print()
 
     @staticmethod
-    def _ok_row_name(chk: DoctorCheck) -> Text:
-        line = Text(chk.name)
-        if chk.detail:
+    def _ok_content(chk: DoctorCheck) -> Text:
+        line = Text(OK, style=SOLVED)
+        line.append("     ")
+        line.append(chk.name)
+        if chk.caps is not None:
+            # Capability map: từng ✔/✗ tô semantic riêng (✔ solved / ✗
+            # error), nhãn muted — không nhét glyph vào chuỗi muted chung.
+            for i, (label, ok_cap) in enumerate(chk.caps):
+                line.append("  ·  " if i == 0 else " · ", style=FG_FAINT)
+                line.append(OK if ok_cap else FAIL,
+                            style=SOLVED if ok_cap else ERROR)
+                line.append(f" {label}", style=FG_MUTED)
+        elif chk.detail:
             line.append(f" · {chk.detail}", style=FG_MUTED)
         return line
 
@@ -237,7 +255,10 @@ class HealthService:
     def _check_detect(self, report: DoctorReport, url: str, session):
         from ..platforms.detector import detect_platform_info
         try:
-            platform, info = detect_platform_info(url, session)
+            # quiet=True: tắt log "[*] Detected Platform" 16-color của
+            # detector — doctor tự render kết quả detect theo token
+            # PHOSPHOR (P0 codex-r2: không lẫn rainbow vào surface).
+            platform, info = detect_platform_info(url, session, quiet=True)
         except Exception as exc:
             report.add("Platform detect", False,
                        f"Lỗi nhận diện: {exc.__class__.__name__}: {exc}")
@@ -290,9 +311,8 @@ class HealthService:
                        "Không đọc được capability map (platform chưa nhận diện)")
             return
         caps: Dict[str, Any] = getattr(info, "capabilities", {}) or {}
-        parts = [f"{OK if caps.get(key) else FAIL} {label}"
-                 for key, label in _CAP_ITEMS]
-        report.add("Capabilities", True, " · ".join(parts))
+        caps_list = [(label, bool(caps.get(key))) for key, label in _CAP_ITEMS]
+        report.add("Capabilities", True, caps=caps_list)
 
     # -------------------- 5. ⏱️ Event window -------------------------- #
     def _check_event_window(self, report: DoctorReport, platform):

@@ -6,7 +6,7 @@ Các case: all-pass | auth-fail | network-dead | render glyph PHOSPHOR.
 """
 import io
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from rich.console import Console
 
@@ -184,9 +184,11 @@ class TestDoctorNetworkDead(unittest.TestCase):
         for chk in report.checks:
             self.assertFalse(chk.ok, f"{chk.name} không được pass khi mạng chết")
 
-        # Report vẫn render đầy đủ 6 dòng + tổng kết, không raise
+        # Report vẫn render đầy đủ 6 dòng + tổng kết, không raise.
+        # (codex-r2: header giờ là AppHeader — "CTF·TOOLKIT │ doctor · url")
         out = capture_render(report)
-        self.assertIn("ctf doctor", out)
+        self.assertIn("CTF·TOOLKIT", out)
+        self.assertIn("doctor", out)
         self.assertIn("Tổng kết: 0/6 checks pass", out)
         self.assertIn("Không kết nối được", out)
 
@@ -201,6 +203,10 @@ class TestDoctorRender(unittest.TestCase):
         report = svc.check(URL, cookie="session=abc", session=ctfd_session())
         out = capture_render(report)
 
+        # codex-r2 P0b: surface doctor dùng AppHeader chuẩn như các lệnh khác
+        # (▐██ CTF·TOOLKIT │ doctor · <url>) thay vì title "ctf doctor" thuần.
+        self.assertIn("CTF·TOOLKIT", out)
+        self.assertIn("doctor", out)
         # Glyph semantic ✔ một lần mỗi dòng đạt; heading CHECK/KẾT QUẢ faint.
         self.assertIn("✔", out)
         self.assertIn("CHECK", out)
@@ -230,6 +236,117 @@ class TestDoctorRender(unittest.TestCase):
         chk = DoctorCheck(name="X", ok=True, detail="d", fix="fix cmd")
         self.assertEqual((chk.name, chk.ok, chk.detail, chk.fix),
                          ("X", True, "d", "fix cmd"))
+
+
+# ----------------------------------------------------------------------
+# 5. codex-r2 P0: màu vai trò + AppHeader + natural width (ANSI thật)
+# ----------------------------------------------------------------------
+
+def capture_render_ansi(report) -> str:
+    buf = io.StringIO()
+    report.render(console=Console(
+        file=buf, width=200, force_terminal=True, color_system="truecolor"))
+    return buf.getvalue()
+
+
+class TestDoctorPhosphorRoles(unittest.TestCase):
+    FG_MUTED_ANSI = "\x1b[38;2;138;149;140m"
+    ERROR_ANSI = "\x1b[38;2;255;92;87m"
+    WARN_ANSI = "\x1b[38;2;234;197;79m"
+    ACCENT_ANSI = "\x1b[38;2;255;176;0m"
+    SOLVED_ANSI = "\x1b[38;2;70;196;107m"
+
+    def _partial_report(self):
+        report = DoctorReport(url=URL)
+        report.add("A", True, "ok")
+        report.add("B", False, "nguyên nhân X",
+                   fix="chạy lệnh fix --flag-format")
+        return report
+
+    def test_branch_connector_is_muted_not_red(self):
+        """codex-r2 P0c: ``╰─▶`` là connector cấu trúc → muted; đỏ chỉ dành
+        cho glyph kết quả ✗."""
+        out = capture_render_ansi(self._partial_report())
+        self.assertIn(self.FG_MUTED_ANSI + "╰─▶", out)
+        self.assertNotIn(self.ERROR_ANSI + "╰─▶", out)
+
+    def test_summary_warn_glyph_amber_accent_text(self):
+        """Tổng kết chưa pass đủ: glyph ``!`` warn #EAC54F, phần text accent
+        amber — hai vai trò riêng, không tô cả cụm một màu."""
+        out = capture_render_ansi(self._partial_report())
+        self.assertIn(self.WARN_ANSI + "!", out)
+        self.assertIn(self.ACCENT_ANSI + "Tổng kết: 1/2 checks pass", out)
+
+    def test_result_glyphs_semantically_colored(self):
+        out = capture_render_ansi(self._partial_report())
+        self.assertIn(self.SOLVED_ANSI + "✔", out)
+        self.assertIn(self.ERROR_ANSI + "✗", out)
+
+    def test_no_trailing_whitespace_padding_to_width(self):
+        """codex-r2 P0c: bỏ padding trắng kéo dòng tới hết 80 cột — bảng
+        natural width, không dòng nào kết thúc bằng run-space."""
+        svc = HealthService()
+        report = svc.check(URL, cookie="session=abc", session=ctfd_session())
+        out = capture_render_ansi(report)
+        import re as _re
+        for ln in out.splitlines():
+            plain = _re.sub(r"\x1b\[[0-9;]*m", "", ln)
+            self.assertFalse(plain != plain.rstrip(),
+                             f"dòng còn đệm trắng cuối: {plain!r}")
+
+    def test_app_header_present_with_brand_block(self):
+        from ctf_downloader.ui.theme import ACCENT
+        out = capture_render_ansi(self._partial_report())
+        # brand block amber ▐██ mở đầu AppHeader
+        self.assertIn(self.ACCENT_ANSI + "▐██", out)
+        self.assertIn("CTF·TOOLKIT", out)
+        self.assertIn(URL, out)
+
+    def test_capabilities_values_colored_individually(self):
+        """codex-r2 P0c: Capabilities ✔/✗ tô semantic TỪNG giá trị thay vì
+        nhét glyph vào một chuỗi detail muted."""
+        report = DoctorReport(url=URL)
+        report.add("Capabilities", True,
+                   caps=[("container động", True), ("scoreboard", False)])
+        out = capture_render_ansi(report)
+        # glyph ✔/✗ tô semantic riêng từng giá trị; nhãn muted
+        self.assertIn(self.SOLVED_ANSI + "✔", out)
+        self.assertIn(self.ERROR_ANSI + "✗", out)
+        self.assertIn("\x1b[38;2;138;149;140m container động", out)
+
+
+class TestDetectQuiet(unittest.TestCase):
+    def test_health_service_calls_detector_quiet(self):
+        """codex-r2 P0a: doctor gọi detector với quiet=True — không log
+        "[*] Detected Platform" 16-color lẫn vào surface PHOSPHOR."""
+        from ctf_downloader.platforms.detector import detect_platform_info
+
+        with patch("ctf_downloader.platforms.detector.detect_platform_info") as m_det:
+            fake_platform = MagicMock()
+            fake_platform.authenticate.return_value = True
+            fake_platform.fetch_event_times.return_value = None
+            fake_platform.fetch_rules.return_value = None
+            m_det.return_value = (fake_platform, MagicMock(
+                platform_type="ctfd", confidence="high",
+                capabilities={"container": True, "scoreboard": True,
+                              "rules_via_api": True}))
+            svc = HealthService()
+            svc.check(URL, cookie="session=abc")
+            _, kwargs = m_det.call_args
+            self.assertTrue(kwargs.get("quiet"))
+
+    def test_quiet_true_suppresses_detection_log(self):
+        import contextlib
+        import io as _io
+
+        from ctf_downloader.platforms import detection
+
+        with contextlib.redirect_stderr(_io.StringIO()), \
+                patch.object(detection.Logger, "info") as m_info, \
+                patch.object(detection.Logger, "warning") as m_warn:
+            detection.detect_platform_info(URL, ctfd_session(), quiet=True)
+            for call in list(m_info.call_args_list) + list(m_warn.call_args_list):
+                self.assertNotIn("Detected Platform", str(call))
 
 
 if __name__ == "__main__":
