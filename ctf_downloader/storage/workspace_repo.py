@@ -16,20 +16,63 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from pathlib import Path
-from typing import Iterator, Union
+from typing import Callable, Iterator, Union
 from urllib.parse import urlparse
 
 from .constants import (
+    FLAG_PLACEHOLDER,
+    FLAG_STATES,
     LIVE_RANK_PREFIX,
     SOLVED_DONE,
     SOLVED_MARKERS_DONE,
     SOLVED_TODO,
+    SOLVE_RANK,
+    SOLVE_STATES,
+    STATUS_SCHEMA_VERSION,
     SUMMARY_FILES_LINE_PREFIX,
+    WRITEUP_STATES,
 )
 from .fileio import atomic_write_json, atomic_write_text, locked_update_json
 
 PathLike = Union[str, Path]
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def normalize_status(raw) -> dict:
+    """Chuẩn hoá block ``status`` về schema v2 (bản sao sâu cho flag dict/list).
+
+    Giá trị không hợp lệ / sai kiểu được thay bằng default — KHÔNG bao giờ raise.
+    """
+    src = raw if isinstance(raw, dict) else {}
+
+    def _enum(value, allowed, default):
+        return value if value in allowed else default
+
+    flag_src = src.get("flag") if isinstance(src.get("flag"), dict) else {}
+    labels = src.get("labels")
+    if not isinstance(labels, list):
+        labels = []
+
+    return {
+        "schema_version": STATUS_SCHEMA_VERSION,
+        "solve": _enum(src.get("solve"), SOLVE_STATES, "unsolved"),
+        "flag": {
+            "value": flag_src.get("value"),
+            "state": _enum(flag_src.get("state"), FLAG_STATES, "none"),
+        },
+        "writeup": _enum(src.get("writeup"), WRITEUP_STATES, "none"),
+        "writeup_auto": bool(src.get("writeup_auto", True)),
+        "notes": str(src.get("notes") or ""),
+        "labels": [str(x) for x in labels],
+        "container": _enum(src.get("container"), ("none", "running", "stopped"), "none"),
+        "synced_at": src.get("synced_at"),
+        "updated_at": src.get("updated_at"),
+    }
 
 
 class WorkspaceRepo:
@@ -186,6 +229,107 @@ class WorkspaceRepo:
         if raw.get("type") in ("dynamic_docker", "DynamicContainer"):
             return True
         return any(str(t).lower() == "container" for t in tags)
+
+    # ------------------------------------------------------------------
+    # Status đa chiều (schema v2) — spec challenge-status-model §2-§3
+    # ------------------------------------------------------------------
+
+    def _migrate_status(self, meta: dict, meta_path: "Path | None") -> dict:
+        """normalize + migrate-on-read từ các field legacy (không ghi file).
+
+        - ``solved_by_me=true`` (hoặc marker ``- [x] Solved`` trong README)
+          → ``solve=solved_by_me``
+        - placeholder FLAG đã bị thay bằng flag thật → ``flag=found_unverified``
+        - ``instance_info.is_container`` → ``container=stopped`` (chỉ nâng,
+          không đè giá trị running đã có)
+        """
+        st = normalize_status((meta or {}).get("status"))
+
+        # 1. Legacy bool mirror
+        if st["solve"] == "unsolved" and bool((meta or {}).get("solved_by_me")):
+            st["solve"] = "solved_by_me"
+
+        readme_texts = []
+        if meta_path is not None:
+            root = Path(meta_path).parent
+            for rp in (root / "writeup" / "README.md", root / "README.md"):
+                try:
+                    readme_texts.append(rp.read_text(encoding="utf-8"))
+                except OSError:
+                    continue
+
+        # 2. Marker `- [x] Solved` trong README/writeup
+        if st["solve"] == "unsolved":
+            for text in readme_texts:
+                if any(marker in text for marker in SOLVED_MARKERS_DONE):
+                    st["solve"] = "solved_by_me"
+                    break
+
+        # 3. Placeholder FLAG đã thay → flag tìm được chưa verify
+        if st["flag"]["state"] == "none":
+            for text in readme_texts:
+                m = re.search(r"^[\s>-]*\**\s*Flag\**\s*:\s*`([^`\n]+)`", text, re.M)
+                if not m:
+                    continue
+                val = m.group(1).strip()
+                if val and val != FLAG_PLACEHOLDER:
+                    st["flag"]["value"] = val
+                    st["flag"]["state"] = "found_unverified"
+                    break
+
+        # 4. instance_info mirror
+        if st["container"] == "none":
+            inst = (meta or {}).get("instance_info")
+            if isinstance(inst, dict) and inst.get("is_container"):
+                st["container"] = "running" if inst.get("status") == "running" else "stopped"
+
+        return st
+
+    def read_status(self, meta_path: PathLike) -> dict:
+        """Đọc block ``status`` của một challenge: normalize + migrate-on-read.
+
+        Không ghi file — workspace cũ được nâng cấp "on the fly"; lần ghi
+        status đầu tiên sẽ persist schema mới.
+        """
+        meta_path = Path(meta_path)
+        return self._migrate_status(self.read_metadata(meta_path), meta_path)
+
+    def update_status(self, meta_path: PathLike, mutator: Callable[[dict], "dict | None"]) -> dict:
+        """Read-mutate-write block ``status`` trong flock (lock granularity
+        theo challenge — submit song song ở 2 challenge không chặn nhau).
+
+        ``mutator(status_dict)`` nhận status đã normalize/migrate và trả về
+        status mới (trả ``None`` để giữ nguyên). Sau khi mutate:
+          - stamp ``updated_at``
+          - mirror legacy ``solved_by_me`` (luôn == solve=='solved_by_me')
+          - toggle marker README theo hướng thay đổi của trục solve
+        Trả về status cuối cùng.
+        """
+        meta_path = Path(meta_path)
+        root = meta_path.parent
+        readme_paths = [root / "writeup" / "README.md", root / "README.md"]
+
+        def _mut(meta: dict) -> dict:
+            meta = dict(meta or {})
+            current = self._migrate_status(meta, meta_path)
+            old_solve = current["solve"]   # chốt TRƯỚC khi mutator có thể mutate in-place
+            new = mutator(current)
+            new = normalize_status(new if new is not None else current)
+            new["updated_at"] = _now_iso()
+
+            meta["solved_by_me"] = new["solve"] == "solved_by_me"
+            meta["status"] = new
+
+            if old_solve != new["solve"]:
+                if new["solve"] == "solved_by_me":
+                    self.write_solved_state(readme_paths, True)
+                elif old_solve == "solved_by_me":
+                    self.write_solved_state(readme_paths, False)
+            return meta
+
+        locked_update_json(meta_path, _mut)
+        updated = self.read_metadata(meta_path)
+        return normalize_status(updated.get("status"))
 
     # ------------------------------------------------------------------
     # submit_history.json

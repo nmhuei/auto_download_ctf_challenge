@@ -139,6 +139,26 @@ python3 submit.py -w ./my_ctf --auto
 python3 submit.py -w ./my_ctf --id <CHALL_ID> -f "FLAG{...}"
 ```
 
+### 6. Trạng thái đa chiều (`ctf status`)
+Mỗi challenge có block `status` trong `metadata.json` gồm 4 trục độc lập —
+dashboard và SUMMARY.md render bằng bộ icon thống nhất:
+
+| Trục | Giá trị → Icon |
+|---|---|
+| Solve | unsolved `·` · working 🛠️ · solved_by_me 🧑✅ · solved_by_team 👥✅ · solved_other 🌐✅ |
+| Flag | none ∅ · found_unverified ❓ · hoarded 🏴 · submitted_correct 🚩✔ · submitted_wrong ⛔ |
+| Writeup | none `-` · skeleton 📄 · draft 📝 · complete 📚 |
+| Container | running 🐳▶ · stopped 🐳⏸ |
+
+```text
+[🧑✅][🚩✔][📚] 17. flask-jail (400 pts)
+```
+
+- Kết quả submit (đúng/sai), container start/stop và sync solve attribution
+  từ server (GZCTF / CTFd / rCTF) tự động cập nhật trạng thái — chỉ nâng, không hạ.
+- Header dashboard hiển thị: 📊 Progress · 💰 Points · 🏴 Hoarded · 📝 Drafts · 📦 Files · ⏱️ Window.
+- Workspace cũ (layout phẳng, chưa có block `status`) được migrate-on-read ngay khi mở.
+
 ---
 
 ## 📂 Cấu trúc thư mục được tạo ra

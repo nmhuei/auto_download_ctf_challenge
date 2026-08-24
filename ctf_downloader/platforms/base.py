@@ -1,7 +1,42 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
 
 from ..models import Challenge, CTFInfo, Verdict  # noqa: F401
+
+
+@dataclass
+class SolveAttribution:
+    """Ai đã giải một challenge (spec challenge-status-model §4)."""
+    by_me: bool = False
+    by_team: bool = False
+    solver_names: list = field(default_factory=list)
+    first_blood: bool = False
+    solved_at: Optional[int] = None  # epoch-ms
+
+
+def epoch_ms(value: Any) -> Optional[int]:
+    """Chuyển timestamp (epoch giây/ms, ISO string) sang epoch-ms; None nếu lỗi."""
+    import datetime as _dt
+
+    if value is None:
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            num = float(value)
+            return int(num if num > 1e11 else num * 1000)
+        s = str(value).strip()
+        if s.isdigit():
+            num = float(s)
+            return int(num if num > 1e11 else num * 1000)
+        iso = s.replace("Z", "+00:00")
+        dt = _dt.datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_dt.timezone.utc)
+        return int(dt.timestamp() * 1000)
+    except Exception:
+        return None
+
 
 
 # --------------------------------------------------------------------------- #
@@ -70,6 +105,14 @@ class BaseCTFPlatform(ABC):
         Returns None if unavailable. Must never raise.
         """
         return None
+
+    def fetch_solve_attribution(self, challenge_ids) -> Dict[Any, "SolveAttribution"]:
+        """
+        Sync ai đã giải challenge nào từ server (spec §4).
+        Trả về dict[cid, SolveAttribution]; default: rỗng (platform không hỗ trợ).
+        Mọi exception phải được nuốt bên trong — KHÔNG BAO GIỜ raise.
+        """
+        return {}
 
     def start_instance(self, challenge_id: Any) -> Tuple[bool, Dict[str, Any]]:
         """

@@ -245,6 +245,16 @@ class InstanceService:
                 self.repo.write_metadata(meta_path, m)
                 Logger.info(f'[bold green]✓[/bold green] Synced instance details into: [cyan]{os.path.relpath(meta_path, self.workspace_path)}[/cyan]')
 
+                # Mirror trục container của status đa chiều (spec §7)
+                try:
+                    def _mut_container(st):
+                        st['container'] = 'running' if status == 'running' else 'stopped'
+                        return st
+
+                    self.repo.update_status(meta_path, _mut_container)
+                except Exception as e:
+                    Logger.warning(f'Could not mirror container status: {e}')
+
                 root = meta_path.parent
 
                 # Update writeup/README.md or README.md

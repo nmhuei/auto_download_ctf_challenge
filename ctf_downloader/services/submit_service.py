@@ -16,6 +16,7 @@ from ..utils.flag_format import extract_flag_format, validate_flag
 from ..platforms.detector import PlatformDetector
 from ..platforms.base import BasePlatform  # noqa: F401  (giữ kiểu tham chiếu cũ)
 from ..platforms.registry import UnknownPlatformError, get_spec
+from ..storage.constants import SOLVE_RANK
 from ..storage.workspace_repo import WorkspaceRepo
 
 NO_FORMAT_MESSAGE = (
@@ -370,7 +371,75 @@ class SubmitService:
         else:
             Logger.warning(f"Result: {message} (không rõ đúng/sai — chưa blacklist)")
 
+        # Hook status đa chiều (spec §7): correct/incorrect đổi trục flag/solve;
+        # ratelimited/unknown KHÔNG đổi.
+        if verdict in ("correct", "incorrect"):
+            self._apply_verdict_to_status(cid, flag, verdict)
+
         return success, message
+
+    # ------------------------------------------------------------------
+    # Status đa chiều hooks
+    # ------------------------------------------------------------------
+
+    def _find_meta_path(self, challenge_id: Any):
+        """Tìm metadata.json của challenge theo id (None nếu không có workspace)."""
+        if not self.repo:
+            return None
+        for meta_path in self.repo.iter_challenges():
+            meta = self.repo.read_metadata(meta_path)
+            if meta and str(meta.get("id")) == str(challenge_id):
+                return meta_path
+        return None
+
+    def _apply_verdict_to_status(self, challenge_id: Any, flag: str, verdict: str):
+        """Ghi kết quả submit vào block ``status`` của challenge.
+
+        - correct  : flag → submitted_correct (+value), solve nâng lên solved_by_me
+                     (mirror solved_by_me + marker README do update_status lo)
+        - incorrect: flag → submitted_wrong (+value để biết flag nào chết)
+        """
+        meta_path = self._find_meta_path(challenge_id)
+        if meta_path is None:
+            return
+        try:
+            def _mut(st):
+                st["flag"]["value"] = flag
+                st["flag"]["state"] = "submitted_correct" if verdict == "correct" else "submitted_wrong"
+                if verdict == "correct" and SOLVE_RANK.get(st["solve"], 0) < SOLVE_RANK["solved_by_me"]:
+                    st["solve"] = "solved_by_me"
+                return st
+
+            self.repo.update_status(meta_path, _mut)
+        except Exception as e:
+            Logger.warning(f"Không thể cập nhật status đa chiều: {e}")
+
+    def hoard_flag(self, challenge_identifier: Union[int, str], flag_value: str) -> Tuple[bool, str]:
+        """Lưu cờ tìm được vào kho local (flag → hoarded) mà KHÔNG submit.
+
+        Sẵn sàng cho lệnh CLI ``ctf flag <chal> <FLAG>`` ở feature sau.
+        """
+        flag_value = (flag_value or "").strip()
+        if not flag_value:
+            return False, "Flag cannot be empty."
+        cid, name = self.resolve_challenge_id(challenge_identifier)
+        meta_path = self._find_meta_path(cid)
+        if meta_path is None:
+            return False, f"Could not resolve challenge: '{challenge_identifier}'"
+        try:
+            def _mut(st):
+                st["flag"]["value"] = flag_value
+                st["flag"]["state"] = "hoarded"
+                if SOLVE_RANK.get(st["solve"], 0) < SOLVE_RANK["working"]:
+                    st["solve"] = "working"
+                return st
+
+            self.repo.update_status(meta_path, _mut)
+            Logger.success(f"🏴 Hoarded flag for [bold cyan]{name}[/bold cyan] (chưa submit).")
+            return True, "Flag hoarded."
+        except Exception as e:
+            Logger.warning(f"Không thể hoard flag: {e}")
+            return False, str(e)
 
     # ------------------------------------------------------------------
     # Auto scan & submit

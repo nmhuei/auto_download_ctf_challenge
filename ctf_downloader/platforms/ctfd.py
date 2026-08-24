@@ -4,7 +4,7 @@ import urllib.parse
 import requests
 from typing import List, Dict, Any, Optional, Tuple
 from bs4 import BeautifulSoup
-from .base import BasePlatform, Challenge, CTFInfo, safe_get_json
+from .base import BasePlatform, Challenge, CTFInfo, SolveAttribution, epoch_ms, safe_get_json
 from ..utils.logger import Logger
 from ..utils.sanitize import sanitize_filename
 from .registry import register
@@ -522,6 +522,74 @@ class CTFdPlatform(BasePlatform):
         except Exception:
             pass
         return {"status": "stopped", "entry": None, "time_left": None}
+
+    # ------------------------------------------------------------------
+    # Solve attribution (spec §4) — users mode vs teams mode
+    # ------------------------------------------------------------------
+
+    def fetch_solve_attribution(self, challenge_ids) -> Dict[Any, SolveAttribution]:
+        """2 requests: /teams/me (detect mode) + solves tương ứng.
+        Teams mode: mỗi dòng mang ``user.id/name`` của thành viên submit —
+        ``by_me = row.user.id == me_id``. Users mode: by_team ≡ by_me."""
+        wanted = {str(c): c for c in (challenge_ids or [])}
+        cache = getattr(self, "_solve_attr_cache", None)
+        if cache is None:
+            cache = self._solve_attr_cache = {}
+            try:
+                me_id, me_name = None, self.ctf_info.user_name
+                r_me = self.session.get(f"{self.base_url}/api/v1/users/me", timeout=10)
+                if r_me.status_code == 200:
+                    d = (r_me.json() or {}).get("data") or {}
+                    me_id, me_name = d.get("id"), d.get("name") or me_name
+
+                teams_mode = False
+                rows = []
+                try:
+                    rt = self.session.get(f"{self.base_url}/api/v1/teams/me", timeout=10)
+                    if rt.status_code == 200 and (rt.json() or {}).get("data"):
+                        teams_mode = True
+                        rs = self.session.get(
+                            f"{self.base_url}/api/v1/teams/me/solves", timeout=10)
+                        if rs.status_code == 200:
+                            rows = (rs.json() or {}).get("data") or []
+                except Exception:
+                    rows = []
+
+                if not teams_mode:
+                    rs = self.session.get(
+                        f"{self.base_url}/api/v1/users/me/solves", timeout=10)
+                    if rs.status_code == 200:
+                        rows = (rs.json() or {}).get("data") or []
+
+                for row in rows:
+                    cid = row.get("challenge_id")
+                    if cid is None and isinstance(row.get("challenge"), dict):
+                        cid = row["challenge"].get("id")
+                    if cid is None:
+                        continue
+                    user = row.get("user") or {}
+                    uname = user.get("name")
+                    if user:
+                        # Teams mode: mỗi dòng mang user.id/name của thành viên submit
+                        by_me = (user.get("id") == me_id) if me_id is not None else True
+                    else:
+                        # Users mode: mọi solve của /users/me/solves là của mình
+                        by_me = not teams_mode
+                    attr = cache.get(str(cid))
+                    if attr is None:
+                        attr = SolveAttribution(by_team=bool(teams_mode or by_me), by_me=by_me)
+                        cache[str(cid)] = attr
+                    elif by_me:
+                        attr.by_me = True
+                        attr.by_team = True
+                    if uname and uname not in attr.solver_names:
+                        attr.solver_names.append(uname)
+                    ts = epoch_ms(row.get("date"))
+                    if ts and (attr.solved_at is None or ts < attr.solved_at):
+                        attr.solved_at = ts
+            except Exception:
+                pass
+        return {orig: cache[k] for k, orig in wanted.items() if k in cache}
 
     def fetch_scoreboard(self) -> Dict[str, Any]:
         """

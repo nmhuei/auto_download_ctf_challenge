@@ -28,6 +28,64 @@ FLAG_PLACEHOLDER = "FLAG{...}"
 
 DEFAULT_CATEGORY = "Misc"
 
+# --- Challenge Status Model đa chiều (schema v2) ---
+# Nguồn: docs/superpowers/specs/2026-08-24-challenge-status-model-design.md
+STATUS_SCHEMA_VERSION = 2
+
+SOLVE_STATES = ("unsolved", "working", "solved_by_me", "solved_by_team", "solved_other")
+FLAG_STATES = ("none", "found_unverified", "hoarded", "submitted_correct", "submitted_wrong")
+WRITEUP_STATES = ("none", "skeleton", "draft", "complete")
+CONTAINER_STATES = ("none", "running", "stopped")
+
+# Thứ bậc trục solve cho nguyên tắc "chỉ nâng không hạ":
+# sync/pull KHÔNG BAO GIỜ hạ trạng thái local cao hơn.
+SOLVE_RANK = {
+    "unsolved": 0,
+    "working": 1,
+    "solved_other": 2,
+    "solved_by_team": 3,
+    "solved_by_me": 4,
+}
+
+# Mapping signal -> icon (design system spec §6). MỌI render phải lấy icon
+# từ đây — không text trần, không icon inline rải rác.
+STATUS_ICONS = {
+    "solve": {
+        "unsolved": "·",
+        "working": "🛠️",
+        "solved_by_me": "🧑✅",
+        "solved_by_team": "👥✅",
+        "solved_other": "🌐✅",
+    },
+    "flag": {
+        "none": "∅",
+        "found_unverified": "❓",
+        "hoarded": "🏴",
+        "submitted_correct": "🚩✔",
+        "submitted_wrong": "⛔",
+    },
+    "writeup": {
+        "none": "-",
+        "skeleton": "📄",
+        "draft": "📝",
+        "complete": "📚",
+    },
+    "container": {
+        "running": "🐳▶",
+        "stopped": "🐳⏸",
+    },
+}
+
+CATEGORY_ICONS = {
+    "web": "🌐",
+    "pwn": "🖥️",
+    "crypto": "🔐",
+    "reverse": "🔬",
+    "forensics": "🔍",
+    "misc": "🎲",
+    "blockchain": "⛓️",
+}
+
 __all__ = [
     "SOLVED_DONE",
     "SOLVED_TODO",
@@ -40,4 +98,12 @@ __all__ = [
     "SOLVE_VAR_NAMES",
     "FLAG_PLACEHOLDER",
     "DEFAULT_CATEGORY",
+    "STATUS_SCHEMA_VERSION",
+    "SOLVE_STATES",
+    "FLAG_STATES",
+    "WRITEUP_STATES",
+    "CONTAINER_STATES",
+    "SOLVE_RANK",
+    "STATUS_ICONS",
+    "CATEGORY_ICONS",
 ]

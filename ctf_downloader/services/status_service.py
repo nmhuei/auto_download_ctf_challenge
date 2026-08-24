@@ -8,10 +8,20 @@ delegate vào đây.
 import os
 from typing import Any, Dict, List, Optional
 
+from ..storage.constants import CATEGORY_ICONS, STATUS_ICONS
 from ..storage.workspace_repo import WorkspaceRepo
 
 
 class StatusService:
+    # Giá trị trục solve được tính là "đã giải" cho thống kê tiến độ
+    # (giải bởi mình / team / người khác đều ăn điểm trên bảng).
+    SOLVED_VALUES = ("solved_by_me", "solved_by_team", "solved_other")
+
+    @staticmethod
+    def compute_status(repo: WorkspaceRepo, meta_path) -> Dict[str, Any]:
+        """Trạng thái đa chiều đã normalize/migrate của một challenge."""
+        return repo.read_status(meta_path)
+
     # ------------------------------------------------------------------ #
     # Scan một workspace
     # ------------------------------------------------------------------ #
@@ -27,13 +37,13 @@ class StatusService:
                     continue
                 root = meta_path.parent
 
-                # Solved state: metadata + marker trong writeup/README.md hoặc README.md
-                is_solved = bool(m.get('solved_by_me', False))
-                readme_paths = [root / 'writeup' / 'README.md', root / 'README.md']
-                if repo.read_solved_state(readme_paths):
-                    is_solved = True
+                # Trạng thái đa chiều (normalize + migrate-on-read từ legacy:
+                # bool solved_by_me / marker README / placeholder flag thay rồi /
+                # instance_info.is_container)
+                status = repo.read_status(meta_path)
+                m['_status'] = status
 
-                m['solved_by_me'] = is_solved
+                m['solved_by_me'] = status['solve'] == 'solved_by_me'
                 m['_folder'] = str(root)
                 m['_rel_folder'] = os.path.relpath(root, workspace_path)
 
@@ -51,6 +61,14 @@ class StatusService:
         return results
 
     @staticmethod
+    def _is_solved(chall: Dict[str, Any]) -> bool:
+        st = chall.get('_status') or {}
+        solve = st.get('solve')
+        if solve:
+            return solve in StatusService.SOLVED_VALUES
+        return bool(chall.get('solved_by_me'))
+
+    @staticmethod
     def summary_stats(repo: WorkspaceRepo,
                       challenges: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """Tổng hợp thống kê giải từ repo (dùng lại ``challenges`` nếu đã scan)."""
@@ -58,9 +76,14 @@ class StatusService:
         workspace_path = repo.root
 
         total_challs = len(challs)
-        solved_challs = sum(1 for c in challs if c.get('solved_by_me'))
+        solved_challs = sum(1 for c in challs if StatusService._is_solved(c))
         total_points = sum((c.get('points') or 0) for c in challs)
-        earned_points = sum((c.get('points') or 0) for c in challs if c.get('solved_by_me'))
+        earned_points = sum((c.get('points') or 0) for c in challs if StatusService._is_solved(c))
+
+        hoarded = sum(1 for c in challs
+                      if ((c.get('_status') or {}).get('flag') or {}).get('state') in ('hoarded', 'submitted_correct'))
+        drafts = sum(1 for c in challs
+                     if (c.get('_status') or {}).get('writeup') in ('draft', 'complete'))
 
         by_cat: Dict[str, Dict[str, Any]] = {}
         for c in challs:
@@ -70,10 +93,12 @@ class StatusService:
                 by_cat[cat] = {'total': 0, 'solved': 0, 'points': 0, 'earned': 0, 'challenges': []}
             by_cat[cat]['total'] += 1
             by_cat[cat]['points'] += pts
-            if c.get('solved_by_me'):
+            if StatusService._is_solved(c):
                 by_cat[cat]['solved'] += 1
                 by_cat[cat]['earned'] += pts
             by_cat[cat]['challenges'].append(c)
+
+        total_files = sum(c.get('_local_files_count', 0) for c in challs)
 
         challenges_data = repo.read_challenges()
         ctf_info = challenges_data.get('ctf_info', {}) if isinstance(challenges_data, dict) else {}
@@ -88,6 +113,9 @@ class StatusService:
             'unsolved_challenges': total_challs - solved_challs,
             'total_points': total_points,
             'earned_points': earned_points,
+            'hoarded_flags': hoarded,
+            'writeup_drafts': drafts,
+            'local_files': total_files,
             'completion_rate': (solved_challs / total_challs * 100) if total_challs > 0 else 0,
             'categories': by_cat
         }
@@ -114,7 +142,14 @@ class StatusService:
         if stats['user'] or stats['team']:
             team_str = f" | Team: {stats['team']}" if stats['team'] else ''
             print(f" 👤 User: {stats['user']}{team_str}")
-        print(f" 📊 Progress: {stats['solved_challenges']}/{stats['total_challenges']} Solved ({rate:.1f}%) | Points: {stats['earned_points']}/{stats['total_points']}")
+        print(f" 📊 Progress: {stats['solved_challenges']}/{stats['total_challenges']} Solved ({rate:.1f}%)")
+        print(f" 💰 Points: {stats['earned_points']}/{stats['total_points']}"
+              f" | 🏴 Hoarded: {stats.get('hoarded_flags', 0)}"
+              f" | 📝 Drafts: {stats.get('writeup_drafts', 0)}"
+              f" | 📦 Files: {stats.get('local_files', 0)}")
+        window_str = StatusService._render_window(repo)
+        if window_str:
+            print(f" ⏱️ Window: {window_str}")
 
         bar_len = 30
         filled_len = int(bar_len * rate // 100)
@@ -129,9 +164,9 @@ class StatusService:
 
             c_list = data['challenges']
             if only_unsolved:
-                c_list = [c for c in c_list if not c.get('solved_by_me')]
+                c_list = [c for c in c_list if not StatusService._is_solved(c)]
             elif only_solved:
-                c_list = [c for c in c_list if c.get('solved_by_me')]
+                c_list = [c for c in c_list if StatusService._is_solved(c)]
 
             if only_container:
                 c_list = [c for c in c_list if repo.is_container(c)]
@@ -139,16 +174,28 @@ class StatusService:
             if not c_list:
                 continue
 
+            cat_icon = CATEGORY_ICONS.get(str(cat).lower(), '📁')
             c_rate = (data['solved'] / data['total'] * 100) if data['total'] > 0 else 0
             c_bar = '█' * int(10 * c_rate // 100) + '░' * (10 - int(10 * c_rate // 100))
-            print(f"\n📁 {cat} ({len(c_list)} challs, {data['points']} pts) [{c_bar}] {data['solved']}/{data['total']}")
+            print(f"\n📁 {cat_icon} {cat} ({len(c_list)} challs, {data['points']} pts) [{c_bar}] {data['solved']}/{data['total']}")
 
             for idx, c in enumerate(c_list):
                 is_last = (idx == len(c_list) - 1)
                 prefix = '└── ' if is_last else '├── '
 
-                status_icon = '✅' if c.get('solved_by_me') else '⏳'
-                status_str = 'Solved' if c.get('solved_by_me') else 'Unsolved'
+                status = c.get('_status') or {}
+                solve = status.get('solve', 'unsolved')
+                flag_state = (status.get('flag') or {}).get('state', 'none')
+                writeup = status.get('writeup', 'none')
+                container = StatusService._effective_container(repo, c, status)
+
+                badge = (
+                    f"[{STATUS_ICONS['solve'].get(solve, '·')}]"
+                    f"[{STATUS_ICONS['flag'].get(flag_state, '∅')}]"
+                    f"[{STATUS_ICONS['writeup'].get(writeup, '-')}]"
+                )
+                if container:
+                    badge += f"[{STATUS_ICONS['container'][container]}]"
 
                 c_id = c.get('id', '?')
                 c_name = c.get('name', 'Unknown')
@@ -161,9 +208,66 @@ class StatusService:
                 cont_str = ' [🐳 Container]' if is_cont else ''
                 files_str = f' [{files_count} file(s)]' if files_count > 0 else ''
 
-                print(f"  {prefix}[{status_icon} {status_str:<8}] {c_id:>3}. {c_name:<32} ({c_pts:>4} pts) - {str(solves):>3} solves{cont_str}{files_str}")
+                print(f"  {prefix}{badge} {c_id:>3}. {c_name:<32} ({c_pts:>4} pts) - {str(solves):>3} solves{cont_str}{files_str}")
+
+                notes = str(status.get('notes') or '').strip()
+                if notes:
+                    print(f"       └─ \"{notes}\"")
 
         print('\n' + '=' * 85)
+
+    # ------------------------------------------------------------------ #
+    # Helpers render đa chiều
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _effective_container(repo: WorkspaceRepo,
+                             chall: Dict[str, Any],
+                             status: Dict[str, Any]) -> Optional[str]:
+        """Trạng thái container hiệu lực: status.container nếu có, suy ra từ
+        dấu hiệu container legacy nếu chưa có (is_container → stopped)."""
+        val = status.get('container')
+        if val in ('running', 'stopped'):
+            return val
+        inst = chall.get('instance_info')
+        if isinstance(inst, dict) and inst.get('status') in ('running', 'stopped'):
+            return inst.get('status')
+        if repo.is_container(chall):
+            return 'stopped'
+        return None
+
+    @staticmethod
+    def _render_window(repo: WorkspaceRepo) -> str:
+        """⏱️ Window từ ``ctf_info.event_window`` (feature Event Window mirror):
+        🔴 LIVE / ⏳ countdown / ✅ ended. Trả "" khi không có dữ liệu."""
+        import datetime as _dt
+
+        data = repo.read_challenges()
+        win = ((data.get('ctf_info') or {}).get('event_window') or {})
+        start_s, end_s = win.get('start'), win.get('end')
+        if not start_s or not end_s:
+            return ""
+        try:
+            def _parse(v):
+                if isinstance(v, (int, float)) or (isinstance(v, str) and v.isdigit()):
+                    return _dt.datetime.fromtimestamp(float(v), tz=_dt.timezone.utc)
+                iso = str(v).replace('Z', '+00:00')
+                return _dt.datetime.fromisoformat(iso)
+
+            now = _dt.datetime.now(_dt.timezone.utc)
+            start, end = _parse(start_s), _parse(end_s)
+            if start <= now <= end:
+                remain = end - now
+                hrs, rem_sec = divmod(int(remain.total_seconds()), 3600)
+                mins = rem_sec // 60
+                return f"🔴 LIVE (còn {hrs}h{mins:02d}m)"
+            if now < start:
+                remain = start - now
+                days = remain.days
+                hrs = remain.seconds // 3600
+                return f"⏳ countdown ({days}d {hrs}h tới giờ mở)"
+            return "✅ ended"
+        except Exception:
+            return ""
 
     # ------------------------------------------------------------------ #
     # Scan toàn bộ workspace trong một thư mục gốc (bản DUY NHẤT — cli/

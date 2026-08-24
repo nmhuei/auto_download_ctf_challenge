@@ -18,6 +18,7 @@ from ..config import DownloaderConfig
 from ..utils.logger import Logger, console
 from ..platforms.detector import PlatformDetector
 from ..platforms.base import Challenge
+from ..storage.constants import SOLVE_RANK
 from ..extractors.link_extractor import LinkExtractor
 from ..downloaders.manager import DownloadManager
 from ..generator.workspace_builder import WorkspaceBuilder
@@ -195,6 +196,15 @@ class PullService:
         elapsed = time.time() - start_time
         total_files = sum(sum(1 for f in res if f.get("success")) for res in all_download_results.values())
 
+        # 6. Sync solve attribution từ server (spec §4): server báo solved mà
+        # local chưa → nâng solve + stamp synced_at. KHÔNG BAO GIỜ hạ trạng thái.
+        try:
+            synced = PullService.sync_solve_attribution(platform, config.output_dir)
+            if synced:
+                Logger.info(f"🔄 Đã đồng bộ solve attribution cho {synced} challenge(s).")
+        except Exception:
+            pass
+
         Logger.success(f"[bold green]✨ ALL DONE in {elapsed:.2f}s! ✨[/bold green]")
         Logger.info(f"📁 Workspace: [bold yellow]{config.output_dir}[/bold yellow]")
         Logger.info(f"📊 Summary: [bold cyan]{summary_file}[/bold cyan]")
@@ -208,3 +218,62 @@ class PullService:
             "challenges_processed": len(all_download_results),
             "elapsed_seconds": elapsed,
         }
+
+    # ------------------------------------------------------------------ #
+    # Sync solve attribution (spec challenge-status-model §4)
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def sync_solve_attribution(platform: Any, output_dir: str) -> int:
+        """Hỏi platform ``fetch_solve_attribution`` cho mọi challenge local và
+        nâng trạng thái solve theo nguyên tắc chỉ-nâng. Trả về số challenge
+        được cập nhật. Platform không hỗ trợ → 0."""
+        from ..storage.workspace_repo import WorkspaceRepo
+
+        repo = WorkspaceRepo(output_dir)
+        fetcher = getattr(platform, "fetch_solve_attribution", None)
+        if not callable(fetcher):
+            return 0
+
+        metas = []
+        for meta_path in repo.iter_challenges():
+            m = repo.read_metadata(meta_path)
+            if m and m.get("id") is not None:
+                metas.append((meta_path, m))
+        if not metas:
+            return 0
+
+        try:
+            attr_map = fetcher([m.get("id") for _p, m in metas]) or {}
+        except Exception:
+            return 0
+        if not isinstance(attr_map, dict):
+            return 0
+
+        updated = 0
+        now_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        for meta_path, _m in metas:
+            attr = attr_map.get(_m.get("id"))
+            if attr is None:
+                continue
+            if not isinstance(attr, dict):
+                # SolveAttribution dataclass (hoặc obj tương đương) → dict
+                attr = {"by_me": bool(getattr(attr, "by_me", False)),
+                        "by_team": bool(getattr(attr, "by_team", False))}
+
+            def _mut(st):
+                target = ("solved_by_me" if attr.get("by_me", False)
+                          else "solved_by_team" if attr.get("by_team", False)
+                          else "solved_other")
+                if SOLVE_RANK.get(target, 0) > SOLVE_RANK.get(st["solve"], 0):
+                    st["solve"] = target
+                st["synced_at"] = now_str
+                return st
+
+            try:
+                before = repo.read_status(meta_path)["solve"]
+                after = repo.update_status(meta_path, _mut)["solve"]
+                if after != before:
+                    updated += 1
+            except Exception:
+                continue
+        return updated

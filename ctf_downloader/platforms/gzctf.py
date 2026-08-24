@@ -3,7 +3,7 @@ import time
 import urllib.parse
 import requests
 from typing import List, Dict, Any, Optional, Tuple
-from .base import BasePlatform, Challenge, CTFInfo, safe_get_json
+from .base import BasePlatform, Challenge, CTFInfo, SolveAttribution, epoch_ms, safe_get_json
 from ..utils.logger import Logger
 from .registry import register
 
@@ -420,6 +420,107 @@ class GZCTFPlatform(BasePlatform):
         except Exception:
             pass
         return {"status": "unknown", "entry": None, "close_time": None}
+
+    # ------------------------------------------------------------------
+    # Solve attribution (spec §4) — scoreboard là nguồn chính
+    # ------------------------------------------------------------------
+
+    def _team_member_names(self, team_id: Any) -> Optional[list]:
+        """GET /api/team/{id}.members[].userName; None nếu request lỗi."""
+        try:
+            resp = self.session.get(f"{self.origin}/api/team/{team_id}", timeout=10)
+            if resp.status_code == 200:
+                data = resp.json() or {}
+                members = data.get("members") or []
+                names = [m.get("userName") for m in members if isinstance(m, dict)]
+                return [n for n in names if n]
+        except Exception:
+            pass
+        return None
+
+    def _attribution_from_details(self, cache: dict) -> None:
+        """Fallback khi scoreboard 400/anonymized (trước giờ mở): /details chỉ
+        báo own-team solve qua field ``solvedByMe``/``isSolved`` nếu có."""
+        try:
+            resp = self.session.get(
+                f"{self.origin}/api/game/{self.game_id}/details", timeout=15)
+            if resp.status_code != 200:
+                return
+            raw = ((resp.json() or {}).get("challenges")) or {}
+            for challs in raw.values():
+                for item in challs or []:
+                    cid = item.get("id")
+                    if cid is None:
+                        continue
+                    solved = bool(item.get("solvedByMe") or item.get("isSolved"))
+                    if not solved:
+                        continue
+                    cache[str(cid)] = SolveAttribution(by_me=False, by_team=True)
+        except Exception:
+            pass
+
+    def _fetch_all_attribution(self, cache: dict) -> None:
+        if not self.game_id:
+            return
+        items = []
+        try:
+            sb = self.session.get(
+                f"{self.origin}/api/game/{self.game_id}/scoreboard", timeout=10)
+            if sb.status_code == 200:
+                data = sb.json()
+                items = data.get("items", []) if isinstance(data, dict) else data
+        except Exception:
+            items = []
+
+        profile = self.ctf_info.user_name
+        my_item = None
+        confirmed_by_user = False
+        for item in items or []:
+            sols = item.get("solvedChallenges") or []
+            if profile and any(s.get("userName") == profile for s in sols):
+                my_item = item
+                confirmed_by_user = True
+                break
+            if self.ctf_info.team_name and item.get("name") == self.ctf_info.team_name:
+                my_item = item
+                break
+
+        if my_item is not None and not confirmed_by_user:
+            # Match theo tên đội — chốt membership bằng team members để tránh
+            # trùng tên đội của người khác.
+            member_names = self._team_member_names(my_item.get("id"))
+            if member_names is not None and profile:
+                if profile in member_names:
+                    confirmed_by_user = True
+                else:
+                    my_item = None   # đội trùng tên, không phải của mình
+
+        if my_item is None:
+            self._attribution_from_details(cache)
+            return
+
+        for sol in my_item.get("solvedChallenges") or []:
+            cid = sol.get("id")
+            if cid is None:
+                continue
+            uname = sol.get("userName")
+            cache[str(cid)] = SolveAttribution(
+                by_team=True,
+                by_me=bool(profile) and uname == profile,
+                solver_names=[uname] if uname else [],
+                first_blood=bool(sol.get("firstBlood")),
+                solved_at=epoch_ms(sol.get("time") or sol.get("date")),
+            )
+
+    def fetch_solve_attribution(self, challenge_ids) -> Dict[Any, SolveAttribution]:
+        """1–2 requests: /scoreboard (+ /team/{id} xác nhận membership).
+        Cache kết quả trong phiên; mọi exception → trả phần đã có ({})."""
+        wanted = {str(c): c for c in (challenge_ids or [])}
+        cache = getattr(self, "_solve_attr_cache", None)
+        if cache is None:
+            cache = self._solve_attr_cache = {}
+            self._fetch_all_attribution(cache)
+        return {orig: cache[k] for k, orig in wanted.items() if k in cache}
 
     def fetch_scoreboard(self) -> Dict[str, Any]:
         """

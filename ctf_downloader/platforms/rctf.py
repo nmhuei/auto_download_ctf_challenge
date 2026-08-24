@@ -3,7 +3,7 @@ import urllib.parse
 import requests
 from typing import List, Dict, Any, Optional, Tuple
 from bs4 import BeautifulSoup
-from .base import BasePlatform, Challenge, CTFInfo, safe_get_json
+from .base import BasePlatform, Challenge, CTFInfo, SolveAttribution, epoch_ms, safe_get_json
 from ..utils.logger import Logger
 from .registry import register
 
@@ -230,6 +230,72 @@ class RCTFPlatform(BasePlatform):
         except Exception as e:
             self.last_verdict = "unknown"
             return False, f"Exception during submission: {str(e)}"
+
+    # ------------------------------------------------------------------
+    # Solve attribution (spec §4) — 1 account = 1 team: by_team ≡ by_me
+    # ------------------------------------------------------------------
+
+    def fetch_solve_attribution(self, challenge_ids) -> Dict[Any, SolveAttribution]:
+        """``users/me.solves[]`` có sẵn; ``challs/{id}/solves`` public bổ sung
+        solver_names / first-blood (0–1+N requests)."""
+        wanted = {str(c): c for c in (challenge_ids or [])}
+        cache = getattr(self, "_solve_attr_cache", None)
+        if cache is None:
+            cache = self._solve_attr_cache = {}
+            try:
+                r_me = self.session.get(f"{self.base_url}/api/v1/users/me", timeout=15)
+                if r_me.status_code == 200:
+                    data = (r_me.json() or {}).get("data") or {}
+                    me_name = data.get("name")
+                    for s in data.get("solves") or []:
+                        cid = (s.get("chalId") if s.get("chalId") is not None
+                               else s.get("challengeId",
+                                            s.get("chaId", s.get("id"))))
+                        if cid is None:
+                            continue
+                        ts = epoch_ms(s.get("createdAt") or s.get("ts") or s.get("time"))
+                        names = [me_name] if me_name else []
+                        prev = cache.get(str(cid))
+                        if prev is not None and prev.solved_at is not None \
+                                and ts is not None and ts < prev.solved_at:
+                            ts = prev.solved_at   # giữ mốc sớm nhất
+                        cache[str(cid)] = SolveAttribution(
+                            by_me=True, by_team=True,
+                            solver_names=names, solved_at=ts)
+
+                # Public solves: solver_names đầy đủ + first-blood
+                for key, attr in list(cache.items()):
+                    if wanted and key not in wanted:
+                        continue
+                    try:
+                        rc = self.session.get(
+                            f"{self.base_url}/api/v1/challs/{key}/solves", timeout=10)
+                        if rc.status_code != 200:
+                            continue
+                        rows = (rc.json() or {}).get("data") or []
+                    except Exception:
+                        continue
+                    names, all_ts = [], []
+                    for row in rows:
+                        nm = None
+                        if isinstance(row.get("user"), dict):
+                            nm = row["user"].get("name")
+                        nm = nm or row.get("userName") or row.get("name")
+                        if nm:
+                            names.append(nm)
+                        t = epoch_ms(row.get("ts") or row.get("time") or row.get("createdAt"))
+                        if t:
+                            all_ts.append(t)
+                    if names:
+                        attr.solver_names = names
+                    if all_ts:
+                        earliest = min(all_ts)
+                        attr.solved_at = attr.solved_at or earliest
+                        if attr.by_me and attr.solved_at == earliest:
+                            attr.first_blood = True
+            except Exception:
+                pass
+        return {orig: cache[k] for k, orig in wanted.items() if k in cache}
 
     def fetch_scoreboard(self) -> Dict[str, Any]:
         """
