@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime  # noqa: F401 — dùng trong type hint EventTimes
 from typing import List, Dict, Any, Optional, Tuple
 
 from ..models import Challenge, CTFInfo, Verdict  # noqa: F401
@@ -13,6 +14,58 @@ class SolveAttribution:
     solver_names: list = field(default_factory=list)
     first_blood: bool = False
     solved_at: Optional[int] = None  # epoch-ms
+
+
+@dataclass
+class EventTimes:
+    """Thời gian bắt đầu/kết thúc giải (spec event-window §3).
+
+    Mọi datetime đều aware UTC; ``confidence`` ∈ high|medium|low;
+    ``source`` vd "gzctf:/api/game/{id}" | "ctftime:{id}" | "manual".
+    """
+    start_utc: Optional["datetime"] = None
+    end_utc: Optional["datetime"] = None
+    confidence: str = "high"
+    source: str = ""
+
+
+def normalize_epoch_to_utc(value: Any) -> Optional["datetime"]:
+    """Chuẩn hoá timestamp về ``datetime`` aware UTC (spec event-window §2).
+
+    Phân biệt ms/giây bằng ĐỘ DÀI CHỮ SỐ (bẫy đơn vị GZCTF/rCTF=ms,
+    CTFd=giây): >= 13 chữ số → ms, <= 11 → giây. Nhận cả ISO string.
+    Giá trị ≤ 0 hoặc năm < 2000 → None (= "chưa đặt lịch").
+    Không bao giờ raise.
+    """
+    import datetime as _dt
+
+    if value is None:
+        return None
+    try:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            num = float(value)
+            if num <= 0:
+                return None
+            dt = (_dt.datetime.fromtimestamp(num / 1000.0, tz=_dt.timezone.utc)
+                  if num >= 1e11
+                  else _dt.datetime.fromtimestamp(num, tz=_dt.timezone.utc))
+        else:
+            s = str(value).strip()
+            if not s or s.lower() == "null":
+                return None
+            if s.isdigit():
+                return normalize_epoch_to_utc(int(s))
+            iso = s.replace("Z", "+00:00")
+            dt = _dt.datetime.fromisoformat(iso)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=_dt.timezone.utc)
+    except Exception:
+        return None
+    if dt.year < 2000:
+        return None
+    return dt
 
 
 def epoch_ms(value: Any) -> Optional[int]:
@@ -103,6 +156,14 @@ class BaseCTFPlatform(ABC):
         """
         Fetches competition rules / flag-format description (raw text, HTML or markdown).
         Returns None if unavailable. Must never raise.
+        """
+        return None
+
+    def fetch_event_times(self) -> Optional["EventTimes"]:
+        """Thời gian bắt đầu/kết thúc giải (spec event-window §2-§3).
+
+        Trả EventTimes hoặc None nếu platform không khai báo. KHÔNG BAO GIỜ
+        raise — mọi lỗi HTTP/parse phải được nuốt bên trong.
         """
         return None
 

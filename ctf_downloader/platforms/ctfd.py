@@ -4,7 +4,8 @@ import urllib.parse
 import requests
 from typing import List, Dict, Any, Optional, Tuple
 from bs4 import BeautifulSoup
-from .base import BasePlatform, Challenge, CTFInfo, SolveAttribution, epoch_ms, safe_get_json
+from .base import (BasePlatform, Challenge, CTFInfo, EventTimes,
+                   SolveAttribution, epoch_ms, normalize_epoch_to_utc, safe_get_json)
 from ..utils.logger import Logger
 from ..utils.sanitize import sanitize_filename
 from .registry import register
@@ -48,6 +49,8 @@ class CTFdPlatform(BasePlatform):
     def __init__(self, base_url: str, session: requests.Session):
         super().__init__(base_url, session)
         self.nonce: Optional[str] = None
+        # HTML trang /challenges lần fetch gần nhất (dùng lại cho event window)
+        self._last_page_html: Optional[str] = None
         self.ctf_info.platform_type = "ctfd"
         # Pitfall: khi dùng Authorization token, nếu thiếu Content-Type: application/json
         # thì server CTFd bỏ qua header Authorization.
@@ -67,7 +70,10 @@ class CTFdPlatform(BasePlatform):
             resp = self.session.get(f"{self.base_url}/challenges", timeout=15)
             if resp.status_code == 200:
                 html = resp.text
-                
+                # Cache cho fetch_event_times (spec event-window §2) — tái dùng
+                # HTML đã fetch thay vì request lại.
+                self._last_page_html = html
+
                 # Check for window.init = { ... 'csrfNonce': "..." ... }
                 nonce_match = re.search(r"['\"]csrfNonce['\"]\s*:\s*['\"]([^'\"]+)['\"]", html)
                 if not nonce_match:
@@ -667,3 +673,42 @@ class CTFdPlatform(BasePlatform):
         return result
 
 
+
+    # ------------------------------------------------------------------
+    # Event window (spec event-window §2): biến JS `window.init` trong HTML
+    # chứa 'start'/'end' — UNIX GIÂY dạng chuỗi số hoặc null. Theme custom
+    # có thể thiếu → confidence MEDIUM.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _window_init_value(html: str, key: str) -> Optional[str]:
+        """Giá trị 'key' trong block window.init = {...} (chuỗi số hoặc None)."""
+        anchor = re.search(r"window\.init\s*=\s*\{", html)
+        if not anchor:
+            return None
+        block = html[anchor.end():anchor.end() + 8000]
+        m = re.search(rf"['\"]{re.escape(key)}['\"]\s*:\s*(null|['\"]?\d+['\"]?)",
+                      block)
+        if not m or m.group(1) == "null":
+            return None
+        val = m.group(1).strip("'\" ")
+        return val or None
+
+    def fetch_event_times(self) -> Optional[EventTimes]:
+        try:
+            html = self._last_page_html
+            if not html:
+                resp = self.session.get(f"{self.base_url}/challenges", timeout=15)
+                if resp.status_code != 200:
+                    return None
+                html = resp.text
+                self._last_page_html = html
+            start_raw = self._window_init_value(html, "start")
+            end_raw = self._window_init_value(html, "end")
+            start = normalize_epoch_to_utc(start_raw)   # giây (10 chữ số) hoặc None
+            end = normalize_epoch_to_utc(end_raw)
+            if start is None and end is None:
+                return None
+            return EventTimes(start_utc=start, end_utc=end,
+                              confidence="medium", source="ctfd:window.init")
+        except Exception:
+            return None

@@ -3,7 +3,8 @@ import urllib.parse
 import requests
 from typing import List, Dict, Any, Optional, Tuple
 from bs4 import BeautifulSoup
-from .base import BasePlatform, Challenge, CTFInfo, SolveAttribution, epoch_ms, safe_get_json
+from .base import (BasePlatform, Challenge, CTFInfo, EventTimes,
+                   SolveAttribution, epoch_ms, normalize_epoch_to_utc, safe_get_json)
 from ..utils.logger import Logger
 from .registry import register
 
@@ -342,3 +343,51 @@ class RCTFPlatform(BasePlatform):
 
         return result
 
+
+    # ------------------------------------------------------------------
+    # Event window (spec event-window §2): GET /api/v1/integrations/client/
+    # config → startTime/endTime EPOCH MS (có thể vắng mặt); fallback
+    # <meta name="rctf-config"> trong HTML trang chủ.
+    # ------------------------------------------------------------------
+    def fetch_event_times(self) -> Optional[EventTimes]:
+        start = end = None
+        confidence = "high"
+        source = "rctf:/api/v1/integrations/client/config"
+
+        # 1. Client config API
+        try:
+            resp = self.session.get(
+                f"{self.base_url}/api/v1/integrations/client/config", timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                payload = data.get("data") if isinstance(data, dict) else None
+                payload = payload if isinstance(payload, dict) else {}
+                start = normalize_epoch_to_utc(payload.get("startTime"))
+                end = normalize_epoch_to_utc(payload.get("endTime"))
+        except Exception:
+            pass
+
+        # 2. Fallback meta tag <meta name="rctf-config" content='{"startTime":...}'>
+        if start is None and end is None:
+            try:
+                resp = self.session.get(self.base_url, timeout=10)
+                if resp.status_code == 200:
+                    m = re.search(
+                        r'<meta\s+name="rctf-config"\s+content="([^"]*)"',
+                        resp.text, re.I)
+                    if m:
+                        import html as _html
+                        import json as _json
+                        cfg = _json.loads(_html.unescape(m.group(1)))
+                        start = normalize_epoch_to_utc(cfg.get("startTime"))
+                        end = normalize_epoch_to_utc(cfg.get("endTime"))
+                        if start is not None or end is not None:
+                            confidence = "medium"
+                            source = "rctf:meta[rctf-config]"
+            except Exception:
+                pass
+
+        if start is None and end is None:
+            return None
+        return EventTimes(start_utc=start, end_utc=end,
+                          confidence=confidence, source=source)

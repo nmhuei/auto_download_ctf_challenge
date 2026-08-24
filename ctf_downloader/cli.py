@@ -12,6 +12,7 @@ from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test c
     handle_rank,
     handle_status,
     handle_submit,
+    handle_watch,
     handle_workspaces,
 )
 from .interactive_menu import launch_interactive_menu
@@ -92,6 +93,10 @@ Quick Examples:
     inst_parser.add_argument('-n', '--name', help='Target challenge name')
     inst_parser.add_argument('-l', '--list', action='store_true', help='List all container challenges')
     inst_parser.add_argument('-i', '--interactive', action='store_true', help='Interactive container wizard')
+    inst_parser.add_argument('--auto-extend', action='store_true',
+                             help='Giữ sống container được chọn (--id/-n): tự extend trong cửa sổ cuối, auto-restart theo R-A')
+    inst_parser.add_argument('--auto-extend-all', action='store_true',
+                             help='Giữ sống MỌI container running của workspace')
 
     # 5. SUBMIT / FLAG
     sub_parser = subparsers.add_parser('submit', aliases=['flag'], help='Submit flag to CTF platform and update local documentation')
@@ -128,7 +133,17 @@ Quick Examples:
     rank_parser.add_argument('-n', '--top', type=int, default=15, help='Number of top teams to display (default: 15)')
     rank_parser.add_argument('--no-docs', action='store_true', help='Do not write/update RANKING.md or SUMMARY.md')
 
-    # 7. MENU / UI / INTERACTIVE
+    # 7. WATCH / EVENT WINDOW — auto-sync trong window giải + keep-alive
+    watch_parser = subparsers.add_parser('watch', aliases=['sync'], help='👀 Auto-sync challenges/scoreboard/notices trong event window (+ keep-alive instance)')
+    watch_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
+    watch_parser.add_argument('--once', action='store_true', help='Chạy đúng 1 vòng rồi exit (entrypoint cho cron/systemd bọc ngoài)')
+    watch_parser.add_argument('--no-scoreboard', action='store_true', help='Tắt tick scoreboard')
+    watch_parser.add_argument('--start', help='Bắt đầu giải (ISO-8601 hoặc epoch) — override nguồn tự nhận diện')
+    watch_parser.add_argument('--end', help='Kết thúc giải (ISO-8601 hoặc epoch) — override nguồn tự nhận diện')
+    watch_parser.add_argument('-c', '--cookie', help='Cookie string or path to cookie file')
+    watch_parser.add_argument('-t', '--token', help='API token or Bearer token')
+
+    # 8. MENU / UI / INTERACTIVE
     menu_parser = subparsers.add_parser('menu', aliases=['ui', 'console'], help='Launch full interactive CTF suite dashboard')
     menu_parser.add_argument('-w', '--workspace', default=None, help='CTF workspace directory')
     menu_parser.add_argument('-c', '--cookie', help='Cookie string or path to cookie file')
@@ -168,6 +183,8 @@ def main():
         handle_hoard(args)
     elif cmd in ['rank', 'scoreboard', 'leaderboard']:
         handle_rank(args)
+    elif cmd in ['watch', 'sync']:
+        handle_watch(args)
     elif cmd in ['menu', 'ui', 'console']:
         launch_interactive_menu(workspace_path=args.workspace, cookie=args.cookie, token=args.token)
     else:

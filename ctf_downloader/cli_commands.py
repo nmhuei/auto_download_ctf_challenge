@@ -87,6 +87,21 @@ def handle_instance(args):
         Logger.error(f'Initialization error: {e}')
         sys.exit(1)
 
+    # 0. Keep-alive foreground (spec event-window §9):
+    #    --auto-extend-all → mọi container; --auto-extend → target --id/-n
+    if getattr(args, 'auto_extend_all', False) or getattr(args, 'auto_extend', False):
+        from .services.instance_keepalive import InstanceKeepAlive
+        ka = InstanceKeepAlive(svc, repo=svc.repo)
+        targets = None
+        if not getattr(args, 'auto_extend_all', False):
+            chall = svc.find_challenge(challenge_id=args.id, challenge_name=args.name)
+            if not chall:
+                Logger.error('--auto-extend cần --id hoặc -n để chỉ định challenge.')
+                sys.exit(1)
+            targets = [chall.get('id')]
+        _run_keepalive_forever(ka, targets)
+        return
+
     # 1. List
     if args.action == 'list' or args.list:
         containers = svc.list_containers()
@@ -199,6 +214,82 @@ def handle_hoard(args):
     if not ok:
         Logger.error(message)
         sys.exit(1)
+
+
+def _run_keepalive_forever(ka, targets=None):
+    """Vòng lặp keep-alive foreground cho ``ctf instance --auto-extend[-all]``.
+
+    Ctrl-C thoát sạch. Mỗi tick poll 30-60s (state machine tự siết 5s khi
+    DUE_SOON/RENEW_FAILED)."""
+    import time as _time
+
+    from .services.instance_keepalive import InstanceKeepAlive  # noqa: F401
+
+    Logger.info('♻️ Keep-alive bật — Ctrl-C để thoát.')
+    try:
+        trackers = ka.discover_containers()
+        if targets is not None:
+            wanted = {str(t) for t in targets}
+            ka.trackers = {cid: tr for cid, tr in ka.trackers.items()
+                           if str(cid) in wanted}
+        if not ka.trackers:
+            Logger.warning('Không có container nào để keep-alive.')
+            return
+        next_poll = 0.0
+        while True:
+            events = []
+            for tracker in ka.trackers.values():
+                try:
+                    events.extend(ka.tick_one(tracker))
+                except Exception as exc:
+                    events.append(('error', f'keepalive {tracker.name}: {exc}'))
+            level_icon = {'info': '', 'warning': '⚠️ ',
+                          'error': '❌ ', 'critical': '📢 '}
+            for lv, msg in events:
+                Logger.info(f"{level_icon.get(lv, '')}{msg}")
+            # Poll interval: min các next_poll_in của tracker (30-60s bình thường,
+            # 5s khi DUE_SOON/RENEW_FAILED)
+            next_poll = min((tr.next_poll_in() for tr in ka.trackers.values()),
+                            default=45.0)
+            _time.sleep(max(2.0, next_poll))
+    except KeyboardInterrupt:
+        Logger.info('👋 Keep-alive dừng.')
+
+
+def handle_watch(args):
+    """``ctf watch`` — auto-sync trong event window + keep-alive instance."""
+    import datetime as _dt
+
+    from .services.watch_service import WatchService, parse_time_arg
+
+    cookie_val = args.cookie
+    if cookie_val and os.path.isfile(cookie_val):
+        with open(cookie_val, 'r', encoding='utf-8') as f:
+            cookie_val = f.read().strip()
+
+    start_utc = parse_time_arg(getattr(args, 'start', None))
+    end_utc = parse_time_arg(getattr(args, 'end', None))
+    if (getattr(args, 'start', None) and start_utc is None) or \
+            (getattr(args, 'end', None) and end_utc is None):
+        Logger.error('--start/--end phải là ISO-8601 (vd 2026-08-24T09:00) '
+                     'hoặc epoch giây.')
+        sys.exit(2)
+
+    svc = WatchService(
+        workspace_path=args.workspace,
+        cookie=cookie_val,
+        token=args.token,
+        once=bool(getattr(args, 'once', False)),
+        no_scoreboard=bool(getattr(args, 'no_scoreboard', False)),
+        start_utc=start_utc,
+        end_utc=end_utc,
+    )
+    try:
+        exit_code = svc.run()
+    except KeyboardInterrupt:
+        exit_code = 130
+    if exit_code:
+        sys.exit(exit_code)
 
 
 def handle_rank(args):

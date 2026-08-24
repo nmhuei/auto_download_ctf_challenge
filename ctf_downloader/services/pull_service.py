@@ -210,6 +210,15 @@ class PullService:
         Logger.info(f"📊 Summary: [bold cyan]{summary_file}[/bold cyan]")
         Logger.info(f"📦 Total files downloaded: [bold green]{total_files}[/bold green]")
 
+        # Event Window (spec event-window §4/§6): lần đầu pull thành công mà
+        # workspace chưa có .ctf/config.json → chạy wizard 3 câu hỏi (chỉ khi
+        # tty) + nhận diện window (platform > CTFtime) + mirror challenges.json.
+        try:
+            from .watch_service import maybe_run_event_window_wizard
+            maybe_run_event_window_wizard(config.output_dir, platform=platform)
+        except Exception:
+            pass
+
         return {
             "ok": True,
             "output_dir": config.output_dir,

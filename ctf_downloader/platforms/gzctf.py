@@ -3,7 +3,8 @@ import time
 import urllib.parse
 import requests
 from typing import List, Dict, Any, Optional, Tuple
-from .base import BasePlatform, Challenge, CTFInfo, SolveAttribution, epoch_ms, safe_get_json
+from .base import (BasePlatform, Challenge, CTFInfo, EventTimes,
+                   SolveAttribution, epoch_ms, normalize_epoch_to_utc, safe_get_json)
 from ..utils.logger import Logger
 from .registry import register
 
@@ -592,3 +593,24 @@ class GZCTFPlatform(BasePlatform):
 
 
 
+
+    # ------------------------------------------------------------------
+    # Event window (spec event-window §2): GET /api/game/{id} → start/end
+    # là EPOCH MILLISECONDS; giá trị ≤ 0 hoặc năm < 2000 = chưa đặt lịch.
+    # ------------------------------------------------------------------
+    def fetch_event_times(self) -> Optional[EventTimes]:
+        if self.game_id is None:
+            return None
+        try:
+            resp = self.session.get(f"{self.origin}/api/game/{self.game_id}", timeout=10)
+            if resp.status_code != 200:
+                return None
+            data = resp.json() or {}
+            start = normalize_epoch_to_utc(data.get("start"))
+            end = normalize_epoch_to_utc(data.get("end"))
+            if start is None and end is None:
+                return None
+            return EventTimes(start_utc=start, end_utc=end, confidence="high",
+                              source=f"gzctf:/api/game/{self.game_id}")
+        except Exception:
+            return None
