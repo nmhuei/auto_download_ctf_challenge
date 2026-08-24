@@ -1,0 +1,292 @@
+.TH CTF 1 "2026-08-24" "ctf-toolkit" "User Commands"
+.SH NAME
+ctf \- bộ kit tác chiến Capture-The-Flag ngay trong terminal
+.SH SYNOPSIS
+.B ctf
+.RI [ lệnh ]
+.RI [ tuỳ\ chọn ]
+.br
+.B ctf
+.B \-i
+|
+.B \-\-interactive
+.br
+.B ctf
+.B \-v
+|
+.B \-\-version
+.SH DESCRIPTION
+.B ctf
+là công cụ dòng lệnh tải đề bài + attachment từ các nền tảng CTF
+(CTFd, GZCTF, rCTF...), dựng workspace chuẩn, đồng bộ metadata,
+quản lý container động, nộp flag và xuất writeup.
+Chạy
+.B ctf
+không đối số sẽ mở console tương tác đầy đủ.
+Mọi lệnh đều hỗ trợ
+.B \-\-help
+để xem chi tiết tuỳ chọn.
+.PP
+Tuỳ chọn toàn cục:
+.TP
+.BR \-i ", " \-\-interactive
+Mở console tương tác CTF đầy đủ.
+.TP
+.BR \-w ", " \-\-workspace " " \fIdir\fR
+Đường dẫn workspace CTF mặc định.
+.TP
+.BR \-v ", " \-\-version
+In phiên bản ctf-toolkit rồi thoát.
+.SH COMMANDS
+Dấu
+.B |
+liệt kê bí danh (alias) dùng thay cho tên chính.
+.TP
+.B pull " (download | clone)"
+Tải đề + attachment từ platform, dựng workspace.
+Tuỳ chọn:
+.BR \-u " URL platform, "
+.BR \-c " cookie (chuỗi hoặc file), "
+.BR \-t " API/Bearer token, "
+.BR \-o " thư mục output, "
+.BR \-j " số luồng tải (mặc định 4), "
+.BR \-C " chỉ lấy một số category, "
+.BR \-E " loại trừ category, "
+.B \-\-no-third-party ,
+.B \-\-no-template ,
+.BR \-f " ép tải lại, "
+.B \-\-update " (pull tăng dần challenge mới + cập nhật metadata), "
+.B \-\-refresh-meta ,
+.BR \-\-timeout " giây (mặc định 30), "
+.B \-i
+wizard tương tác.
+.TP
+.B status " (tree | ls | dashboard)"
+Bảng tổng quan challenge, điểm và tiến độ solve của workspace.
+Tuỳ chọn:
+.BR \-u " chỉ chưa solve, "
+.BR \-s " chỉ đã solve, "
+.BR \-C " lọc category, "
+.B \-\-container
+chỉ challenge có container động,
+.B \-\-label
+lọc theo label (lặp lại để AND),
+.B \-\-search
+tìm từ khoá trong tên + note.
+.TP
+.B workspaces " (scan)"
+Quét mọi workspace CTF trên máy.
+.B \-d
+chọn thư mục gốc để quét (mặc định ~/Workspace/CTF).
+.TP
+.B sync " (resync)"
+Đồng bộ metadata động (points/solves/connection) workspace ↔ platform;
+không đụng status/flag/file.
+.B \-\-verify
+liệt kê drift: challenge solved trên server nhưng local chưa.
+.TP
+.B instance " (container | spawn) " [\fIaction\fR]
+Quản lý container động của challenge.
+.I action
+là một trong:
+.BR start ", " stop ", " extend ", " status ", " list .
+Tuỳ chọn:
+.BR \-c ", " \-t " xác thực, "
+.BR \-\-id " / " \-n " chọn challenge theo ID/tên, "
+.B \-l
+liệt kê container,
+.B \-i
+wizard tương tác,
+.B \-\-auto-extend
+/
+.B \-\-auto-extend-all
+giữ sống container,
+.B \-y
+tự xác nhận thao tác phá vỡ kết nối.
+.TP
+.B submit " (flag) " [\fItarget\fR] [\fIflag\fR]
+Gửi flag lên platform và ghi nhật ký local.
+Tuỳ chọn:
+.BR \-u ", " \-c ", " \-t , " "
+.BR \-\-id " / " \-n " chọn challenge, "
+.B \-f
+truyền flag,
+.B \-\-auto
+tự quét flag đã điền trong workspace,
+.B \-\-flag-format
+regex định dạng flag,
+.B \-\-force
+vượt blacklist flag sai,
+.B \-i
+wizard tương tác.
+.TP
+.B hoard " (flag-stash) " [\fItarget\fR] [\fIflag\fR]
+Lưu flag tìm được vào kho local (metadata.json) mà KHÔNG submit lên platform.
+Cùng kiểu tham số với submit (bỏ \-\-auto/\-\-force).
+.TP
+.B note " (ghi-chu) " \fItarget\fR " [" \fInội dung\fR "]"
+Ghi/xoá note cho một challenge (lưu vào metadata.status.notes).
+Bỏ trống nội dung để nhập multi-line (kết thúc bằng dòng trống).
+.B \-\-remove
+xoá note.
+.TP
+.B tag " (tags) " \fItarget\fR " " \fItag\fR ...
+Thêm/xoá label cho challenge ([a-z0-9-], tối đa 24 ký tự).
+.B \-r
+xoá thay vì thêm.
+.TP
+.B rank " (scoreboard | leaderboard)"
+Bảng xếp hạng live và cập nhật RANKING.md / SUMMARY.md.
+Tuỳ chọn:
+.B \-n
+số đội top hiển thị (mặc định 15),
+.B \-\-no-docs
+không ghi docs,
+.BR \-u ", " \-c ", " \-t .
+.TP
+.B watch
+Auto-sync challenges/scoreboard/notices trong event window của giải
+(+ keep-alive instance).
+Tuỳ chọn:
+.B \-\-once
+chạy đúng 1 vòng rồi exit (cho cron/systemd),
+.B \-\-no-scoreboard ,
+.BR \-\-start " / " \-\-end " override mốc giờ giải (ISO-8601 hoặc epoch), "
+.BR \-c ", " \-t .
+.TP
+.B sniper
+Preload flag và nộp tự động ngay giây đầu window mở (first-blood race).
+Tuỳ chọn:
+.B \-\-start-at
+thời điểm mở giải (bắt buộc nếu challenges.json thiếu event_window.start),
+.B \-\-retry-wrong
+cho phép thử lại target sai (tối đa 3 lần/target),
+.B \-\-poll
+chu kỳ poll khi chờ giờ G, giây (mặc định 10).
+.TP
+.B register " (reg)"
+Tự tạo ĐÚNG 1 tài khoản trên platform (GZCTF/CTFd) + lưu auth map.
+Tuỳ chọn:
+.B \-u
+URL platform,
+.B \-\-email ,
+.B \-\-tempmail
+dùng mailbox tạm mail.tm,
+.B \-\-username
+prefix username (mặc định player + 6 ký tự random),
+.B \-\-password ,
+.B \-w
+workspace gắn credentials.
+.TP
+.B doctor " (health | checkup)"
+Health-check platform trước giờ giải: URL/auth/capabilities/event-window/flag-format.
+Tuỳ chọn:
+.BR \-u ", " \-w ", " \-c ", " \-t .
+.TP
+.B storage " (du | archive)" " [" archive " " \fIworkspace_name\fR "]"
+Báo cáo dung lượng workspace + archive.
+Tuỳ chọn gốc:
+.B \-d
+thư mục gốc chứa workspace,
+.B \-\-threshold-mb
+ngưỡng cảnh báo mỗi workspace (mặc định 1024 MiB).
+Lệnh con
+.B archive
+đóng gói một workspace thành tar.gz:
+.B \-\-git-remote
+commit + push archive,
+.B \-\-out
+thư mục lưu (mặc định <base-dir>/_archives),
+.B \-y
+bỏ qua confirm.
+.TP
+.B export-pack
+Đóng gói writeup các challenge đã solve thành pack markdown + zip.
+.B \-\-out
+chọn thư mục lưu pack zip.
+.TP
+.B history " (log)"
+Xem lịch sử submit flag của workspace (submit_history.json), flag bị che mặc định.
+.B \-\-all
+hiện flag đầy đủ.
+.TP
+.B serve " (web)"
+Dashboard web read-only cho workspace, bind 127.0.0.1.
+.B \-\-port
+chọn cổng (mặc định 8689).
+.TP
+.B menu " (ui | console)"
+Console interactive đầy đủ (dashboard CTF suite).
+Tuỳ chọn:
+.BR \-w ", " \-c ", " \-t .
+.SH FILES
+.TP
+.I ~/.config/ctf_toolkit/config.json
+Cấu hình toàn cục: bản đồ
+.I workspaces
+(theo đường dẫn),
+.I default_workspace
+và
+.I auth
+(auth map chứa credentials theo workspace/URL do
+.B register
+lưu).
+.TP
+.I <workspace>/.ctf/config.json
+Cấu hình riêng workspace: event window và SyncPolicy
+(wizard của
+.B watch
+ghi đúng một lần).
+.TP
+.I <workspace>/challenges.json
+Metadata tổng của giải (points/solves/solved/status).
+.TP
+.I <workspace>/SUMMARY.md ", " <workspace>/RANKING.md
+Tổng quan giải và bảng xếp hạng do
+.B rank
+/
+.B watch
+cập nhật.
+.TP
+.I <workspace>/<Category>/<challenge-name>/
+Một challenge: README.md (đề + hints + connection),
+metadata.json (dữ liệu thô + status/notes/tags/flag),
+solve.py (template giải mẫu) và các attachment.
+.TP
+.I <workspace>/submit_history.json
+Nhật ký submit flag (schema {"entries": [...]}) dùng bởi
+.BR history .
+.TP
+.I <base-dir>/_archives/
+Nơi lưu archive tar.gz mặc định của
+.BR "storage archive" .
+.SH EXAMPLES
+.TP
+Tải toàn bộ challenge từ một platform CTFd:
+.nf
+    $ ctf pull \-u https://ctf.example.com \-c "session=..." \-o ~/Workspace/CTF/example2026
+.fi
+.TP
+Pull tăng dần đêm giữa giải — chỉ challenge mới + refresh metadata:
+.nf
+    $ cd ~/Workspace/CTF/example2026 && ctf pull \-\-update \-c cookies.txt
+.fi
+.TP
+Xem tiến độ, chỉ category Web còn chưa solve kèm label:
+.nf
+    $ ctf status \-u \-C Web \-\-label todo
+.fi
+.TP
+Nộp flag và ghi lịch sử:
+.nf
+    $ ctf submit "Sanity Check" PTITCTF{hello_world}
+.fi
+.TP
+Health-check trước giờ giải, rồi canh first-blood bằng sniper:
+.nf
+    $ ctf doctor \-u https://ctf.example.com \-t "$TOKEN"
+    $ ctf sniper \-\-start-at "2026\-08\-24T08:00:00+07:00"
+.fi
+.SH AUTHORS
+Được viết và duy trì bởi nmhuei cùng những người cộng tác trong dự án
+ctf-toolkit (repo: auto_download_ctf_challenge).
