@@ -44,6 +44,10 @@ def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, Non
 
     - File hỏng (JSON không parse được): nội dung cũ được copy sang
       `<name>.bak` trước khi ghi đè, và state hiện tại coi như `{}`.
+    - File TỒN TẠI nhưng KHÔNG ĐỌC ĐƯỢC (PermissionError / OSError):
+      ABORT — raise OSError lên caller, KHÔNG ghi đè (không có gì để
+      backup an toàn, ghi đè sẽ phá dữ liệu gốc vĩnh viễn).
+    - BOM UTF-8 ở đầu file được tự động bỏ qua (utf-8-sig).
     - Gọi mutator(state); nếu mutator trả None thì giữ nguyên state.
     - Ghi lại bằng atomic write (trong phạm vi lock), trả về dict cuối cùng.
     """
@@ -57,9 +61,14 @@ def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, Non
             raw = ""
             if p.exists():
                 try:
-                    raw = p.read_text(encoding="utf-8")
-                except OSError:
-                    raw = ""
+                    raw = p.read_text(encoding="utf-8-sig")
+                except OSError as exc:
+                    # Không đọc được -> không có nội dung nào để backup an toàn.
+                    # Abort mutation thay vì coi file là rỗng rồi ghi đè.
+                    raise OSError(
+                        f"locked_update_json: không đọc được {p} "
+                        f"({exc.__class__.__name__}) — abort để tránh mất dữ liệu"
+                    ) from exc
 
             data: dict = {}
             if raw.strip():

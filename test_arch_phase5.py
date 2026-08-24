@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from ctf_downloader.generator.summary_generator import SummaryGenerator
 from ctf_downloader.storage.fileio import atomic_write_json, locked_update_json
 from ctf_downloader.storage.workspace_repo import WorkspaceRepo
 
@@ -779,6 +780,156 @@ class TestRenderTreeOnlyContainer(unittest.TestCase):
         self.assertNotIn("Static", cont_only)
         self.assertIn("CTF WORKSPACE: TreeCTF [GZCTF]", cont_only)
         self.assertIn("[🐳 Container]", cont_only)
+
+
+# ======================================================================
+# Fix wave #2 — regression tests (weakness-report-cycle1 findings)
+# ======================================================================
+
+class TestLockedUpdateDataSafety(unittest.TestCase):
+    """Critical-1: locked_update_json không được phá dữ liệu vĩnh viễn."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="wave2_data_")
+        self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
+
+    def _write(self, name: str, text: str) -> pathlib.Path:
+        p = pathlib.Path(self._tmp) / name
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    def test_bom_file_preserved_through_locked_update(self):
+        # metadata.json có BOM UTF-8: update_status cũ parse fail -> coi như {}
+        # -> ghi đè mất name/id. Sau fix phải đọc được (utf-8-sig) và giữ key.
+        p = self._write(
+            "metadata.json",
+            "﻿" + json.dumps({"id": 1, "name": "Web Basics", "points": 100}),
+        )
+        out = locked_update_json(p, lambda d: {**d, "status": {"solve": "solved_by_me"}})
+        self.assertEqual(out["name"], "Web Basics")
+        self.assertEqual(out["id"], 1)
+        on_disk = json.loads(p.read_text(encoding="utf-8-sig"))
+        self.assertEqual(on_disk["name"], "Web Basics")
+        self.assertEqual(on_disk["status"]["solve"], "solved_by_me")
+
+    def test_unreadable_file_aborts_without_overwrite(self):
+        # chmod 000: đọc fail -> KHÔNG được ghi đè (không có gì để backup).
+        p = self._write("challenges.json", json.dumps({"ctf_info": {"title": "Keep"}}))
+        os.chmod(p, 0o000)
+        self.addCleanup(os.chmod, p, 0o644)
+        with self.assertRaises(OSError):
+            locked_update_json(p, lambda d: {"hacked": True})
+        os.chmod(p, 0o644)
+        # Nội dung gốc còn nguyên vẹn
+        self.assertEqual(json.loads(p.read_text(encoding="utf-8")), {"ctf_info": {"title": "Keep"}})
+        # Không có .bak nào bị ghi rác từ dữ liệu rỗng
+        bak = p.with_name(p.name + ".bak")
+        if bak.exists():
+            self.assertEqual(bak.read_text(encoding="utf-8"), json.dumps({"ctf_info": {"title": "Keep"}}))
+
+    def test_corrupt_file_backed_up_before_overwrite(self):
+        original = "{ this is not json"
+        p = self._write("submit_history.json", original)
+        locked_update_json(p, lambda d: {"entries": [{"flag": "X"}]})
+        bak = p.with_name(p.name + ".bak")
+        self.assertTrue(bak.exists())
+        self.assertEqual(bak.read_text(encoding="utf-8"), original)
+
+    def test_repo_read_metadata_handles_bom_and_unreadable(self):
+        from ctf_downloader.storage.workspace_repo import WorkspaceRepo
+
+        bom_path = self._write(
+            "m1.json", "﻿" + json.dumps({"id": 7, "name": "Bom Chall"})
+        )
+        repo = WorkspaceRepo(self._tmp)
+        meta = repo.read_metadata(bom_path)
+        self.assertEqual(meta.get("name"), "Bom Chall")
+
+
+class TestSummaryGeneratorSafeValues(unittest.TestCase):
+    """Critical-2: summary_generator không crash với points/category bất thường."""
+
+    def setUp(self):
+        import tempfile as _tf
+        self._tmp = _tf.mkdtemp(prefix="wave2_summary_")
+        self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
+
+    def _generate(self, challenges):
+        from ctf_downloader.models import CTFInfo
+
+        info = CTFInfo(title="Wave2CTF", url="https://x.example", challenges=challenges)
+        path = SummaryGenerator.generate_summary(
+            base_output_dir=self._tmp, ctf_info=info,
+            all_results={c.id: [] for c in challenges},
+        )
+        with open(path, encoding="utf-8") as f:
+            summary = f.read()
+        with open(os.path.join(self._tmp, "challenges.json"), encoding="utf-8") as f:
+            data = json.load(f)
+        return summary, data
+
+    def test_none_string_negative_points_and_none_category(self):
+        from ctf_downloader.models import Challenge
+
+        challs = [
+            Challenge(id=1, name="NoPoints", category=None, points=None),
+            Challenge(id=2, name="StrPoints", category="Web", points="100"),
+            Challenge(id=3, name="NegPoints", category="Web", points=-5),
+        ]
+        summary, data = self._generate(challs)
+        self.assertIn("Wave2CTF", summary)
+        # None -> 0, "100" -> 100, -5 giữ nguyên => tổng 95
+        self.assertEqual(data["total_points"], 95)
+        # category None không crash sorted(); nhóm về default
+        cats = set(data["categories"])
+        self.assertNotIn(None, cats)
+        self.assertIn("Web", cats)
+
+    def test_all_none_values_render_valid_output(self):
+        from ctf_downloader.models import Challenge
+
+        challs = [Challenge(id=i, name=f"c{i}", category=None, points=None) for i in range(3)]
+        summary, data = self._generate(challs)
+        self.assertEqual(data["total_points"], 0)
+        self.assertEqual(len(data["categories"]), 1)
+
+
+class TestValidateFlagReDoSGuard(unittest.TestCase):
+    """Important: validate_flag / regex search có timeout, không treo CLI."""
+
+    REDOS_FMT = "(a+)+$"
+
+    def test_validate_flag_redos_returns_quickly_false(self):
+        from ctf_downloader.utils.flag_format import validate_flag
+        import time
+
+        flag = "a" * 29 + "B"
+        t0 = time.monotonic()
+        result = validate_flag(flag, self.REDOS_FMT)
+        elapsed = time.monotonic() - t0
+        self.assertFalse(result)
+        self.assertLess(elapsed, 3.0)
+
+    def test_validate_flag_still_works_normal_cases(self):
+        from ctf_downloader.utils.flag_format import validate_flag
+
+        self.assertTrue(validate_flag("PTITCTF{abc}", "^PTITCTF\\{.+\\}$"))
+        self.assertFalse(validate_flag("WRONG{abc}", "^PTITCTF\\{.+\\}$"))
+
+    def test_oversized_pattern_rejected(self):
+        from ctf_downloader.utils.flag_format import MAX_PATTERN_LENGTH, validate_flag
+
+        self.assertFalse(validate_flag("X{y}", "^a" * (MAX_PATTERN_LENGTH // 2)))
+
+    def test_regex_search_helper_has_timeout(self):
+        from ctf_downloader.utils.flag_format import regex_search_with_timeout
+        import time
+
+        t0 = time.monotonic()
+        m = regex_search_with_timeout("(a+)+$", "a" * 29 + "B")
+        elapsed = time.monotonic() - t0
+        self.assertIsNone(m)
+        self.assertLess(elapsed, 3.0)
 
 
 if __name__ == "__main__":

@@ -97,8 +97,10 @@ class WorkspaceRepo:
         if not path.exists():
             return {}
         try:
-            raw = path.read_text(encoding="utf-8")
+            raw = path.read_text(encoding="utf-8-sig")
         except OSError:
+            # Không đọc được: không backup được gì, trả rỗng (caller không
+            # được phép ghi đè lên file này qua repo mà không đọc trước).
             return {}
         if not raw.strip():
             return {}
@@ -200,7 +202,9 @@ class WorkspaceRepo:
 
     def read_metadata(self, path: PathLike) -> dict:
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            # utf-8-sig: bỏ qua BOM UTF-8 nếu file bị editor thêm vào,
+            # tránh parse fail -> mất toàn bộ name/id của challenge.
+            with open(path, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
             return data if isinstance(data, dict) else {}
         except Exception:

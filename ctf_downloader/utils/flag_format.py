@@ -3,8 +3,144 @@ SP1 — Tiện ích nhận diện & kiểm tra định dạng flag.
 Các hàm thuần (pure functions), không I/O, dễ test.
 """
 import re
+import threading
 from collections import Counter
 from typing import List, Optional
+
+# --- ReDoS guard ---------------------------------------------------------
+# Python re không có timeout native và KHÔNG thể ngắt bằng thread/SIGALRM:
+# sre matching chạy hoàn toàn trong C, không nhả GIL cho tới khi xong —
+# thread chính join(timeout) vẫn phải đợi match kết thúc. Phòng thủ thực tế:
+#   1. Giới hạn độ dài pattern.
+#   2. Từ chối pattern có QUANTIFIER LỒNG NHAU ((a+)+$, (.*)*, (x{1,5})+ ...)
+#      — lớp catastrophic backtracking kinh điển — bằng phân tích cú pháp
+#      nhẹ (scan escape/class/group đúng cách).
+#   3. Vẫn chạy match trong daemon thread với join timeout làm lớp phòng
+#      thủ thứ cấp (pattern chậm do lý do khác -> trả False sau timeout;
+#      daemon để process thoát được dù worker còn kẹt).
+MAX_PATTERN_LENGTH = 500
+MATCH_TIMEOUT_SECONDS = 2.0
+
+_warned_patterns = set()
+
+
+def _log_redos_warning(pattern: str) -> None:
+    if pattern in _warned_patterns:
+        return
+    _warned_patterns.add(pattern)
+    try:
+        from .logger import Logger
+        Logger.warning(
+            f"Flag format quá phức tạp hoặc quá dài (> {MAX_PATTERN_LENGTH} ký tự) "
+            f"— bỏ qua kiểm tra format cho pattern này."
+        )
+    except Exception:
+        pass
+
+
+def _scan_nested_quantifier(pattern: str) -> bool:
+    """True nếu pattern chứa quantifier áp lên nhóm có quantifier bên trong
+    (vd ``(a+)+``, ``(.*)*{2,}``, ``(?:\\d+)+``) — nguồn catastrophic
+    backtracking phổ biến nhất. Scan bỏ qua escape \\x, character class
+    [...] và đếm đúng nhóm lồng nhau."""
+    n = len(pattern)
+    i = 0
+    in_class = False
+    group_stack = [False]   # đáy = toàn pattern
+
+    def _bounded_repeat(j):
+        """Kiểm tra {m,n} bắt đầu tại j; trả về index cuối nếu phải."""
+        if j >= n or pattern[j] != "{":
+            return -1
+        end = pattern.find("}", j)
+        if end == -1:
+            return -1
+        if re.fullmatch(r"\{\d+(,\d*)?\}", pattern[j:end + 1]):
+            return end
+        return -1
+
+    while i < n:
+        c = pattern[i]
+        if in_class:
+            if c == "\\":
+                i += 2
+                continue
+            if c == "]":
+                in_class = False
+            i += 1
+            continue
+        if c == "\\":
+            i += 2
+            continue
+        if c == "[":
+            in_class = True
+            i += 1
+            continue
+        if c == "(":
+            group_stack.append(False)
+            i += 1
+            continue
+        if c == ")":
+            inner_had_q = group_stack.pop() if len(group_stack) > 1 else False
+            # quantifier ngay sau dấu )?
+            j = i + 1
+            quantified = False
+            if j < n and pattern[j] in "*+":
+                quantified = True
+            else:
+                e = _bounded_repeat(j)
+                if e != -1:
+                    quantified = True
+            if quantified and inner_had_q:
+                return True
+            if (quantified or inner_had_q) and group_stack:
+                group_stack[-1] = group_stack[-1] or (inner_had_q and not quantified) or quantified
+            i += 1
+            continue
+        if c in "*+":
+            group_stack[-1] = True
+            i += 1
+            continue
+        if c == "?":
+            # '??'/'*?'/'+?' là lazy-modifier của quantifier đứng trước,
+            # bản thân '?' (optional) cũng là quantifier.
+            group_stack[-1] = True
+            i += 1
+            continue
+        e = _bounded_repeat(i)
+        if e != -1:
+            group_stack[-1] = True
+            i = e + 1
+            continue
+        i += 1
+    return False
+
+
+def _regex_with_timeout(fn, timeout: float = MATCH_TIMEOUT_SECONDS):
+    """Chạy ``fn()`` trong daemon thread, chờ tối đa ``timeout`` giây.
+
+    Trả về kết quả của fn(); nếu fn raise hoặc timeout -> trả None.
+    LƯU Ý: với re thuần, timeout này không ngắt được match đang kẹt trong
+    C (sre không nhả GIL) — lớp phòng thủ chính là _scan_nested_quantifier.
+    """
+    box = {}
+
+    def _runner():
+        try:
+            box["value"] = fn()
+        except re.error:
+            box["value"] = None
+        except Exception:
+            box["value"] = None
+
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        return None   # timeout — caller quyết định nghĩa của None
+    return box.get("value")
+
+
 
 # Candidate fallback: PREFIX{body}
 _FLAG_CANDIDATE_RE = re.compile(r'\b([A-Za-z][A-Za-z0-9_]{1,24})\{([^{}\n]{1,256})\}')
@@ -96,14 +232,66 @@ def extract_flag_format(text: str) -> Optional[str]:
     return None
 
 
+def regex_search_with_timeout(pattern: str, text: str, timeout: float = MATCH_TIMEOUT_SECONDS):
+    """re.search có ReDoS guard: trả match, hoặc None nếu không khớp /
+    pattern hỏng / quá phức tạp (nested quantifier). Dùng chung cho các bề
+    mặt chạy regex user-supplied (validate_flag, writeup_assessor)."""
+    if not pattern or len(pattern) > MAX_PATTERN_LENGTH:
+        _log_redos_warning(pattern or "")
+        return None
+    if _scan_nested_quantifier(pattern):
+        _log_redos_warning(pattern)
+        return None
+    return _regex_with_timeout(lambda: re.search(pattern, text), timeout)
+
+
+def regex_matches_with_timeout(
+    pattern: str,
+    text: str,
+    limit: int = 100,
+    timeout: float = MATCH_TIMEOUT_SECONDS,
+):
+    """re.finditer có ReDoS guard: trả LIST các match (tối đa ``limit``),
+    hoặc None nếu pattern hỏng / quá dài / nested quantifier / timeout."""
+    if not pattern or len(pattern) > MAX_PATTERN_LENGTH:
+        _log_redos_warning(pattern or "")
+        return None
+    if _scan_nested_quantifier(pattern):
+        _log_redos_warning(pattern)
+        return None
+
+    def _find_all():
+        out = []
+        for m in re.finditer(pattern, text):
+            out.append(m)
+            if len(out) >= limit:
+                break
+        return out
+
+    return _regex_with_timeout(_find_all, timeout)
+
+
 def validate_flag(flag: str, fmt_regex: str) -> bool:
     """
     Kiểm tra flag khớp hoàn toàn với regex định dạng.
     Mọi exception khi compile/match -> False.
+    Pattern quá dài hoặc có quantifier lồng nhau (ReDoS) -> False + warning.
     """
     if not flag or not fmt_regex:
         return False
-    try:
-        return re.fullmatch(fmt_regex, flag.strip()) is not None
-    except re.error:
+    if len(fmt_regex) > MAX_PATTERN_LENGTH or _scan_nested_quantifier(fmt_regex):
+        _log_redos_warning(fmt_regex)
         return False
+
+    stripped = flag.strip()
+
+    def _match():
+        return re.fullmatch(fmt_regex, stripped) is not None
+
+    result = _regex_with_timeout(_match)
+    if result is None:
+        # re.error đã bị nuốt trong _runner; None còn lại nghĩa là timeout
+        # (pattern chậm bất thường) -> coi như không khớp.
+        _log_redos_warning(fmt_regex)
+        return False
+    return result

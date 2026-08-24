@@ -24,6 +24,7 @@ import re
 from typing import Dict, List, Optional
 
 from ..storage.constants import FLAG_PLACEHOLDER
+from .flag_format import regex_matches_with_timeout
 
 SIMILARITY_SKELETON = 0.95
 COMPLETE_SCORE_THRESHOLD = 70
@@ -102,13 +103,14 @@ def assess_writeup(md_text: str,
         try:
             # Bỏ anchor ^/$ để search được flag nằm GIỮA văn bản nhiều dòng
             # (pattern anchored giữ nguyên cho validate_flag ở chỗ khác).
+            # Dùng regex_matches_with_timeout: pattern user-supplied có thể
+            # là catastrophic backtracking (vd ``(a+)+$``) -> treo vĩnh viễn.
             body = flag_format.strip()
             if body.startswith("^"):
                 body = body[1:]
             if body.endswith("$"):
                 body = body[:-1]
-            fmt_re = re.compile(body, re.M)
-            for m in fmt_re.finditer(md):
+            for m in regex_matches_with_timeout(body, md) or []:
                 if m.group(0).strip() != FLAG_PLACEHOLDER:
                     format_matched = True   # bỏ qua chính placeholder
                     break

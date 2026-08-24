@@ -3,8 +3,27 @@ import json
 from collections import defaultdict
 from typing import List, Dict, Any
 from ..platforms.base import Challenge, CTFInfo
-from ..storage.constants import SOLVED_EMOJI_DONE, SUMMARY_FILES_LINE
+from ..storage.constants import DEFAULT_CATEGORY, SOLVED_EMOJI_DONE, SUMMARY_FILES_LINE
 from ..utils.sanitize import sanitize_folder_name
+
+
+def _safe_int(value) -> int:
+    """Ép points về int an toàn: None / chuỗi không số / kiểu lạ -> 0.
+
+    Platform thật (gzCTF/rCTF dynamic scoring) trả ``points: null`` rất phổ
+    biến — không ép sẽ crash cả pipeline download ở bước cuối.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_category(category) -> str:
+    """Category None/rỗng -> nhóm default, tránh trộn None với str khi sorted()."""
+    if category is None or not str(category).strip():
+        return DEFAULT_CATEGORY
+    return str(category)
 
 class SummaryGenerator:
     @staticmethod
@@ -25,8 +44,8 @@ class SummaryGenerator:
         total_files = 0
         
         for chall in challenges:
-            by_category[chall.category].append(chall)
-            total_points += chall.points
+            by_category[_safe_category(chall.category)].append(chall)
+            total_points += _safe_int(chall.points)
             chall_files = all_results.get(chall.id, [])
             total_files += sum(1 for f in chall_files if f.get("success"))
 
@@ -51,13 +70,13 @@ class SummaryGenerator:
         lines.append("## 📊 Categories Overview\n")
         lines.append("| Category | Challenges | Total Points |")
         lines.append("| :--- | :--- | :--- |")
-        for cat, challs in sorted(by_category.items()):
-            cat_pts = sum(c.points for c in challs)
+        for cat, challs in sorted(by_category.items(), key=lambda kv: str(kv[0])):
+            cat_pts = sum(_safe_int(c.points) for c in challs)
             lines.append(f"| **{cat}** | {len(challs)} | {cat_pts} |")
         lines.append("")
 
         # Detailed Table per Category
-        for cat, challs in sorted(by_category.items()):
+        for cat, challs in sorted(by_category.items(), key=lambda kv: str(kv[0])):
             lines.append(f"## 📁 {cat}\n")
             lines.append("| Challenge | Points | Solves | Files | Status | Path |")
             lines.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
