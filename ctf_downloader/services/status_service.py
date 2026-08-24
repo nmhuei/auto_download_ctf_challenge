@@ -17,6 +17,12 @@ from ..utils.writeup_assessor import assess_writeup
 WRITEUP_RANK = {"none": 0, "skeleton": 1, "draft": 2, "complete": 3}
 
 
+def _utcnow():
+    """"Bây giờ" aware UTC — hàm riêng để test có thể patch deterministically."""
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc)
+
+
 class StatusService:
     # Giá trị trục solve được tính là "đã giải" cho thống kê tiến độ
     # (giải bởi mình / team / người khác đều ăn điểm trên bảng).
@@ -362,38 +368,46 @@ class StatusService:
         return None
 
     @staticmethod
-    def _render_window(repo: WorkspaceRepo) -> str:
+    def _fmt_local(dt) -> str:
+        """Giờ local ngắn gọn cho mốc thời gian (spec event-window: aware +
+        hiển thị theo timezone máy user)."""
+        try:
+            return dt.astimezone().strftime("%H:%M %d/%m")
+        except Exception:
+            return ""
+
+    @classmethod
+    def _render_window(cls, repo: WorkspaceRepo) -> str:
         """⏱️ Window từ ``ctf_info.event_window`` (feature Event Window mirror):
-        🔴 LIVE / ⏳ countdown / ✅ ended. Trả "" khi không có dữ liệu."""
-        import datetime as _dt
+        🔴 LIVE / ⏳ Countdown / ✅ Ended. Trả "" khi không có dữ liệu hợp lệ
+        (workspace cũ giữ nguyên output — không in dòng).
+
+        Parse qua ``normalize_epoch_to_utc`` (đơn vị ms/giây + ISO string,
+        tz-aware UTC); so sánh trong UTC, mốc tuyệt đối hiển thị giờ local.
+        """
+        from ..platforms.base import normalize_epoch_to_utc
 
         data = repo.read_challenges()
         win = ((data.get('ctf_info') or {}).get('event_window') or {})
-        start_s, end_s = win.get('start'), win.get('end')
-        if not start_s or not end_s:
+        start = normalize_epoch_to_utc(win.get('start'))
+        end = normalize_epoch_to_utc(win.get('end'))
+        if start is None or end is None or start >= end:
             return ""
-        try:
-            def _parse(v):
-                if isinstance(v, (int, float)) or (isinstance(v, str) and v.isdigit()):
-                    return _dt.datetime.fromtimestamp(float(v), tz=_dt.timezone.utc)
-                iso = str(v).replace('Z', '+00:00')
-                return _dt.datetime.fromisoformat(iso)
 
-            now = _dt.datetime.now(_dt.timezone.utc)
-            start, end = _parse(start_s), _parse(end_s)
-            if start <= now <= end:
-                remain = end - now
-                hrs, rem_sec = divmod(int(remain.total_seconds()), 3600)
-                mins = rem_sec // 60
-                return f"🔴 LIVE (còn {hrs}h{mins:02d}m)"
-            if now < start:
-                remain = start - now
-                days = remain.days
-                hrs = remain.seconds // 3600
-                return f"⏳ countdown ({days}d {hrs}h tới giờ mở)"
-            return "✅ ended"
-        except Exception:
-            return ""
+        now = _utcnow()
+        if start <= now <= end:
+            remain = int((end - now).total_seconds())
+            hrs, rem_sec = divmod(remain, 3600)
+            mins = rem_sec // 60
+            return (f"🔴 LIVE (còn {hrs}h{mins:02d}m"
+                    f" — tới {cls._fmt_local(end)})")
+        if now < start:
+            remain = start - now
+            days, hrs = remain.days, remain.seconds // 3600
+            return (f"⏳ Countdown (bắt đầu sau {days}d {hrs}h"
+                    f" — {cls._fmt_local(start)})")
+        days = int((now - end).total_seconds() // 86400)
+        return f"✅ Ended (kết thúc {days} ngày trước — {cls._fmt_local(end)})"
 
     # ------------------------------------------------------------------ #
     # Scan toàn bộ workspace trong một thư mục gốc (bản DUY NHẤT — cli/

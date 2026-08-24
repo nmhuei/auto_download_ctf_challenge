@@ -1148,5 +1148,90 @@ class TestLockedUpdateJsonSymlink(TempWorkspaceCase):
                          "lost update: các process ghi đè lẫn nhau")
 
 
+# ----------------------------------------------------------------------
+# Dashboard header ⏱️ event window (spec event-window: LIVE/countdown/ended)
+# ----------------------------------------------------------------------
+
+class TestEventWindowHeader(TempWorkspaceCase):
+    """Dòng ⏱️ trong header render_tree mirror từ ctf_info.event_window.
+
+    - 🔴 LIVE khi now nằm trong window (còn Xh Ym)
+    - ⏳ Countdown khi chưa bắt đầu (bắt đầu sau Xd Yh)
+    - ✅ Ended khi đã kết thúc (kết thúc X ngày trước)
+    - Không có window → output GIỐNG HỆT bản cũ (không in dòng).
+    """
+
+    def _render_stdout(self) -> str:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            StatusService.render_tree(self.repo)
+        return buf.getvalue()
+
+    def _set_window(self, start_s, end_s):
+        def mut(data):
+            info = data.setdefault("ctf_info", {})
+            if start_s is None and end_s is None:
+                info.pop("event_window", None)
+            else:
+                info["event_window"] = {"start": start_s, "end": end_s,
+                                        "source": "test", "confidence": "high"}
+            return data
+        self.repo.mutate_challenges(mut)
+
+    def test_live_when_now_inside_window(self):
+        import datetime as dt
+        now = dt.datetime.now(dt.timezone.utc)
+        self._set_window((now - dt.timedelta(hours=1)).isoformat(),
+                         (now + dt.timedelta(hours=5)).isoformat())
+        out = self._render_stdout()
+        self.assertIn("⏱️", out)
+        line = next(ln for ln in out.splitlines() if "⏱️" in ln)
+        self.assertIn("🔴 LIVE", line)
+        self.assertIn("còn ", line)
+        # mốc tuyệt đối hiển thị giờ local
+        self.assertRegex(line, r"\d{2}:\d{2} \d{2}/\d{2}")
+
+    def test_countdown_before_start(self):
+        import datetime as dt
+        now = dt.datetime.now(dt.timezone.utc)
+        self._set_window((now + dt.timedelta(days=2, hours=3)).isoformat(),
+                         (now + dt.timedelta(days=4)).isoformat())
+        out = self._render_stdout()
+        line = next(ln for ln in out.splitlines() if "⏱️" in ln)
+        self.assertIn("⏳ Countdown", line)
+        self.assertIn("bắt đầu sau 2d", line)
+
+    def test_ended_after_end(self):
+        import datetime as dt
+        now = dt.datetime.now(dt.timezone.utc)
+        self._set_window((now - dt.timedelta(days=10)).isoformat(),
+                         (now - dt.timedelta(days=3)).isoformat())
+        out = self._render_stdout()
+        line = next(ln for ln in out.splitlines() if "⏱️" in ln)
+        self.assertIn("✅ Ended", line)
+        self.assertIn("kết thúc 3 ngày trước", line)
+
+    def test_epoch_ms_and_garbage_inputs(self):
+        import datetime as dt
+        now_ms = dt.datetime.now(dt.timezone.utc).timestamp() * 1000
+        # epoch-ms (GZCTF style) → LIVE
+        self._set_window(now_ms - 3600_000, now_ms + 3600_000)
+        out = self._render_stdout()
+        self.assertIn("🔴 LIVE", out)
+        # garbage / null / start>=end → coi như không có window
+        for bad in (("null", "null"), ("garbage", 1756000000),
+                    ("2026-08-24T10:00:00+00:00", "2026-08-24T09:00:00+00:00")):
+            self._set_window(*bad)
+            self.assertNotIn("⏱️", self._render_stdout())
+
+    def test_no_window_output_identical_to_legacy_snapshot(self):
+        """Không có event_window → header phải y hệt snapshot bản cũ."""
+        baseline = self._render_stdout()
+        self.assertNotIn("⏱️", baseline)
+        # key hỏng/giá trị null cũng không được đổi MỘT ký tự nào
+        self._set_window(None, None)          # pop event_window (no-op)
+        self.assertEqual(self._render_stdout(), baseline)
+
+
 if __name__ == "__main__":
     unittest.main()
