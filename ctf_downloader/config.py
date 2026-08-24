@@ -1,6 +1,9 @@
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict
 import os
+import urllib.parse
+
+from .utils.urlnorm import normalize_base_url
 
 @dataclass
 class DownloaderConfig:
@@ -33,7 +36,6 @@ class DownloaderConfig:
         self.url = self.url.rstrip("/")
 
         # Extract token from query params if present in URL
-        import urllib.parse
         parsed = urllib.parse.urlparse(self.url)
         if not self.token and parsed.query:
             qs = urllib.parse.parse_qs(parsed.query)
@@ -41,13 +43,7 @@ class DownloaderConfig:
                 self.token = qs["token"][0]
 
         # Strip common trailing page suffixes (like /challenges, /scoreboard, /login)
-        path = parsed.path.rstrip("/")
-        for suffix in ["/challenges", "/scoreboard", "/login", "/register", "/users", "/teams", "/rules", "/notifications"]:
-            if path.endswith(suffix):
-                path = path[:-len(suffix)]
-                break
-        
-        self.url = f"{parsed.scheme}://{parsed.netloc}{path}".rstrip("/")
+        self.url = normalize_base_url(self.url)
         
         # Expand user path if provided
         if self.output_dir:
