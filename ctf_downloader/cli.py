@@ -60,7 +60,8 @@ Quick Examples:
   ctf workspaces
         '''
     )
-    parser.add_argument('-v', '--version', action='version', version='ctf-toolkit 2.0.0')
+    from . import __version__ as _pkg_version
+    parser.add_argument('-v', '--version', action='version', version=f'ctf-toolkit {_pkg_version}')
     parser.add_argument('-i', '--interactive', action='store_true', help='Launch full interactive CTF console')
     parser.add_argument('-w', '--workspace', default=None, help='CTF workspace directory')
 
