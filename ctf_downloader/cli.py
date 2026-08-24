@@ -9,12 +9,14 @@ from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test c
     handle_doctor,
     handle_hoard,
     handle_instance,
+    handle_note,
     handle_pull,
     handle_rank,
     handle_register,
     handle_status,
     handle_storage,
     handle_submit,
+    handle_tag,
     handle_watch,
     handle_workspaces,
 )
@@ -85,6 +87,25 @@ Quick Examples:
     status_parser.add_argument('-s', '--solved', action='store_true', help='Show only solved challenges')
     status_parser.add_argument('-C', '--category', nargs='+', help='Filter specific categories (e.g. -C Web Crypto)')
     status_parser.add_argument('--container', action='store_true', help='Filter only dynamic container challenges')
+    status_parser.add_argument('--label', action='append', default=None, dest='labels',
+                               help='Chỉ hiện challenge mang TẤT CẢ label này (lặp lại --label để AND, vd: --label hard --label todo)')
+    status_parser.add_argument('--search', default=None,
+                               help='Tìm từ khoá trong tên + note của challenge')
+
+    # 2b. NOTE / TAG — memory của người chơi ("đã thử SSTI, bị chặn")
+    note_parser = subparsers.add_parser('note', aliases=['ghi-chu'],
+                                        help='📝 Ghi/xoá note cho một challenge (lưu vào metadata.status.notes)')
+    note_parser.add_argument('target', help='Challenge ID hoặc Name')
+    note_parser.add_argument('content', nargs='*', help='Nội dung note (bỏ trống để nhập multi-line, kết thúc bằng dòng trống)')
+    note_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory')
+    note_parser.add_argument('--remove', action='store_true', help='Xoá note của challenge')
+
+    tag_parser = subparsers.add_parser('tag', aliases=['tags'],
+                                       help='🏷️ Thêm/xoá label cho một challenge ([a-z0-9-], tối đa 24 ký tự)')
+    tag_parser.add_argument('target', help='Challenge ID hoặc Name')
+    tag_parser.add_argument('tags', nargs='+', help='Một hoặc nhiều tag')
+    tag_parser.add_argument('-r', '--remove', action='store_true', help='Xoá các tag khỏi challenge thay vì thêm')
+    tag_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory')
 
     # 3. WORKSPACES / SCAN
     ws_parser = subparsers.add_parser('workspaces', aliases=['scan'], help='Scan and list all local CTF workspaces')
@@ -227,6 +248,10 @@ def main():
         handle_submit(args)
     elif cmd in ['hoard', 'flag-stash']:
         handle_hoard(args)
+    elif cmd in ['note', 'ghi-chu']:
+        handle_note(args)
+    elif cmd in ['tag', 'tags']:
+        handle_tag(args)
     elif cmd in ['rank', 'scoreboard', 'leaderboard']:
         handle_rank(args)
     elif cmd in ['watch', 'sync']:

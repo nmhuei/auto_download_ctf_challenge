@@ -6,15 +6,38 @@ thành một nơi DUY NHẤT. Các facade (CTFDashboard) và các entrypoint ch�
 delegate vào đây.
 """
 import os
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..storage.constants import CATEGORY_ICONS, FLAG_PLACEHOLDER, STATUS_ICONS
 from ..storage.workspace_repo import WorkspaceRepo
+from ..utils.logger import Logger
 from ..utils.writeup_assessor import assess_writeup
 
 # Thứ bậc trục writeup cho nguyên tắc "chỉ nâng không hạ" khi áp heuristic
 # (spec status-model §5: heuristic CHỈ ghi đè khi writeup_auto=True).
 WRITEUP_RANK = {"none": 0, "skeleton": 1, "draft": 2, "complete": 3}
+
+# Tag/label hợp lệ: lowercase [a-z0-9-], dài tối đa 24 ký tự.
+TAG_PATTERN = re.compile(r'^[a-z0-9-]{1,24}$')
+TAG_MAX_LEN = 24
+
+
+class ChallengeNotFoundError(Exception):
+    """Không có challenge nào khớp identifier."""
+
+
+class AmbiguousChallengeError(Exception):
+    """Nhiều challenge khớp partial-match — KHÔNG chọn âm thầm.
+
+    Thuộc tính ``matches`` là list metadata dict (kèm ``_meta_path``) để caller
+    liệt kê bắt user nhập chính xác hơn.
+    """
+
+    def __init__(self, matches: List[dict]):
+        self.matches = matches
+        names = ", ".join(f"{m.get('id')}. {m.get('name')}" for m in matches)
+        super().__init__(f"Ambiguous challenge — {len(matches)} matches: {names}")
 
 
 def _utcnow():
@@ -155,6 +178,187 @@ class StatusService:
             return None
 
     # ------------------------------------------------------------------ #
+    # Notes & Tags (P1-6 — memory của người chơi: "đã thử SSTI, bị chặn")
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _local_challenges(repo: WorkspaceRepo) -> List[Tuple[Any, dict]]:
+        """(meta_path, metadata) của mọi challenge ĐÃ download (có metadata.json).
+        Note/tag ghi vào metadata.status nên chỉ challenge local resolve được."""
+        out = []
+        for meta_path in repo.iter_challenges():
+            meta = repo.read_metadata(meta_path)
+            if meta:
+                out.append((meta_path, meta))
+        return out
+
+    @classmethod
+    def resolve_challenge(cls, repo: WorkspaceRepo,
+                          target) -> Tuple[Optional[Any], Optional[dict]]:
+        """Resolve challenge theo cùng tier với ``WorkspaceRepo.find_challenge``
+        (exact id → exact name → substring name) nhưng trên metadata LOCAL:
+
+        - Exact id / exact name khớp 1 → chọn ngay.
+        - Substring khớp đúng 1 → chọn.
+        - Nhiều khớp → raise ``AmbiguousChallengeError`` (liệt kê, KHÔNG partial
+          match âm thầm); không khớp → raise ``ChallengeNotFoundError``.
+
+        Trả về ``(meta_path, meta)`` khi thành công.
+        """
+        q = str(target).strip()
+        locals_ = cls._local_challenges(repo)
+        if not q:
+            raise ChallengeNotFoundError("Empty challenge identifier.")
+
+        id_hits = [(p, m) for p, m in locals_ if str(m.get('id')) == q]
+        if len(id_hits) == 1:
+            return id_hits[0]
+
+        q_low = q.lower()
+        name_hits = [(p, m) for p, m in locals_
+                     if str(m.get('name', '')).strip().lower() == q_low]
+        if len(name_hits) == 1:
+            return name_hits[0]
+        if len(name_hits) > 1:
+            raise AmbiguousChallengeError([m for _, m in name_hits])
+
+        sub_hits = [(p, m) for p, m in locals_ if q_low in str(m.get('name', '')).lower()]
+        if len(sub_hits) == 1:
+            return sub_hits[0]
+        if len(sub_hits) > 1:
+            raise AmbiguousChallengeError([m for _, m in sub_hits])
+        raise ChallengeNotFoundError(f"Challenge not found: '{target}'")
+
+    @staticmethod
+    def _prompt_multiline() -> str:
+        """Prompt nhập note multi-line: đọc đến dòng trống (Enter 2 lần để kết thúc)."""
+        print("Nhập note (kết thúc bằng dòng trống):")
+        lines: List[str] = []
+        try:
+            while True:
+                line = input()
+                if not line.strip():
+                    break
+                lines.append(line)
+        except EOFError:
+            pass
+        return "\n".join(lines).strip()
+
+    @classmethod
+    def set_note(cls, repo: WorkspaceRepo, target,
+                 text: Optional[str] = None, remove: bool = False) -> bool:
+        """Ghi/xoá ``status.notes`` của một challenge (atomic + flock qua
+        ``repo.update_status``).
+
+        - ``remove=True`` → xoá note.
+        - ``text`` rỗng/None → prompt nhập multi-line đến dòng trống.
+        Trả True khi thành công; lỗi đã log + trả False.
+        """
+        try:
+            meta_path, meta = cls.resolve_challenge(repo, target)
+        except ChallengeNotFoundError as e:
+            Logger.error(str(e))
+            return False
+        except AmbiguousChallengeError as e:
+            Logger.error(str(e))
+            cls._print_matches(e.matches)
+            return False
+
+        name = meta.get('name', target)
+
+        def _mut(st):
+            st["notes"] = "" if remove else text
+            return st
+
+        try:
+            if remove:
+                repo.update_status(meta_path, _mut)
+                Logger.success(f"🗑️ Removed note from [bold cyan]{name}[/bold cyan].")
+            else:
+                content = (text or "").strip()
+                if not content:
+                    content = cls._prompt_multiline()
+                if not content:
+                    Logger.error("Note is empty — nothing saved.")
+                    return False
+                repo.update_status(meta_path, _mut)
+                Logger.success(f"📝 Note saved for [bold cyan]{name}[/bold cyan].")
+            return True
+        except Exception as e:
+            Logger.warning(f"Không thể lưu note: {e}")
+            return False
+
+    @classmethod
+    def update_tags(cls, repo: WorkspaceRepo, target,
+                    tags: List[str], remove: bool = False) -> Tuple[bool, List[str]]:
+        """Thêm/xoá labels trong ``status.labels``.
+
+        Tag được lowercase rồi validate theo ``TAG_PATTERN`` ([a-z0-9-], ≤24);
+        tag sai định dạng bị TỪ CHỐI (trả về trong danh sách ``rejected``, không
+        ghi nửa vời). Trả ``(ok, rejected_tags)``.
+        """
+        tags = [str(t) for t in (tags or []) if str(t).strip()]
+        if not tags:
+            Logger.error("Usage: ctf tag <challenge> <tag...> [-r]")
+            return False, []
+
+        normalized: List[str] = []
+        rejected: List[str] = []
+        for t in tags:
+            low = t.strip().lower()
+            if TAG_PATTERN.match(low):
+                if low not in normalized:
+                    normalized.append(low)
+            else:
+                rejected.append(t)
+
+        if rejected:
+            Logger.error(
+                f"Invalid tag(s): {', '.join(rejected)} — chỉ chấp nhận "
+                f"chữ thường a-z, số 0-9 và dấu gạch ngang (-), "
+                f"tối đa {TAG_MAX_LEN} ký tự.")
+            return False, rejected
+
+        try:
+            meta_path, meta = cls.resolve_challenge(repo, target)
+        except ChallengeNotFoundError as e:
+            Logger.error(str(e))
+            return False, rejected
+        except AmbiguousChallengeError as e:
+            Logger.error(str(e))
+            cls._print_matches(e.matches)
+            return False, rejected
+
+        name = meta.get('name', target)
+
+        def _mut(st):
+            current = [str(x) for x in (st.get("labels") or [])]
+            if remove:
+                merged = [x for x in current if x not in normalized]
+            else:
+                merged = current + [x for x in normalized if x not in current]
+            st["labels"] = merged
+            return st
+
+        action = 'Removed' if remove else 'Added'
+        try:
+            final = repo.update_status(meta_path, _mut)
+            labels_str = ", ".join(final.get("labels") or []) or "(none)"
+            Logger.success(
+                f"🏷️ {action} tag(s) for [bold cyan]{name}[/bold cyan]: {labels_str}")
+            return True, rejected
+        except Exception as e:
+            Logger.warning(f"Không thể cập nhật tags: {e}")
+            return False, rejected
+
+    @staticmethod
+    def _print_matches(matches: List[dict]) -> None:
+        """Liệt kê các candidate khớp để user chọn chính xác hơn."""
+        Logger.info("Multiple challenges matched — hãy nhập chính xác hơn:")
+        for m in matches:
+            print(f"   - {m.get('id')}. {m.get('name')} "
+                  f"({m.get('category', 'Misc')}, {m.get('points', 0)} pts)")
+
+    # ------------------------------------------------------------------ #
     # Scan một workspace
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -261,7 +465,9 @@ class StatusService:
                     filter_cat: Optional[List[str]] = None,
                     only_unsolved: bool = False,
                     only_solved: bool = False,
-                    only_container: bool = False) -> None:
+                    only_container: bool = False,
+                    filter_labels: Optional[List[str]] = None,
+                    search: Optional[str] = None) -> None:
         if stats is None:
             stats = StatusService.summary_stats(repo)
 
@@ -303,6 +509,25 @@ class StatusService:
             if only_container:
                 c_list = [c for c in c_list if repo.is_container(c)]
 
+            if filter_labels:
+                # AND: challenge phải mang TẤT CẢ label chỉ định.
+                def _has_all_labels(c):
+                    labels = {str(x) for x in ((c.get('_status') or {}).get('labels') or [])}
+                    return all(str(l) in labels for l in filter_labels)
+                c_list = [c for c in c_list if _has_all_labels(c)]
+
+            if search:
+                q_low = str(search).strip().lower()
+                if q_low:
+                    def _matches_search(c):
+                        st = c.get('_status') or {}
+                        haystack = ' '.join([
+                            str(c.get('name', '')),
+                            str(st.get('notes') or ''),
+                        ]).lower()
+                        return q_low in haystack
+                    c_list = [c for c in c_list if _matches_search(c)]
+
             if not c_list:
                 continue
 
@@ -329,6 +554,9 @@ class StatusService:
                 if container:
                     badge += f"[{STATUS_ICONS['container'][container]}]"
 
+                labels = [str(x) for x in (status.get('labels') or [])]
+                labels_str = f" 🏷️ {','.join(labels)}" if labels else ''
+
                 c_id = c.get('id', '?')
                 c_name = c.get('name', 'Unknown')
                 c_pts = c.get('points', 0)
@@ -340,11 +568,11 @@ class StatusService:
                 cont_str = ' [🐳 Container]' if is_cont else ''
                 files_str = f' [{files_count} file(s)]' if files_count > 0 else ''
 
-                print(f"  {prefix}{badge} {c_id:>3}. {c_name:<32} ({c_pts:>4} pts) - {str(solves):>3} solves{cont_str}{files_str}")
+                print(f"  {prefix}{badge} {c_id:>3}. {c_name:<32} ({c_pts:>4} pts) - {str(solves):>3} solves{cont_str}{files_str}{labels_str}")
 
                 notes = str(status.get('notes') or '').strip()
                 if notes:
-                    print(f"       └─ \"{notes}\"")
+                    print(f"       └─ 📝 \"{notes}\"")
 
         print('\n' + '=' * 85)
 

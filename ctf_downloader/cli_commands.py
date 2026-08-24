@@ -75,8 +75,31 @@ def handle_status(args):
         filter_cat=args.category,
         only_unsolved=args.unsolved,
         only_solved=args.solved,
-        only_container=args.container
+        only_container=args.container,
+        filter_labels=getattr(args, 'labels', None),
+        search=getattr(args, 'search', None)
     )
+
+
+def handle_note(args):
+    """P1-6: ``ctf note <challenge> [content] [--remove]`` — prompt multi-line
+    nằm ở StatusService (tầng services, không input() ở lớp command)."""
+    content = ' '.join(getattr(args, 'content', None) or []).strip() or None
+    repo = WorkspaceRepo(args.workspace)
+    ok = StatusService.set_note(repo, args.target, text=content,
+                                remove=bool(getattr(args, 'remove', False)))
+    if not ok:
+        sys.exit(1)
+
+
+def handle_tag(args):
+    """P1-6: ``ctf tag <challenge> <tag...> [-r]`` — validate [a-z0-9-] ≤24."""
+    repo = WorkspaceRepo(args.workspace)
+    ok, _rejected = StatusService.update_tags(
+        repo, args.target, list(getattr(args, 'tags', None) or []),
+        remove=bool(getattr(args, 'remove', False)))
+    if not ok:
+        sys.exit(1)
 
 
 def handle_workspaces(args):
