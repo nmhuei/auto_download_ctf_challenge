@@ -12,6 +12,7 @@ Kiểm tra:
 """
 import ast
 import os
+import shutil
 import subprocess
 import sys
 import unittest
@@ -749,6 +750,46 @@ class TestAppHeaderFooterFrame(unittest.TestCase):
                       "'export-pack'", "'history'"):
             self.assertRegex(
                 src, rf"_run_framed\([^\n]*{re.escape(label)}")
+
+
+class TestShellCompletions(unittest.TestCase):
+    """Phase 7 — shell completion cho CLI `ctf` (bash/zsh).
+
+    Kiểm tra cú pháp (bash -n / zsh -n) và nội dung: subcommand + flag
+    chính khớp với argparse trong ctf_downloader/cli.py.
+    """
+
+    COMPLETIONS_DIR = os.path.join(ROOT, "completions")
+
+    def _path(self, name):
+        return os.path.join(self.COMPLETIONS_DIR, name)
+
+    def test_bash_completion_syntax_ok(self):
+        path = self._path("ctf.bash")
+        self.assertTrue(os.path.isfile(path), "thiếu completions/ctf.bash")
+        proc = subprocess.run(["bash", "-n", path], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_zsh_completion_syntax_ok(self):
+        path = self._path("ctf.zsh")
+        if not shutil.which("zsh"):
+            self.skipTest("zsh không có trên PATH")
+        proc = subprocess.run(["zsh", "-n", path], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_completions_cover_subcommands(self):
+        from ctf_downloader.cli import build_unified_parser
+
+        parser = build_unified_parser()
+        subs = set(parser._subparsers._group_actions[0].choices)
+        for fname in ("ctf.bash", "ctf.zsh"):
+            with open(self._path(fname), encoding="utf-8") as f:
+                body = f.read()
+            for cmd in subs:
+                self.assertIn(cmd, body, f"{fname} thiếu subcommand '{cmd}'")
+            # flag chính của parser gốc
+            for flag in ("--version", "--interactive", "--workspace"):
+                self.assertIn(flag, body, f"{fname} thiếu flag '{flag}'")
 
 
 if __name__ == "__main__":

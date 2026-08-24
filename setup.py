@@ -6,6 +6,10 @@ setup(
     description="Unified CTF Challenge Downloader, Submitter, Container Manager & Dashboard",
     author="Antigravity",
     packages=find_packages(),
+    data_files=[
+        ("share/bash-completion/completions", ["completions/ctf.bash"]),
+        ("share/zsh/site-functions", ["completions/ctf.zsh"]),
+    ],
     install_requires=[
         "requests>=2.28.0",
         "beautifulsoup4>=4.11.0",
