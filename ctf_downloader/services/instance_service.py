@@ -224,25 +224,30 @@ class InstanceService:
                 continue
 
             try:
-                inst = m.get('instance_info')
-                if not isinstance(inst, dict):
-                    inst = {}
+                # Read-mutate-write trong cùng khóa flock với update_status
+                # (W5.2: write_metadata unlocked gây lost update đa tiến trình).
+                def _mut(m: dict) -> dict:
+                    m = dict(m or {})
+                    inst = m.get('instance_info')
+                    if not isinstance(inst, dict):
+                        inst = {}
 
-                inst['is_container'] = True
-                inst['status'] = status
-                inst['last_updated'] = now_str
+                    inst['is_container'] = True
+                    inst['status'] = status
+                    inst['last_updated'] = now_str
 
-                if entry:
-                    m['connection_info'] = entry
-                    inst['active_instance'] = entry
-                    inst['last_entry'] = entry
-                    inst['remaining_time'] = time_left
-                elif status == 'stopped':
-                    inst['active_instance'] = None
-                    inst['remaining_time'] = 0
-                m['instance_info'] = inst
+                    if entry:
+                        m['connection_info'] = entry
+                        inst['active_instance'] = entry
+                        inst['last_entry'] = entry
+                        inst['remaining_time'] = time_left
+                    elif status == 'stopped':
+                        inst['active_instance'] = None
+                        inst['remaining_time'] = 0
+                    m['instance_info'] = inst
+                    return m
 
-                self.repo.write_metadata(meta_path, m)
+                self.repo.update_metadata(meta_path, _mut)
                 Logger.info(f'[bold green]✓[/bold green] Synced instance details into: [cyan]{os.path.relpath(meta_path, self.workspace_path)}[/cyan]')
 
                 # Mirror trục container của status đa chiều (spec §7).

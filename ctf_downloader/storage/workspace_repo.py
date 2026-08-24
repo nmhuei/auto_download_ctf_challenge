@@ -213,6 +213,22 @@ class WorkspaceRepo:
     def write_metadata(self, path: PathLike, meta: dict) -> None:
         atomic_write_json(Path(path), meta)
 
+    def update_metadata(self, path: PathLike, mutator: "Callable[[dict], dict | None]") -> dict:
+        """Read-mutate-write TOÀN BỘ metadata.json trong CÙNG khóa flock với
+        ``update_status`` (locked_update_json dùng chung lock file
+        ``metadata.json.lock``).
+
+        Mọi caller muốn sửa field ngoài block ``status`` (instance_info,
+        submitted_flag, ...) PHẢI đi qua đây thay vì read_metadata +
+        write_metadata — đường ghi unlocked sẽ gây lost update đa tiến trình:
+        ghi đè block status/file vừa được tiến trình khác cất dưới flock.
+        """
+        def _mut(meta: dict) -> dict:
+            result = mutator(meta if isinstance(meta, dict) else {})
+            return result if isinstance(result, dict) else (meta if isinstance(meta, dict) else {})
+
+        return locked_update_json(path, _mut)
+
     @staticmethod
     def is_container(meta: dict) -> bool:
         """Predicate container rộng nhất (nguồn: instance_manager.list_containers).

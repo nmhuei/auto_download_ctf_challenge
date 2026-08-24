@@ -13,7 +13,9 @@ Trục điểm:
 
 Guard skeleton: nếu caller truyền ``reference_template`` (template sinh lại từ
 ``WorkspaceBuilder._generate_writeup_template()``) và similarity >= 0.95 →
-SKELETON ngay, không cần tính điểm.
+SKELETON ngay, không cần tính điểm. Ngoài ra mọi dòng còn trùng nguyên văn
+template (gồm description platform nhúng sẵn) bị LOẠI khỏi nội dung được
+chấm — đề bài không thể tự cho điểm Evidence/Prose/checkbox.
 
 Heuristic CHỈ được áp khi ``status.writeup_auto == True`` (caller quyết định).
 """
@@ -70,6 +72,22 @@ def _is_boilerplate_code(code: str) -> bool:
     return not meaningful
 
 
+def _strip_reference_content(md_text: str, reference_template: str) -> str:
+    """Loại khỏi văn bản được chấm mọi dòng còn khớp NGUYÊN VĂN reference
+    template (W3.3: template nhúng nguyên văn description do platform điều
+    khiển — heading/fence/checkbox trong đề bài không được tự cho điểm).
+
+    Heading (`#`) và các dòng fence (` ``` `) luôn giữ lại để cấu trúc mục
+    Recon/Exploit và việc ghép cặp code-block vẫn đúng; điểm chỉ đến từ NỘI
+    DUNG bên trong — vốn đã bị loại nếu còn trùng template (code block của
+    template mất hết dòng lệnh -> rỗng -> không tính là ``own_code_block``).
+    """
+    ref_lines = set(reference_template.splitlines())
+    kept = [ln for ln in md_text.splitlines()
+            if ln.lstrip().startswith(("#", "```")) or ln not in ref_lines]
+    return "\n".join(kept)
+
+
 def assess_writeup(md_text: str,
                    flag_format: Optional[str] = None,
                    reference_template: Optional[str] = None) -> Dict[str, object]:
@@ -95,6 +113,9 @@ def assess_writeup(md_text: str,
                 "missing": ["Writeup vẫn nguyên template gốc — hãy điền nội dung phân tích thật."],
             }
 
+    # ---- Chỉ chấm phần KHÔNG thuộc template/description ------------------
+    md_eff = _strip_reference_content(md, reference_template) if reference_template else md
+
     # ---- Flag (max 35) ---------------------------------------------------
     flag_score = 0
     real_flag = False
@@ -110,7 +131,7 @@ def assess_writeup(md_text: str,
                 body = body[1:]
             if body.endswith("$"):
                 body = body[:-1]
-            for m in regex_matches_with_timeout(body, md) or []:
+            for m in regex_matches_with_timeout(body, md_eff) or []:
                 if m.group(0).strip() != FLAG_PLACEHOLDER:
                     format_matched = True   # bỏ qua chính placeholder
                     break
@@ -122,15 +143,15 @@ def assess_writeup(md_text: str,
         signals["flag_format_matched"] = True
     else:
         generic_hits = [
-            g for g in GENERIC_FLAG_RE.findall(md) if g.strip() != FLAG_PLACEHOLDER
+            g for g in GENERIC_FLAG_RE.findall(md_eff) if g.strip() != FLAG_PLACEHOLDER
         ]
         if generic_hits:
             flag_score += 20
             real_flag = True
             signals["generic_flag_found"] = True
 
-    placeholder_present = FLAG_PLACEHOLDER in md
-    if not real_flag and not placeholder_present and md.strip():
+    placeholder_present = FLAG_PLACEHOLDER in md_eff
+    if not real_flag and not placeholder_present and md_eff.strip():
         # Đã xoá placeholder nhưng chưa điền flag thật.
         flag_score += 5
         signals["placeholder_removed"] = True
@@ -143,7 +164,7 @@ def assess_writeup(md_text: str,
 
     # ---- Evidence (max 30) -----------------------------------------------
     evidence_score = 0
-    code_blocks = CODE_FENCE_RE.findall(md)
+    code_blocks = CODE_FENCE_RE.findall(md_eff)
     own_code = any(not _is_boilerplate_code(c) for c in code_blocks)
     if own_code:
         evidence_score += 18
@@ -152,17 +173,17 @@ def assess_writeup(md_text: str,
         missing.append("Chưa có code block riêng (code mẫu của template chưa được thay).")
 
     command_evidence = bool(
-        re.search(r"(?m)^\s*\$\s", md)
-        or re.search(r"\bnc\s+\S+\s+\d+", md)
-        or HEX_LIKE_RE.search(md)
-        or BASE64_LIKE_RE.search(md)
+        re.search(r"(?m)^\s*\$\s", md_eff)
+        or re.search(r"\bnc\s+\S+\s+\d+", md_eff)
+        or HEX_LIKE_RE.search(md_eff)
+        or BASE64_LIKE_RE.search(md_eff)
     )
     if command_evidence:
         evidence_score += 7
         signals["real_command_output"] = True
 
     local_shot = any(not src.lower().startswith(("http://", "https://"))
-                     for src in IMAGE_RE.findall(md))
+                     for src in IMAGE_RE.findall(md_eff))
     if local_shot:
         evidence_score += 5
         signals["local_screenshot"] = True
@@ -170,7 +191,7 @@ def assess_writeup(md_text: str,
 
     # ---- Prose (max 25) ----------------------------------------------------
     prose_score = 0
-    recon_text = _section_text(md, ("recon", "reconnaissance", "phân tích", "vulnerability"))
+    recon_text = _section_text(md_eff, ("recon", "reconnaissance", "phân tích", "vulnerability"))
     recon_words = _word_count(recon_text)
     if recon_words > 30:
         prose_score += 12
@@ -181,7 +202,7 @@ def assess_writeup(md_text: str,
     else:
         missing.append("Mục 'Reconnaissance' chưa có nội dung thực.")
 
-    exploit_text = _section_text(md, ("exploit", "poc", "khai thác"))
+    exploit_text = _section_text(md_eff, ("exploit", "poc", "khai thác"))
     exploit_words = _word_count(exploit_text)
     exploit_section_score = 0
     if exploit_words > 30:
@@ -195,7 +216,7 @@ def assess_writeup(md_text: str,
     prose_score += exploit_section_score
 
     # Bù dung lượng văn mới >500 ký tự lên tối đa 25.
-    body_no_code = CODE_FENCE_RE.sub("", md)
+    body_no_code = CODE_FENCE_RE.sub("", md_eff)
     prose_chars = len(body_no_code.strip())
     signals["prose_chars"] = prose_chars
     if prose_score < 25 and prose_chars > 500:
@@ -203,7 +224,7 @@ def assess_writeup(md_text: str,
     prose_score = min(prose_score, 25)
 
     # ---- Checkbox (max 10) ---------------------------------------------------
-    checkbox_done = bool(CHECKBOX_DONE_RE.search(md))
+    checkbox_done = bool(CHECKBOX_DONE_RE.search(md_eff))
     checkbox_score = 10 if checkbox_done else 0
     if not checkbox_done:
         missing.append("Chưa tick marker hoàn thành ('- [x] Solved').")

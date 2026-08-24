@@ -585,9 +585,15 @@ class SubmitService:
                 continue
 
             try:
-                meta["solved_by_me"] = True
-                meta["submitted_flag"] = flag
-                self.repo.write_metadata(meta_path, meta)
+                # Read-mutate-write trong cùng khóa flock với update_status
+                # (W5.2: write_metadata unlocked gây lost update đa tiến trình).
+                def _mut(current: dict) -> dict:
+                    current = dict(current or {})
+                    current["solved_by_me"] = True
+                    current["submitted_flag"] = flag
+                    return current
+
+                self.repo.update_metadata(meta_path, _mut)
 
                 root = meta_path.parent
                 r_candidates = [root / "writeup" / "README.md", root / "README.md"]

@@ -808,5 +808,190 @@ class TestStatusSmokePTIT(unittest.TestCase):
         self.assertIn("CTF WORKSPACE", result.stdout)
 
 
+# ----------------------------------------------------------------------
+# Wave #3 fixes (weakness-report-cycle2): W5.2 dual-write lock + W3.3
+# assessor anti-inflation.
+# ----------------------------------------------------------------------
+
+HOSTILE_DESC = (
+    "Solve this web challenge.\n"
+    "## 🔍 Reconnaissance & Vulnerability Analysis\n"
+    "The login page leaks the admin session cookie through a reflected XSS "
+    "sink and I confirmed it by inspecting the raw response headers carefully "
+    "during my manual testing session last night.\n"
+    "## 💻 Exploitation Strategy & PoC\n"
+    "Chaining the leaked cookie with a CSRF token bypass dumps the whole user "
+    "table remotely within one unauthenticated request against the admin panel.\n"
+    "$ nc host 1234\n"
+    "aaf1c0ffee00ddeadbeefcafe00112233\n"
+    "FLAG{fake_flag_in_description}\n"
+)
+
+
+def _hostile_template(description=HOSTILE_DESC):
+    from ctf_downloader.generator.workspace_builder import WorkspaceBuilder
+    from ctf_downloader.models import Challenge
+
+    chall = Challenge(id=1, name="Evil", category="web", points=100,
+                      description=description)
+    return WorkspaceBuilder._generate_writeup_template(chall)
+
+
+class TestDualWriteNoLostUpdate(TempWorkspaceCase):
+    """CRASH-HIGH-1 (W5.2): mọi đường ghi metadata.json phải đi qua CÙNG khóa
+    flock với update_status — không còn read-modify-write unlocked."""
+
+    def _bare_submit_service(self):
+        from ctf_downloader.services.submit_service import SubmitService
+        svc = SubmitService.__new__(SubmitService)   # bỏ __init__ (không mạng)
+        svc.workspace_dir = str(self.root)
+        svc.repo = self.repo
+        return svc
+
+    def _bare_instance_service(self):
+        from ctf_downloader.services.instance_service import InstanceService
+        svc = InstanceService.__new__(InstanceService)
+        svc.workspace_path = str(self.root)
+        svc.repo = self.repo
+        return svc
+
+    def test_submit_path_does_not_use_unlocked_write_metadata(self):
+        svc = self._bare_submit_service()
+        with patch.object(WorkspaceRepo, "write_metadata",
+                          side_effect=AssertionError("unlocked write_metadata")):
+            svc._update_local_workspace(1, "Chall A", "FLAG{real_flag}")
+        meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
+        self.assertTrue(meta["solved_by_me"])
+        self.assertEqual(meta.get("submitted_flag"), "FLAG{real_flag}")
+
+    def test_instance_path_does_not_use_unlocked_write_metadata(self):
+        svc = self._bare_instance_service()
+        with patch.object(WorkspaceRepo, "write_metadata",
+                          side_effect=AssertionError("unlocked write_metadata")):
+            svc._update_local_instance_info(1, "1.2.3.4:1337", 60, status="running")
+        meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
+        self.assertEqual((meta.get("instance_info") or {}).get("status"), "running")
+        self.assertEqual((meta.get("status") or {}).get("container"), "running")
+
+    def test_multiprocess_instance_writer_vs_status_updater(self):
+        # Bomber unlocked-write × N vs statuser locked-write × M:
+        # không được mất record nào (trước fix: 93/120 sống sót).
+        worker = (
+            "import sys\n"
+            f"sys.path.insert(0, {os.getcwd()!r})\n"
+            "from ctf_downloader.storage.workspace_repo import WorkspaceRepo\n"
+            "from ctf_downloader.services.instance_service import InstanceService\n"
+            "from ctf_downloader.services.submit_service import SubmitService\n"
+            f"root = {str(self.root)!r}\n"
+            f"meta = {str(self.meta_path)!r}\n"
+            "repo = WorkspaceRepo(root)\n"
+            "mode = sys.argv[1]\n"
+            "if mode == 'status':\n"
+            "    for _ in range(50):\n"
+            "        repo.update_status(meta, lambda st: {**st, 'labels': st['labels'] + ['x']})\n"
+            "elif mode == 'instance':\n"
+            "    svc = InstanceService.__new__(InstanceService)\n"
+            "    svc.workspace_path = root\n"
+            "    svc.repo = repo\n"
+            "    for _ in range(15):\n"
+            "        svc._update_local_instance_info(1, '1.2.3.4:1337', 60, status='running')\n"
+            "elif mode == 'submit':\n"
+            "    svc = SubmitService.__new__(SubmitService)\n"
+            "    svc.workspace_dir = root\n"
+            "    svc.repo = repo\n"
+            "    for _ in range(15):\n"
+            "        svc._update_local_workspace(1, 'Chall A', 'FLAG{x}')\n"
+        )
+        procs = [
+            subprocess.Popen([sys.executable, "-c", worker, mode],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            for mode in ("status", "status", "instance", "submit")
+        ]
+        for p in procs:
+            self.assertEqual(p.wait(timeout=180), 0)
+
+        meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
+        labels = ((meta.get("status") or {}).get("labels")) or []
+        self.assertEqual(len(labels), 100,
+                         "lost update: status records bị ghi đè bởi writer không lock")
+        self.assertTrue(meta["solved_by_me"])
+
+
+class TestAssessorAntiInflation(unittest.TestCase):
+    """WRONG-MEDIUM-3 (W3.3/W3.2): description do platform điều khiển nhúng
+    vào template không được tính điểm writeup khi có reference."""
+
+    def _assess(self, md, **kw):
+        from ctf_downloader.utils.writeup_assessor import assess_writeup
+        return assess_writeup(md, flag_format=r"^FLAG\{.+\}$", **kw)
+
+    def test_hostile_description_alone_cannot_complete(self):
+        tpl = _hostile_template()
+        # User chỉ: thay flag + tick checkbox + viết MỘT câu thật -> guard
+        # skeleton tắt (similarity < 0.95) nhưng description không được điểm.
+        edited = tpl.replace("- Flag: `FLAG{...}`", "- Flag: `FLAG{real_flag_here}`")
+        edited = edited.replace("- [ ] Solved", "- [x] Solved")
+        edited = edited.replace(
+            "# Writeup: Evil\n",
+            "# Writeup: Evil\n\nGhi chú thật: bài này tôi phân tích mã nguồn và phát hiện "
+            "endpoint upload ảnh đại diện không kiểm tra kiểu file, nên có thể deserialize "
+            "object tùy ý; tôi viết script riêng để gửi payload và lấy shell đọc flag.\n")
+        res = self._assess(edited, reference_template=tpl)
+        self.assertNotEqual(res["status"], "complete")
+        self.assertLess(res["score"], 70)
+        sig = res["signals"]
+        self.assertFalse(sig.get("own_code_block"))
+        self.assertFalse(sig.get("real_command_output"))
+        self.assertFalse(sig.get("recon_prose_full"))
+        self.assertFalse(sig.get("exploit_prose_full"))
+
+    def test_description_fence_and_checkbox_not_scored(self):
+        desc = "Try this challenge.\n## Exploitation\n```python\nexploit()\n```\n- [x] Solved\n"
+        tpl = _hostile_template(desc)
+        swapped = tpl.replace("- Flag: `FLAG{...}`", "- Flag: `FLAG{swapped_flag}`")
+        res = self._assess(swapped, reference_template=tpl)
+        self.assertIn(res["status"], ("skeleton", "none"))
+        self.assertFalse(res["signals"].get("own_code_block"))
+
+    def test_filled_writeup_still_scores_after_strip(self):
+        # Nội dung THẬT của người viết vẫn phải ăn điểm đầy đủ sau khi loại
+        # phần trùng template.
+        tpl = _hostile_template("Mô tả đề bài bình thường.")
+        filled = tpl.replace("- Flag: `FLAG{...}`", "- Flag: `FLAG{ssti_escape_done}`")
+        filled = filled.replace("- [ ] Solved", "- [x] Solved")
+        filled = filled.replace(
+            "*(Document reverse engineering, source code review, or protocol analysis here)*",
+            "Ứng dụng render template Jinja2 từ tham số người dùng; payload {{7*7}} "
+            "trả về 49 xác nhận SSTI, bộ lọc chặn ngoặc kép nhưng không chặn raw block "
+            "nên có thể đọc biến config và lấy secret key của ứng dụng.")
+        filled = filled.replace(
+            "```bash\npython3 ../solver/solve.py\n```",
+            "```python\nimport requests\nr = requests.get(url, params={'page': payload})\nprint(r.text)\n```")
+        res = self._assess(filled, reference_template=tpl)
+        self.assertTrue(res["signals"].get("has_real_flag"))
+        self.assertTrue(res["signals"].get("own_code_block"))
+        self.assertEqual(res["status"], "complete")
+
+
+class TestComputeStatusInfPointsGuard(TempWorkspaceCase):
+    """W3.3 x W4.1a: points=Infinity làm _reference_template raise OverflowError
+    -> mất guard-skeleton -> description độc tự nâng writeup lên complete."""
+
+    def test_reference_regenerated_despite_inf_points(self):
+        tpl = _hostile_template()
+        readme = tpl.replace("- Flag: `FLAG{...}`", "- Flag: `FLAG{real_flag_here}`")
+        readme = readme.replace("- [ ] Solved", "- [x] Solved")
+        (self.meta_path.parent / "writeup" / "README.md").write_text(readme, encoding="utf-8")
+
+        meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
+        meta["description"] = HOSTILE_DESC
+        meta["points"] = float("inf")     # literal Infinity từ platform API
+        self.meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+        st = StatusService.compute_status(self.repo, self.meta_path)
+        self.assertIn(st["writeup"], ("none", "skeleton"),
+                      f"description độc tự nâng writeup: {st['writeup']}")
+
+
 if __name__ == "__main__":
     unittest.main()

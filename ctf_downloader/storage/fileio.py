@@ -17,8 +17,15 @@ def _tmp_path(path: Path) -> Path:
 
 
 def atomic_write_text(path: PathLike, text: str) -> None:
-    """Ghi text một cách nguyên tử: ghi `<name>.tmp` rồi os.replace."""
+    """Ghi text một cách nguyên tử: ghi `<name>.tmp` rồi os.replace.
+
+    Nếu đích là symlink: ghi vào ĐÍCH THẬT (resolve) thay vì os.replace lên
+    path symlink — nếu không, replace sẽ âm thầm thay symlink bằng file thường
+    và target gốc không bao giờ được cập nhật.
+    """
     p = Path(path)
+    if p.is_symlink():
+        p = p.resolve()
     tmp = _tmp_path(p)
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)

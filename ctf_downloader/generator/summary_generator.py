@@ -1,3 +1,4 @@
+import math
 import os
 import json
 from collections import defaultdict
@@ -12,11 +13,27 @@ def _safe_int(value) -> int:
 
     Platform thật (gzCTF/rCTF dynamic scoring) trả ``points: null`` rất phổ
     biến — không ép sẽ crash cả pipeline download ở bước cuối.
+
+    ``OverflowError``: ``int(float('inf'))`` — Python json.loads chấp nhận
+    literal ``Infinity`` từ platform API nên đường vào là thật.
+    ``ValueError`` đã phủ ``int(float('nan'))`` và chuỗi như ``"1e400"``.
     """
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
+
+
+def _json_safe(obj):
+    """Đệ quy thay float NaN/Inf bằng None: json.dump mặc định allow_nan=True
+    tạo literal ``NaN``/``Infinity`` mà parser strict JSON (jq...) không đọc được."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    return obj
 
 
 def _safe_category(category) -> str:
@@ -135,7 +152,7 @@ class SummaryGenerator:
         }
         json_path = os.path.join(base_output_dir, "challenges.json")
         with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(json_data, f, indent=2, ensure_ascii=False)
+            json.dump(_json_safe(json_data), f, indent=2, ensure_ascii=False)
 
 
         return summary_path

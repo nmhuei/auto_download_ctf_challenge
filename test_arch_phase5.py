@@ -932,5 +932,124 @@ class TestValidateFlagReDoSGuard(unittest.TestCase):
         self.assertLess(elapsed, 3.0)
 
 
+# ----------------------------------------------------------------------
+# Wave #3 fixes (weakness-report-cycle2): W4.1a OverflowError _safe_int,
+# W4.1b NaN/Inf literal trong challenges.json, W2.1b os.replace phá symlink.
+# ----------------------------------------------------------------------
+
+class TestSafeIntOverflow(unittest.TestCase):
+    """CRASH-HIGH-2 (W4.1a): int(float('inf')) raise OverflowError không thuộc
+    (TypeError, ValueError) -> sập cả pipeline summary."""
+
+    def setUp(self):
+        import tempfile as _tf
+        self._tmp = _tf.mkdtemp(prefix="wave3_safeint_")
+        self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
+
+    def test_safe_int_handles_infinity_nan_and_huge_string(self):
+        from ctf_downloader.generator.summary_generator import _safe_int
+
+        self.assertEqual(_safe_int(float("inf")), 0)
+        self.assertEqual(_safe_int(float("-inf")), 0)
+        self.assertEqual(_safe_int(float("nan")), 0)
+        self.assertEqual(_safe_int("1e400"), 0)      # float('1e400') -> inf
+        # Hành vi cũ giữ nguyên
+        self.assertEqual(_safe_int(None), 0)
+        self.assertEqual(_safe_int("abc"), 0)
+        self.assertEqual(_safe_int(100), 100)
+        self.assertEqual(_safe_int("42"), 42)
+
+    def test_summary_pipeline_survives_infinite_points(self):
+        from ctf_downloader.models import Challenge, CTFInfo
+
+        challs = [
+            Challenge(id=1, name="Inf", category="Web", points=float("inf")),
+            Challenge(id=2, name="NaN", category="Web", points=float("nan")),
+            Challenge(id=3, name="Ok", category="Web", points=50),
+        ]
+        info = CTFInfo(title="Wave3CTF", url="https://x.example", challenges=challs)
+        path = SummaryGenerator.generate_summary(
+            base_output_dir=self._tmp, ctf_info=info,
+            all_results={c.id: [] for c in challs},
+        )
+        self.assertTrue(os.path.exists(path))
+        with open(os.path.join(self._tmp, "challenges.json"), encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data["total_points"], 50)
+
+
+class TestChallengesJsonStrictNoNaN(unittest.TestCase):
+    """MINOR-4b (W4.1b): NaN/Infinity literal khiến challenges.json không đọc
+    được bởi parser strict JSON — phải sanitize thành None trước khi dump."""
+
+    def setUp(self):
+        import tempfile as _tf
+        self._tmp = _tf.mkdtemp(prefix="wave3_nan_")
+        self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
+
+    def test_non_finite_points_sanitized_to_null(self):
+        from ctf_downloader.models import Challenge, CTFInfo
+
+        challs = [
+            Challenge(id=1, name="NanPts", category="Web", points=float("nan")),
+            Challenge(id=2, name="InfPts", category="Pwn", points=float("inf")),
+        ]
+        info = CTFInfo(title="StrictCTF", url="https://x.example", challenges=challs)
+        SummaryGenerator.generate_summary(
+            base_output_dir=self._tmp, ctf_info=info,
+            all_results={c.id: [] for c in challs},
+        )
+        with open(os.path.join(self._tmp, "challenges.json"), encoding="utf-8") as f:
+            text = f.read()
+
+        def _reject_constant(name):
+            raise ValueError(f"non-finite JSON constant: {name}")
+
+        strict = json.loads(text, parse_constant=_reject_constant)  # phải parse được
+        pts = {c["id"]: c["points"] for c in strict["challenges"]}
+        self.assertIsNone(pts[1])
+        self.assertIsNone(pts[2])
+
+
+class TestSymlinkWritePreserved(unittest.TestCase):
+    """MINOR-4a (W2.1b): atomic_write_text qua path là symlink phải ghi vào
+    ĐÍCH THẬT và giữ nguyên link, không âm thầm thay symlink bằng file thường."""
+
+    def test_atomic_write_text_follows_symlink(self):
+        from ctf_downloader.storage.fileio import atomic_write_text
+
+        tmp = tempfile.mkdtemp(prefix="wave3_link_")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        target = pathlib.Path(tmp) / "outside_real.md"
+        target.write_text("old content\n", encoding="utf-8")
+        link = pathlib.Path(tmp) / "sub"
+        link.mkdir()
+        readme_link = link / "README.md"
+        readme_link.symlink_to(target)
+
+        atomic_write_text(readme_link, "new content\n")
+
+        self.assertTrue(readme_link.is_symlink(), "symlink bị thay bằng file thường")
+        self.assertEqual(target.read_text(encoding="utf-8"), "new content\n")
+
+    def test_solved_marker_via_symlink_readme_updates_target(self):
+        tmp = tempfile.mkdtemp(prefix="wave3_link_ws_")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        root = _make_workspace(tmp)
+        repo = WorkspaceRepo(root)
+        readme = root / "Web" / "web_basics" / "writeup" / "README.md"
+
+        outside = pathlib.Path(tmp) / "real_target.md"
+        outside.write_text("# Web Basics\n- [ ] Solved\nFLAG{...}\n", encoding="utf-8")
+        readme.unlink()
+        readme.symlink_to(outside)
+
+        changed = repo.write_solved_state([readme], solved=True)
+
+        self.assertEqual(changed, 1)
+        self.assertTrue(readme.is_symlink(), "symlink bị os.replace phá vỡ")
+        self.assertIn("- [x] Solved", outside.read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

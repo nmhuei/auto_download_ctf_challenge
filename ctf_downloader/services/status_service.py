@@ -124,11 +124,21 @@ class StatusService:
             from ..models import Challenge
 
             raw = meta.get("raw") if isinstance(meta.get("raw"), dict) else {}
+
+            # points có thể là float('inf') (literal Infinity từ platform API):
+            # int(inf) raise OverflowError -> mất hẳn guard-skeleton -> description
+            # độc tự nâng writeup. Sanitize thay vì để vỡ.
+            raw_points = meta.get("points")
+            try:
+                points = int(raw_points)
+            except (TypeError, ValueError, OverflowError):
+                points = 0
+
             chall = Challenge(
                 id=meta.get("id"),
                 name=str(meta.get("name") or ""),
                 category=str(meta.get("category") or "Misc"),
-                points=int(meta.get("points") or 0),
+                points=points,
                 description=meta.get("description") or raw.get("description") or "",
                 author=meta.get("author"),
                 connection_info=meta.get("connection_info"),
