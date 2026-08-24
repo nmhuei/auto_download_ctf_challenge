@@ -222,6 +222,10 @@ class StorageManager:
     # 2. format_report
     # ------------------------------------------------------------------
 
+    #: Viewport thống nhất với AppHeader (spec §4.1): body table không bao
+    #: giờ vượt width này — tên workspace dài bị cắt ellipsis (codex-r2 P1).
+    REPORT_MAX_WIDTH = 80
+
     @staticmethod
     def format_report(
         usages: Sequence[WorkspaceUsage], threshold_mb: int = 1024
@@ -235,11 +239,16 @@ class StorageManager:
           màu warn/error luôn đi kèm glyph. Workspace đã ended: nhãn chữ
           ``ended`` muted.
         - Dòng TOTAL dùng nhãn faint, KHÔNG bold đột ngột.
+        - Width bảng ≤ 80 cell — cùng viewport với AppHeader (codex-r2 P1):
+          tên workspace vượt chỗ được cấp bị cắt ``…`` thay vì đẩy bảng ra
+          86–90 cột.
+        - KHÔNG đường ngang full-width ``----`` (ngoài whitelist glyph
+          PHOSPHOR): heading faint + khoảng thở đảm nhiệm phân đoạn.
         """
         threshold_bytes = int(threshold_mb) * 1024 * 1024
         rows = sorted(usages, key=lambda u: u.total_bytes, reverse=True)
 
-        name_w = max(
+        name_natural = max(
             [len("WORKSPACE")]
             + [len(u.name) for u in rows]
         ) if rows else len("WORKSPACE")
@@ -275,14 +284,26 @@ class StorageManager:
             + [len(_re.sub(r"\[[^\]]*\]", "", n)) for n in note_cells]
         ) if rows else len("NOTE")
 
+        # Cột name co lại để TỔNG width bảng luôn ≤ REPORT_MAX_WIDTH (cùng
+        # viewport AppHeader); 6 khe 2-space giữa 7 cột + 6 cell CHALLS.
+        gaps_total = 12
+        fixed_w = sum(size_w) + 6 + note_w + gaps_total
+        name_w = min(name_natural, max(12, StorageManager.REPORT_MAX_WIDTH
+                                       - fixed_w))
+
+        def _fit_name(name: str) -> str:
+            return (name if len(name) <= name_w
+                    else name[:max(1, name_w - 1)] + "…")
+
         faint, muted = _FAINT_COLOR, _MUTED_COLOR
         lines: List[str] = [
             f"[{faint}]STORAGE[/{faint}]"
             f"[{muted}] · ngưỡng {threshold_mb} MiB/workspace"
-            f" · ✗ ≥2× · ! ≥1×[/{muted}]"
+            f" · ✗ ≥2× · ! ≥1×[/{muted}]",
+            "",
         ]
         header = (
-            f"[{faint}]{'WORKSPACE':<{name_w}}[/{faint}]  "
+            f"[{faint}]{StorageManager._fit_header('WORKSPACE', name_w):<{name_w}}[/{faint}]  "
             + "  ".join(
                 f"[{faint}]{h:>{w}}[/{faint}]"
                 for h, w in zip(headers, size_w)
@@ -291,7 +312,6 @@ class StorageManager:
             + f"[{faint}]{f'NOTE':<{note_w}}[/{faint}]"
         )
         lines.append(header)
-        lines.append("-" * StorageManager._visible_len(header))
         grand = 0
         for idx, usage in enumerate(rows):
             grand += usage.total_bytes
@@ -299,18 +319,25 @@ class StorageManager:
                 f"{col_raw[c][idx]:>{size_w[c]}}" for c in range(len(col_raw))
             )
             lines.append(
-                f"{escape(usage.name):<{name_w}}  {cells}"
+                f"{escape(_fit_name(usage.name)):<{name_w}}  {cells}"
                 f"  {usage.challenge_count:>6}  {note_cells[idx]}"
             )
         total_line = (
             f"[{faint}]{'TOTAL':<{name_w}}[/{faint}]  "
             + "  ".join(" " * w for w in size_w[:-1])
+            + "  "   # separator sau cột SOLVER (đúng layout dòng số liệu)
             + f"{human_size(grand):>{size_w[-1]}}"
         )
         lines.append(total_line)
         if not rows:
             lines.append(f"[{muted}](không có workspace nào)[/{muted}]")
         return "\n".join(lines)
+
+    @staticmethod
+    def _fit_header(label: str, width: int) -> str:
+        """Nhãn cột name: nếu cột bị co dưới độ dài nhãn thì cắt gọn bằng
+        ``…`` thay vì đẩy lệch lưới (width bảng luôn ≤ REPORT_MAX_WIDTH)."""
+        return label if len(label) <= width else label[:max(1, width - 1)] + "…"
 
     @staticmethod
     def _visible_len(markup: str) -> int:

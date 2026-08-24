@@ -169,9 +169,13 @@ def handle_workspaces(args):
         progress_cell = StatusService._meter_only(rate, 10)
         progress_cell.append(f" {rate:.0f}%", style=_MUTED_COLOR)
 
-        # Green chỉ đi kèm glyph ✔ (luật palette §3).
-        solved_cell = _Text("✔ ", style=_SOLVED_COLOR)
-        solved_cell.append(str(stats['solved_challenges']), style="fg.base")
+        # Glyph ✔ xanh CHỈ khi workspace thực sự có solve (codex-r2 P2):
+        # 0/N → số trung tính không glyph, không biến semantic thành bullet.
+        n_solved = stats['solved_challenges']
+        solved_cell = _Text()
+        if n_solved > 0:
+            solved_cell.append("✔ ", style=_SOLVED_COLOR)
+        solved_cell.append(str(n_solved), style="fg.base")
         solved_cell.append(f"/{stats['total_challenges']}",
                            style=_MUTED_COLOR)
 
@@ -845,6 +849,9 @@ def _render_suggestions(items):
     semantic (! warn / ℹ info) màu đúng luật, continuation line wrap với
     indent 2 spaces (không treo dòng ở cột 0)."""
     width = getattr(console, 'width', None) or 80
+    # Khoảng thở kép trước block GỢI Ý — tách biệt rõ hơn khỏi bảng
+    # (codex-r2 P1: bảng dài khá phẳng, tăng hierarchy block gợi ý).
+    console.print()
     console.print()
     console.print(Text('GỢI Ý', style=_FAINT_COLOR))
     for s in items:

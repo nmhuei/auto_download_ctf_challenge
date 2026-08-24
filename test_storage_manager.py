@@ -551,5 +551,67 @@ class TestExportWorkspace(unittest.TestCase):
                 os.path.join(self.base, "nope"))
 
 
+class TestFormatReportWidthAndRule(unittest.TestCase):
+    """codex-r2 P1: width bảng thống nhất với AppHeader (80), bỏ rule ngang
+    full-width ngoài whitelist PHOSPHOR, khoảng thở sau heading."""
+
+    def _usage(self, name, total_bytes=1024):
+        return WorkspaceUsage(
+            name=name, path=f"/tmp/{name}", total_bytes=total_bytes,
+            breakdown={"attachments": 0, "writeups": 0,
+                       "solvers": 0, "misc": total_bytes},
+            largest_files=[], challenge_count=3, ended=None,
+        )
+
+    def test_report_width_never_exceeds_80(self):
+        # Tên dài nhất thực tế từng đẩy bảng ra 86–90 cột.
+        long_names = [
+            "TallDwarf_Hosting_Hostile_Takeover",
+            "2026_haruulzangi_CTF_Extended_Edition_X",
+            "ws",
+        ]
+        usages = [self._usage(n, i * 1024 * 1024)
+                  for i, n in enumerate(long_names)]
+        report = StorageManager.format_report(usages)
+        for ln in report.splitlines():
+            visible = StorageManager._visible_len(ln)
+            self.assertLessEqual(visible, 80,
+                                 f"dòng vượt 80 cột ({visible}): {ln!r}")
+
+    def test_long_name_truncated_with_ellipsis(self):
+        report = StorageManager.format_report(
+            [self._usage("TallDwarf_Hosting_Hostile_Takeover")])
+        self.assertNotIn("TallDwarf_Hosting_Hostile_Takeover", report)
+        self.assertIn("…", report)
+
+    def test_no_full_width_rule_line(self):
+        report = StorageManager.format_report([self._usage("alpha")])
+        for ln in report.splitlines():
+            self.assertFalse(set(ln) == {"-"},
+                             f"còn đường ngang full-width: {ln!r}")
+        self.assertNotIn("----", report)
+
+    def test_breathing_room_after_heading(self):
+        report = StorageManager.format_report([self._usage("alpha")])
+        lines = report.splitlines()
+        self.assertTrue(lines[0].startswith("["))
+        # dòng thứ hai là dòng trống (khoảng thở) trước header bảng
+        self.assertEqual(lines[1], "")
+
+    def test_columns_still_aligned_after_squeeze(self):
+        import re as _re
+        usages = [self._usage("TallDwarf_Hosting_Hostile_Takeover",
+                              total_bytes=3 * 1024 * 1024),
+                  self._usage("tiny", total_bytes=512)]
+        report = StorageManager.format_report(usages)
+        # mọi dòng số liệu có cùng vị trí đơn vị TOTAL (right-align giữ
+        # nguyên) — so trên text đã bỏ markup rich
+        def _plain(ln):
+            return _re.sub(r"\[[^\]]*\]", "", ln)
+        totals = {_plain(ln).find(" MiB") for ln in report.splitlines()
+                  if " MiB" in _plain(ln) and "ngưỡng" not in ln}
+        self.assertEqual(len(totals), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
