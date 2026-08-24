@@ -4,6 +4,8 @@ WriteupExporter (P2-3) — unit tests trên tmp workspace giả lập.
 Chạy: python3 -m pytest test_writeup_exporter.py -q
 Không gọi mạng — toàn bộ dữ liệu được dựng trên đĩa trong tempfile.
 """
+import contextlib
+import io
 import json
 import shutil
 import tempfile
@@ -12,6 +14,7 @@ import zipfile
 from pathlib import Path
 
 from ctf_downloader.services.writeup_exporter import SOLVED_EXPORT_VALUES, WriteupExporter
+from ctf_downloader.ui.banner import banner_b
 
 
 def _make_workspace(root: Path) -> None:
@@ -113,19 +116,36 @@ class TestWriteupExporter(unittest.TestCase):
 
         self.assertTrue(pack_dir.is_dir())
         index = (pack_dir / "INDEX.md").read_text(encoding="utf-8")
+        # Banner half-block PHOSPHOR (text thuần trong code fence) đứng
+        # trước heading chính.
+        banner_lines = [ln for ln in banner_b().plain.rstrip("\n").splitlines()
+                        if ln.strip()]
+        self.assertTrue(banner_lines)
+        for ln in banner_lines:
+            self.assertIn(ln, index)
+        self.assertIn("```text", index)
+        self.assertLess(index.index("```text"), index.index("# Writeup Pack"))
         # Header từ challenges.json ctf_info
-        self.assertIn("Vòng loại PTIT CTF 2026", index)
+        self.assertIn("# Writeup Pack — Vòng loại PTIT CTF 2026", index)
         self.assertIn("B23DCCE070", index)
-        # Bảng tổng hợp + link từng bài
-        self.assertIn("| # | Category | Challenge | Points | Flag | Solver | Link |", index)
-        self.assertIn("Web_Easy_SQLi/README.md", index)
+        # Bảng tổng hợp 6 cột, căn cột markdown chuẩn
+        self.assertIn("| # | Category | Challenge | Points | Flag | Solver |", index)
+        self.assertIn("| ---: | :--- | :--- | ---: | :--- | :---: |", index)
+        # Thứ tự dòng theo thứ tự quét workspace — assert không phụ thuộc #
+        self.assertIn("| Web | Easy SQLi | 100 | `PTIT{sql1_1s_fun}` | ✔ |", index)
+        self.assertIn("| Pwn | Hard Heap | 500 | `N/A` | — |", index)
+        self.assertNotIn("✅", index)  # emoji thay bằng glyph PHOSPHOR
+        # Không còn cột Link riêng — link tương đối nằm ở mục Chi tiết
+        self.assertNotIn("| Link |", index)
+        self.assertIn("[Web_Easy_SQLi/README.md](Web_Easy_SQLi/README.md)", index)
         self.assertIn("Pwn_Hard_Heap/README.md", index)
         # Không lẫn bài bị loại
         self.assertNotIn("RSA_1", index)
         self.assertNotIn("Zip_Bomb", index)
-        # Cảnh báo thiếu flag nằm trong INDEX
-        self.assertIn("⚠️", index)
-        self.assertIn("Hard Heap", index)
+        # Cảnh báo thiếu flag nằm trong INDEX với glyph ``!`` (không emoji)
+        self.assertIn("## ! Cảnh báo validate", index)
+        self.assertIn("- ! [Pwn] Hard Heap: không tìm thấy flag thật", index)
+        self.assertNotIn("⚠️", index)
 
         # Per-challenge: writeup gốc + solver copy kèm
         web_readme = (pack_dir / "Web_Easy_SQLi" / "README.md").read_text(encoding="utf-8")
@@ -143,6 +163,21 @@ class TestWriteupExporter(unittest.TestCase):
             names = zf.namelist()
             self.assertIn(f"{pack_dir.name}/INDEX.md", names)
             self.assertIn(f"{pack_dir.name}/Web_Easy_SQLi/README.md", names)
+
+    def test_build_pack_console_output_phosphor(self):
+        """build_pack in cảnh báo ``!`` warn + tổng kết ``✔ Đã đóng gói N
+        bài → <path>`` ra stderr (err_console), không dùng emoji."""
+        err_buf = io.StringIO()
+        with contextlib.redirect_stderr(err_buf):
+            pack_dir = WriteupExporter(self.ws).build_pack(
+                out_dir=Path(self._tmp) / "out_console")
+        err = err_buf.getvalue()
+        # Tổng kết: ✔ glyph + count + path
+        self.assertIn("✔ Đã đóng gói 2 bài → ", err)
+        self.assertIn(str(pack_dir), err)
+        # Cảnh báo validate: glyph ``!`` thay emoji ⚠️
+        self.assertIn("! [Pwn] Hard Heap: không tìm thấy flag thật", err)
+        self.assertNotIn("⚠️", err)
 
     def test_build_pack_empty_raises_valueerror(self):
         empty_ws = Path(self._tmp) / "Empty_CTF"

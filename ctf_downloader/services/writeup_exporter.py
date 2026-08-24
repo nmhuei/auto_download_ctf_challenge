@@ -21,6 +21,12 @@ CÁCH GỌI SAU KHI WIRE CLI (cli.py đang bận — không wire ở đây):
 
 hoặc gộp: ``pack_dir = WriteupExporter(ws).build_pack(out_dir)`` — build_pack
 tự gọi collect()/validate() bên trong.
+
+Output PHOSPHOR (stderr qua ``ui.console.err_console``): cảnh báo validate
+mỗi dòng một glyph ``!`` warn amber; tổng kết build thành công
+``✔ Đã đóng gói N bài → <path>`` (✔ solved green, path info cyan).
+INDEX.md dùng banner half-block text thuần (``ui.banner.banner_b``) trong
+code fence + bảng markdown căn cột chuẩn.
 """
 from __future__ import annotations
 
@@ -32,8 +38,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
+from rich.text import Text
+
 from ..storage.constants import FLAG_PLACEHOLDER
 from ..storage.workspace_repo import WorkspaceRepo
+from ..ui.banner import banner_b
+from ..ui.console import err_console
+from ..ui.style import OK, WARN as WARN_GLYPH
+from ..ui.theme import INFO, SOLVED, WARN
 from ..utils.sanitize import sanitize_folder_name
 
 # Trục solve được tính là "đã giải bởi mình/team" — đủ điều kiện đưa vào pack.
@@ -133,19 +145,49 @@ class WriteupExporter:
     # validate
     # ------------------------------------------------------------------
     def validate(self, entries: List[WriteupEntry]) -> List[str]:
-        """Cảnh báo (không chặn build): bài thiếu flag thật trong writeup."""
+        """Cảnh báo (không chặn build): bài thiếu flag thật trong writeup.
+
+        Trả về message THUẦN (không emoji/prefix) — caller tự render glyph:
+        console gắn ``!`` warn amber (:meth:`_print_warnings`), INDEX.md
+        gắn ``!`` đầu bullet (:meth:`_render_warnings`).
+        """
         warnings: List[str] = []
         for e in entries:
             if not e.flag:
                 warnings.append(
-                    f"⚠️ [{e.category}] {e.name}: không tìm thấy flag thật "
+                    f"[{e.category}] {e.name}: không tìm thấy flag thật "
                     f"trong writeup (placeholder {FLAG_PLACEHOLDER} chưa thay?)"
                 )
             if not e.writeup_md.strip():
                 warnings.append(
-                    f"⚠️ [{e.category}] {e.name}: file writeup rỗng/không đọc được"
+                    f"[{e.category}] {e.name}: file writeup rỗng/không đọc được"
                 )
         return warnings
+
+    # ------------------------------------------------------------------
+    # console output (PHOSPHOR — stderr qua err_console)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _print_warnings(warnings: List[str]) -> None:
+        """Mỗi cảnh báo một dòng: glyph ``!`` warn amber + message thuần."""
+        for w in warnings:
+            line = Text(WARN_GLYPH + " ", style=WARN)
+            line.append(w)
+            err_console.print(line)
+
+    @staticmethod
+    def _print_summary(count: int, pack_dir: Path) -> None:
+        """Dòng tổng kết: ``✔ Đã đóng gói N bài → <path>``.
+
+        ✔ solved green (green chỉ đi kèm glyph ✔ — luật palette §3),
+        count bold, path info cyan.
+        """
+        line = Text(OK + " ", style=SOLVED)
+        line.append("Đã đóng gói ")
+        line.append(str(count), style="bold")
+        line.append(" bài → ")
+        line.append(str(pack_dir), style=INFO)
+        err_console.print(line)
 
     # ------------------------------------------------------------------
     # build_pack
@@ -166,6 +208,7 @@ class WriteupExporter:
                 "writeup cho ít nhất một bài rồi chạy lại."
             )
         warnings = self.validate(entries)
+        self._print_warnings(warnings)
 
         out_root = Path(out_dir)
         out_root.mkdir(parents=True, exist_ok=True)
@@ -178,22 +221,23 @@ class WriteupExporter:
         index_lines = self._render_index_header(ctf_info, len(entries))
         index_lines.extend(self._render_warnings(warnings))
 
-        # Bảng tổng hợp
-        index_lines.append("| # | Category | Challenge | Points | Flag | Solver | Link |")
-        index_lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+        # Bảng tổng hợp — căn cột markdown chuẩn (# và Points căn phải,
+        # Solver căn giữa glyph ✔/—).
+        index_lines.append("| # | Category | Challenge | Points | Flag | Solver |")
+        index_lines.append("| ---: | :--- | :--- | ---: | :--- | :---: |")
         rows = []
         for i, e in enumerate(entries, 1):
             sub = self._entry_dirname(e)
             self._export_entry(e, pack_dir / sub)
-            link = f"{sub}/README.md"
             rows.append(
-                f"| {i} | {e.category} | {e.name} | {e.points if e.points is not None else '-'} "
-                f"| `{e.flag or 'N/A'}` | {'✅' if e.solver_files else '—'} | [{link}]({link}) |"
+                f"| {i} | {e.category} | {e.name} "
+                f"| {e.points if e.points is not None else '-'} "
+                f"| `{e.flag or 'N/A'}` | {OK if e.solver_files else '—'} |"
             )
         index_lines.extend(rows)
 
         index_lines.append("")
-        index_lines.append("## 📂 Chi tiết từng bài")
+        index_lines.append("## Chi tiết từng bài")
         index_lines.append("")
         for i, e in enumerate(entries, 1):
             sub = self._entry_dirname(e)
@@ -213,6 +257,7 @@ class WriteupExporter:
         if os.path.exists(zip_base + ".zip"):
             os.remove(zip_base + ".zip")
         shutil.make_archive(zip_base, "zip", root_dir=out_root, base_dir=pack_dir.name)
+        self._print_summary(len(entries), pack_dir)
         return pack_dir
 
     # ------------------------------------------------------------------
@@ -249,7 +294,13 @@ class WriteupExporter:
         title = ctf_info.get("title") or "CTF Writeup Pack"
         url = ctf_info.get("url")
         user = ctf_info.get("user")
-        lines = [f"# 🏁 Writeup Pack — {title}", ""]
+        # Banner PHOSPHOR phương án B (half-block █▀▄) — text thuần từ
+        # banner_b().plain, bọc code fence để markdown giữ nguyên khoảng
+        # trắng/căn hàng glyph (màu không cần trong md).
+        art = "\n".join(banner_b().plain.rstrip("\n").splitlines())
+        lines = ["```text", art, "```", ""]
+        lines.append(f"# Writeup Pack — {title}")
+        lines.append("")
         meta_bits = []
         if url:
             meta_bits.append(f"Platform: {url}")
@@ -264,7 +315,7 @@ class WriteupExporter:
     def _render_warnings(warnings: List[str]) -> List[str]:
         if not warnings:
             return []
-        lines = ["## ⚠️ Cảnh báo validate", ""]
-        lines.extend(f"- {w}" for w in warnings)
+        lines = ["## ! Cảnh báo validate", ""]
+        lines.extend(f"- ! {w}" for w in warnings)
         lines.append("")
         return lines
