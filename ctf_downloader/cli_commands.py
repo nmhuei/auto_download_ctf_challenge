@@ -393,3 +393,99 @@ def handle_rank(args):
     except Exception as e:
         Logger.error(f'Failed to fetch ranking: {e}')
         sys.exit(1)
+
+
+def _prompt_yes_no(question: str) -> bool:
+    """Hỏi y/N trên tty — chỉ trả True khi user gõ y/yes.
+
+    Non-tty luôn trả False (không bao giờ tự xác nhận thao tác phá dữ liệu).
+    Dùng ``sys.stdin.readline`` thay vì ``input()`` để tuân thủ rule Phase 7:
+    tầng CLI cấm gọi input()/Prompt.ask/Confirm.ask (AST check).
+    """
+    if not sys.stdin.isatty():
+        return False
+    try:
+        console.print(f"{question} ", end="")
+        console.print("[bold]y/N[/bold]", end=" ")
+        answer = sys.stdin.readline()
+    except Exception:
+        return False
+    return answer.strip().lower() in ('y', 'yes')
+
+
+def handle_storage(args):
+    """``ctf storage`` (alias du/archive) — báo cáo dung lượng + archive.
+
+    - Không subcommand: scan_usage + format_report (+ suggest_actions khi có
+      gợi ý thực sự, bỏ qua dòng ✅ all-good).
+    - Subcommand ``archive <workspace_name>``: confirm (hoặc --yes), gọi
+      StorageManager.archive_workspace, in ratio, rồi HỎI RIÊNG việc xoá
+      workspace gốc — chỉ xoá khi user gõ yes (delete là rename an toàn).
+    """
+    from .services.storage_manager import StorageManager, human_size
+
+    if getattr(args, 'storage_command', None) == 'archive':
+        _handle_storage_archive(args, StorageManager, human_size)
+        return
+
+    usages = StorageManager.scan_usage(args.base_dir)
+    print(StorageManager.format_report(usages, threshold_mb=args.threshold_mb))
+
+    suggestions = StorageManager.suggest_actions(
+        args.base_dir, threshold_mb=args.threshold_mb
+    )
+    meaningful = [s for s in suggestions if not s.startswith('✅')]
+    if meaningful:
+        print()
+        console.print('[bold]Gợi ý:[/bold]')
+        for s in meaningful:
+            console.print(f'- {s}')
+
+
+def _handle_storage_archive(args, StorageManager, human_size):
+    base_dir = os.path.expanduser(args.base_dir)
+    ws_path = os.path.join(base_dir, args.workspace_name)
+
+    if not os.path.isdir(ws_path):
+        Logger.error(f"Workspace không tồn tại: {ws_path}")
+        sys.exit(1)
+
+    # Confirm 1: archive. Non-tty không --yes → exit 2 (bắt buộc --yes).
+    if not args.yes:
+        if not sys.stdin.isatty():
+            Logger.error(
+                'Chạy non-interactive: cần --yes để xác nhận archive '
+                '(không bao giờ tự xác nhận).'
+            )
+            sys.exit(2)
+        if not _prompt_yes_no(
+                f"Xác nhận archive workspace '{args.workspace_name}'?"):
+            Logger.info('Đã huỷ — không archive.')
+            return
+
+    try:
+        result = StorageManager.archive_workspace(
+            ws_path,
+            out_dir=args.out,
+            git_remote=args.git_remote,
+        )
+    except Exception as exc:
+        Logger.error(f'Archive thất bại: {exc}')
+        sys.exit(1)
+
+    Logger.success(
+        f"📦 Đã archive → {result['archive_path']} "
+        f"({human_size(result['original_bytes'])} → "
+        f"{human_size(result['archived_bytes'])}, "
+        f"ratio {result['ratio']:.2%})"
+    )
+
+    # Confirm 2 (riêng biệt): xoá workspace gốc — CHỈ khi user gõ yes.
+    # Non-tty → skip hoàn toàn (dữ liệu giữ nguyên).
+    if _prompt_yes_no(
+            f"Xoá workspace gốc '{args.workspace_name}'? "
+            f"(rename an toàn vào _archives)"):
+        trash = StorageManager.delete_workspace(ws_path)
+        Logger.success(f"🗑️ Đã chuyển workspace vào thùng rác: {trash}")
+    else:
+        Logger.info('Giữ nguyên workspace gốc.')

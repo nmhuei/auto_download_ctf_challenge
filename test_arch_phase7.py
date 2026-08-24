@@ -190,5 +190,176 @@ class TestCliCommandsDelegation(unittest.TestCase):
         self.assertIn("7", out)
 
 
+class TestStorageCommand(unittest.TestCase):
+    """Phase 7b — ``ctf storage`` (alias du/archive): parse 2 subpath + mock
+    StorageManager assert đúng tham số + exit code non-tty."""
+
+    def _parser(self):
+        from ctf_downloader.cli import build_unified_parser
+
+        return build_unified_parser()
+
+    # ---- parse args: subpath scan ----
+    def test_parse_scan_defaults(self):
+        ns = self._parser().parse_args(["storage"])
+        self.assertEqual(ns.base_dir, os.path.expanduser("~/Workspace/CTF"))
+        self.assertEqual(ns.threshold_mb, 1024)
+        self.assertIsNone(ns.storage_command)
+
+    def test_parse_scan_custom_flags(self):
+        ns = self._parser().parse_args(
+            ["storage", "-d", "/tmp/fake_ctf", "--threshold-mb", "256"]
+        )
+        self.assertEqual(ns.base_dir, "/tmp/fake_ctf")
+        self.assertEqual(ns.threshold_mb, 256)
+
+    def test_parse_aliases(self):
+        for alias in ("du", "archive"):
+            ns = self._parser().parse_args([alias])
+            self.assertIsNone(ns.storage_command, alias)
+
+    # ---- parse args: subpath archive ----
+    def test_parse_archive_subcommand(self):
+        ns = self._parser().parse_args(
+            ["storage", "archive", "myctf", "--git-remote",
+             "https://git.example.com/me/archives.git", "--out", "/tmp/out"]
+        )
+        self.assertEqual(ns.storage_command, "archive")
+        self.assertEqual(ns.workspace_name, "myctf")
+        self.assertEqual(ns.git_remote,
+                         "https://git.example.com/me/archives.git")
+        self.assertEqual(ns.out, "/tmp/out")
+        self.assertFalse(ns.yes)
+
+    def test_parse_archive_yes_flag(self):
+        ns = self._parser().parse_args(["du", "archive", "myctf", "-y"])
+        self.assertTrue(ns.yes)
+
+    # ---- handler: scan gọi StorageManager đúng tham số ----
+    def test_handle_storage_scan_calls_manager_with_params(self):
+        import contextlib
+        import io
+        import datetime as dt
+
+        from ctf_downloader import cli_commands
+        from ctf_downloader.services.storage_manager import (
+            StorageManager,
+            WorkspaceUsage,
+        )
+
+        fake_usage = WorkspaceUsage(
+            name="ws1", path="/tmp/x/ws1", total_bytes=10,
+            breakdown={"attachments": 0, "writeups": 0, "solvers": 0,
+                       "misc": 10},
+            largest_files=[], challenge_count=0, ended=None,
+        )
+        ns = Namespace(base_dir="/tmp/fake_ctf", threshold_mb=512,
+                       storage_command=None)
+        with patch.object(StorageManager, "scan_usage",
+                          return_value=[fake_usage]) as m_scan, \
+             patch.object(StorageManager, "format_report",
+                          return_value="REPORT") as m_rep, \
+             patch.object(StorageManager, "suggest_actions",
+                          return_value=["✅ ok"]) as m_sug:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                cli_commands.handle_storage(ns)
+        m_scan.assert_called_once_with("/tmp/fake_ctf")
+        _, kwargs = m_rep.call_args
+        self.assertEqual(kwargs.get("threshold_mb"), 512)
+        self.assertEqual(m_rep.call_args.args[0], [fake_usage])
+        # suggest có gợi ý thật → in; dòng ✅ all-good không in
+        out = buf.getvalue()
+        self.assertIn("REPORT", out)
+        m_sug.assert_called_once_with("/tmp/fake_ctf", threshold_mb=512)
+
+    def test_handle_storage_scan_no_meaningful_suggestion_hides_hint_block(self):
+        import contextlib
+        import io
+
+        from ctf_downloader import cli_commands
+        from ctf_downloader.services.storage_manager import StorageManager
+
+        ns = Namespace(base_dir="/tmp/fake_ctf", threshold_mb=1024,
+                       storage_command=None)
+        with patch.object(StorageManager, "scan_usage", return_value=[]), \
+             patch.object(StorageManager, "format_report",
+                          return_value="(không có workspace nào)"), \
+             patch.object(StorageManager, "suggest_actions",
+                          return_value=["✅ Mọi thứ ổn."]):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                cli_commands.handle_storage(ns)
+        self.assertNotIn("Gợi ý", buf.getvalue())
+
+    # ---- handler: archive non-tty không --yes → exit 2, KHÔNG đụng dữ liệu ----
+    def test_archive_non_tty_without_yes_exits_2(self):
+        import contextlib
+        import io
+
+        from ctf_downloader import cli_commands
+        from ctf_downloader.services.storage_manager import StorageManager
+
+        ns = Namespace(base_dir="/tmp/fake_ctf", threshold_mb=1024,
+                       storage_command="archive", workspace_name="myctf",
+                       git_remote=None, out=None, yes=False)
+        fake_tty = io.StringIO()
+        fake_tty.isatty = lambda: False
+        with patch.object(sys, "stdin", fake_tty), \
+             patch.object(os.path, "isdir", return_value=True), \
+             patch.object(StorageManager, "archive_workspace") as m_arch:
+            with self.assertRaises(SystemExit) as cm:
+                cli_commands.handle_storage(ns)
+        self.assertEqual(cm.exception.code, 2)
+        m_arch.assert_not_called()
+
+    def test_archive_non_tty_with_yes_calls_manager_and_skips_delete(self):
+        import contextlib
+        import io
+
+        from ctf_downloader import cli_commands
+        from ctf_downloader.services.storage_manager import StorageManager
+
+        ns = Namespace(
+            base_dir="/tmp/fake_ctf", threshold_mb=1024,
+            storage_command="archive", workspace_name="myctf",
+            git_remote="https://git.example.com/r.git", out="/tmp/out",
+            yes=True,
+        )
+        result = {"archive_path": "/tmp/out/myctf_20260824.tar.gz",
+                  "original_bytes": 1000, "archived_bytes": 100, "ratio": 0.1}
+        fake_tty = io.StringIO()
+        fake_tty.isatty = lambda: False
+        with patch.object(sys, "stdin", fake_tty), \
+             patch.object(os.path, "isdir", return_value=True), \
+             patch.object(StorageManager, "archive_workspace",
+                          return_value=result) as m_arch, \
+             patch.object(StorageManager, "delete_workspace") as m_del:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                cli_commands.handle_storage(ns)
+        m_arch.assert_called_once_with(
+            os.path.join("/tmp/fake_ctf", "myctf"),
+            out_dir="/tmp/out",
+            git_remote="https://git.example.com/r.git",
+        )
+        # non-tty: không bao giờ xoá workspace gốc
+        m_del.assert_not_called()
+        self.assertIn("myctf_20260824.tar.gz", buf.getvalue())
+        self.assertIn("ratio", buf.getvalue())
+
+    def test_archive_missing_workspace_exits_1(self):
+        from ctf_downloader import cli_commands
+
+        ns = Namespace(base_dir="/tmp/fake_ctf", threshold_mb=1024,
+                       storage_command="archive", workspace_name="nope",
+                       git_remote=None, out=None, yes=True)
+        with patch.object(os.path, "isdir", return_value=False):
+            with self.assertRaises(SystemExit) as cm:
+                cli_commands.handle_storage(ns)
+        self.assertEqual(cm.exception.code, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

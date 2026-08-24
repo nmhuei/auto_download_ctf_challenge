@@ -12,6 +12,7 @@ from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test c
     handle_rank,
     handle_register,
     handle_status,
+    handle_storage,
     handle_submit,
     handle_watch,
     handle_workspaces,
@@ -169,6 +170,21 @@ Quick Examples:
     menu_parser.add_argument('-c', '--cookie', help='Cookie string or path to cookie file')
     menu_parser.add_argument('-t', '--token', help='API token or Bearer token')
 
+    # 10. STORAGE / DU / ARCHIVE — báo cáo dung lượng + archive workspace
+    storage_parser = subparsers.add_parser('storage', aliases=['du', 'archive'],
+                                           help='💾 Kiểm soát dung lượng workspace: báo cáo usage, gợi ý dọn dẹp, archive tar.gz (+ git push)')
+    storage_parser.add_argument('-d', '--base-dir', default=os.path.expanduser('~/Workspace/CTF'),
+                                help='Thư mục gốc chứa các workspace (default: ~/Workspace/CTF)')
+    storage_parser.add_argument('--threshold-mb', type=int, default=1024,
+                                help='Ngưỡng cảnh báo dung lượng mỗi workspace, tính MiB (default: 1024)')
+    storage_sub = storage_parser.add_subparsers(dest='storage_command')
+    storage_arch = storage_sub.add_parser('archive', help='Đóng gói một workspace thành tar.gz (tuỳ chọn push git remote)')
+    storage_arch.add_argument('workspace_name', help='Tên workspace con trong --base-dir')
+    storage_arch.add_argument('--git-remote', help='Git remote URL để commit + push archive (không tự tạo remote)')
+    storage_arch.add_argument('--out', help='Thư mục lưu archive (default: <base-dir>/_archives)')
+    storage_arch.add_argument('-y', '--yes', action='store_true',
+                              help='Bỏ qua confirm archive (bắt buộc khi non-interactive); xoá workspace gốc vẫn cần xác nhận riêng')
+
     return parser
 
 
@@ -207,6 +223,8 @@ def main():
         handle_watch(args)
     elif cmd in ['register', 'reg']:
         handle_register(args)
+    elif cmd in ['storage', 'du', 'archive']:
+        handle_storage(args)
     elif cmd in ['menu', 'ui', 'console']:
         launch_interactive_menu(workspace_path=args.workspace, cookie=args.cookie, token=args.token)
     else:
