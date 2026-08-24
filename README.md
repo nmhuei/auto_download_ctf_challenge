@@ -59,6 +59,30 @@ Credentials được lưu trong **auth map** tại `~/.config/ctf_toolkit/config
 | `register` | Tạo tài khoản + lưu auth map | `ctf register -u https://ctf.example.com --tempmail` |
 | `menu` | Interactive console đầy đủ | `ctf menu` |
 
+### Giao diện PHOSPHOR
+
+Output TUI dùng theme **phosphor** (progress bar `█░`, icon trạng thái: ✔ solved · ⛁ có attachment · ⎘ có note · ✎ draft flag):
+
+```text
+▐██ CTF·TOOLKIT  │  status · PTIT_CTF_2026                           22:05 UTC+7
+╭────────────────  Vòng loại PTIT CTF 2026  ─────────────────╮
+│                                                            │
+│  TIẾN ĐỘ                           ĐIỂM                    │
+│  ░░░░░░░░░░░░░░░░░░░░░░            500 / 8135              │
+│  1/35 solved · 2.9%                hoarded 0 · drafts 1    │
+│                                                            │
+╰──────────────────── gzctf · B23DCCE070 ────────────────────╯
+
+── CRYPTO                                              0/7 ░░░░░░░░░░ 0/1880
+  ·  12  SSSH                      180 pts    9 giải   ⛁ ⎘
+  ·   5  Signaling                 108 pts   20 giải   ⎘
+
+── REVERSE                                           1/7 █░░░░░░░░░ 500/1587
+  ✔  18  Tiger Bạc                 500 pts    0 giải   ✎
+
+↑↓ di chuyển · ? help · q thoát
+```
+
 Chạy `ctf <lệnh> --help` để xem đầy đủ tuỳ chọn của từng lệnh.
 
 ## 4. Cây workspace output
