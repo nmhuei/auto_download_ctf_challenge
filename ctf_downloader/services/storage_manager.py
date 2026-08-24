@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from ..platforms.base import normalize_epoch_to_utc
 from ..storage.workspace_repo import WorkspaceRepo
 
 # Thư mục con chuẩn của một challenge (workspace layout:
@@ -83,25 +84,14 @@ def human_size(num_bytes: float) -> str:
 
 
 def parse_event_end(value: Any) -> Optional[_dt.datetime]:
-    """Parse ``event_window.end`` (epoch giây hoặc ISO 8601) → aware datetime.
+    """Parse ``event_window.end`` → aware datetime UTC, hoặc ``None``.
 
-    Trả ``None`` khi thiếu/không parse được (giống hành vi tolerant của
-    StatusService._render_window).
+    Delegate sang :func:`platforms.base.normalize_epoch_to_utc` — helper
+    chung của feature Event Window: nhận epoch giây lẫn epoch-ms (bẫy đơn vị
+    GZCTF/rCTF), ISO 8601 string, guard bool/garbage. Giá trị thiếu/không hợp
+    lệ (kể cả bool, ≤ 0, năm < 2000) → ``None`` — không bao giờ raise.
     """
-    if value is None:
-        return None
-    try:
-        if isinstance(value, (int, float)) or (
-            isinstance(value, str) and value.isdigit()
-        ):
-            return _dt.datetime.fromtimestamp(float(value), tz=_TIMEZONE)
-        iso = str(value).replace("Z", "+00:00")
-        parsed = _dt.datetime.fromisoformat(iso)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=_TIMEZONE)
-        return parsed
-    except (ValueError, TypeError, OSError, OverflowError):
-        return None
+    return normalize_epoch_to_utc(value)
 
 
 class StorageManager:
@@ -351,13 +341,12 @@ class StorageManager:
         return result
 
     @staticmethod
-    def _rel_to_src(root: str, src: Path) -> str:
-        return str(Path(root).relative_to(src))
-
-    @staticmethod
     def _dir_excluded(root: str, dirname: str, src: Path,
                       patterns: Sequence[str]) -> bool:
-        rel_dir = f"{StorageManager._rel_to_src(root, src)}/{dirname}".lstrip("/")
+        # Dựng relative path từ parts để tránh prefix "./" khi root==src
+        # (trước đây "writeup/" không match được thư mục top-level).
+        rel_parts = Path(root).relative_to(src).parts
+        rel_dir = "/".join((*rel_parts, dirname))
         for pat in patterns:
             p = pat.rstrip("/") + "/"
             if fnmatch.fnmatch(rel_dir + "/", p) or fnmatch.fnmatch(

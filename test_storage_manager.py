@@ -27,6 +27,7 @@ from ctf_downloader.services.storage_manager import (
     StorageManager,
     WorkspaceUsage,
     human_size,
+    parse_event_end,
 )
 
 
@@ -261,6 +262,22 @@ class TestArchiveWorkspace(StorageTestBase):
         self.assertFalse(any("/writeup/" in n for n in names))
         self.assertTrue(any("/challenge/" in n for n in names))
 
+    def test_strip_patterns_exclude_top_level_dir(self):
+        """Pattern ``writeup/`` phải loại cả thư mục ``writeup/`` top-level
+        (bug cũ: rel_dir có prefix ``./`` khi root==src nên không match)."""
+        ws = os.path.join(self.base, "topstrip")
+        _truncate(os.path.join(ws, "writeup", "README.md"), 300)
+        _write(os.path.join(ws, "Web", "c1", "challenge", "app.zip"), b"A" * 100)
+        out = os.path.join(self.tmp, "out")
+        result = StorageManager.archive_workspace(
+            ws, out, strip_patterns=["writeup/"])
+        with tarfile.open(result["archive_path"], "r:gz") as tf:
+            names = tf.getnames()
+        self.assertFalse(any("writeup" in n for n in names),
+                         f"writeup vẫn còn trong tar: {names}")
+        self.assertIn("Web/c1/challenge/app.zip", names)
+        self.assertEqual(result["original_bytes"], 100)
+
     def test_git_remote_push_to_local_bare_repo(self):
         ws = os.path.join(self.base, "gitty")
         self._make_dirty_tree(ws)
@@ -351,6 +368,35 @@ class TestSuggestActions(StorageTestBase):
         self.make_beta("tiny")
         actions = StorageManager.suggest_actions(self.base)
         self.assertTrue(any("✅" in a for a in actions))
+
+
+class TestParseEventEnd(unittest.TestCase):
+    def test_epoch_ms_gzctf_style(self):
+        """epoch-ms (GZCTF/rCTF) phải parse đúng, không overflow → None."""
+        from ctf_downloader.platforms.base import normalize_epoch_to_utc
+        value = 1756000000000
+        self.assertEqual(parse_event_end(value),
+                         normalize_epoch_to_utc(value))
+        expected = dt.datetime.fromtimestamp(
+            1756000000, tz=dt.timezone.utc)
+        self.assertEqual(parse_event_end(value), expected)
+
+    def test_bool_is_none(self):
+        """True/False là bool — không được thành epoch 1970."""
+        for bad in (True, False):
+            self.assertIsNone(parse_event_end(bad))
+
+    def test_garbage_still_none(self):
+        for bad in (None, "not-a-date", "", -5, object()):
+            self.assertIsNone(parse_event_end(bad))
+
+    def test_iso_and_epoch_seconds_unchanged(self):
+        end = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+        self.assertEqual(
+            parse_event_end(int(end.timestamp())), end)
+        self.assertEqual(
+            parse_event_end(end.strftime("%Y-%m-%dT%H:%M:%SZ")),
+            end)
 
 
 if __name__ == "__main__":
