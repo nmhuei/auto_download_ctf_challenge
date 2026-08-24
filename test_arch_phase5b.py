@@ -119,6 +119,33 @@ class TestThrottleRegistryDriven(_SubmitCase):
         self.assertEqual(ptype, "zz_unknown_platform")
 
 
+class TestLoadChallengesCacheBehavior(_SubmitCase):
+    """Characterization cho _load_challenges (hành vi frozen của submitter cũ):
+    challenges.json TỒN TẠI -> luôn dùng cache (kể cả mảng ``challenges`` rỗng),
+    KHÔNG bao giờ rơi xuống fetch live; chỉ fetch live khi không đọc được file."""
+
+    def _write_challenges(self, challs):
+        with open(os.path.join(self.ws, "challenges.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "platform_url": "http://ctf.test",
+                "ctf_info": {"url": "http://ctf.test"},
+                "challenges": challs,
+            }, f)
+
+    def test_empty_challenges_array_uses_cache_no_live_fetch(self):
+        self._write_challenges([])  # workspace có challenges.json nhưng mảng rỗng
+        fs, platform = self.make_submitter()
+        platform.fetch_challenges.assert_not_called()
+        platform.authenticate.assert_not_called()
+        self.assertEqual(fs.challenges_cache, {})
+
+    def test_missing_challenges_json_falls_back_to_live_fetch(self):
+        os.remove(os.path.join(self.ws, "challenges.json"))
+        fs, platform = self.make_submitter()
+        platform.authenticate.assert_called()
+        platform.fetch_challenges.assert_called()
+
+
 class TestInstanceSyncAndPick(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.mkdtemp(prefix="arch5b_inst_")

@@ -312,8 +312,15 @@ from . import ctfd, custom_rest, generic_html, gzctf, my_platform, rctf
 Xong. Ngay lập tức platform mới:
 - xuất hiện trong `capabilities.PLATFORM_TYPES` (sinh tự từ registry),
 - có throttle riêng đọc bởi `submit_service` (mặc định 5.0s nếu không khai báo),
-- được pipeline auto-detect dùng markers/cookie_hints/probes của chính nó,
 - dựng được adapter theo tên khi workspace khai báo `"platform": "my_platform"`.
+
+> **Caveat auto-detect:** pipeline nhận diện 4 tầng trong
+> `ctf_downloader/platforms/detection.py` duyệt các tuple ưu tiên cứng
+> `_MARKER_PRIORITY` / `_COOKIE_PRIORITY` / `_PROBE_PRIORITY`
+> (hiện chỉ `"rctf"`, `"ctfd"`, `"gzctf"`). Platform **hoàn toàn mới** muốn được
+> auto-detect qua markers/cookie_hints/probes của chính nó phải thêm key của nó
+> vào các tuple đó; đăng ký registry (throttle/capabilities/adapter theo tên)
+> thì không cần.
 
 > Fixture kiểm chứng hành vi này: `test_arch_phase4.py::TestOneFilePlatformFixture`.
 

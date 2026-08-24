@@ -82,17 +82,22 @@ class SubmitService:
     def _load_challenges(self):
         """
         Loads challenge map from local challenges.json or fetches live.
+
+        Hành vi frozen: file challenges.json TỒN TẠI là đủ để dùng cache —
+        kể cả khi mảng ``challenges`` rỗng (không rơi xuống fetch live).
+        Chỉ fetch live khi không đọc được file (thiếu / lỗi đọc).
         """
         # Try local challenges.json first
         if self.workspace_dir:
-            data = self.repo.read_challenges()
-            challs = data.get("challenges", [])
-            if challs:
-                for c in challs:
-                    cid = c.get("id")
-                    name = c.get("name", "")
-                    self.challenges_cache[str(cid)] = c
-                    self.challenges_cache[name.lower().strip()] = c
+            if self.repo.challenges_path.exists():
+                data = self.repo.read_challenges()
+                challs = data.get("challenges", [])
+                if challs:
+                    for c in challs:
+                        cid = c.get("id")
+                        name = c.get("name", "")
+                        self.challenges_cache[str(cid)] = c
+                        self.challenges_cache[name.lower().strip()] = c
                 return
 
         # Fetch live if not in local cache
