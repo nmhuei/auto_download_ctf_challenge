@@ -4,12 +4,14 @@ import subprocess
 from typing import Optional, Tuple
 
 from ..utils.logger import Logger
+from .registry import register_downloader
 
 # Không tự implement crypto Mega — shell-out sang megatools.
 MEGA_TOOL_CANDIDATES = ("megadl", "mega-get")
 MEGA_MISSING_TOOL_MESSAGE = "Cần cài megatools (megadl) để tải link Mega"
 
 
+@register_downloader("mega", domains=("mega.nz", "mega.co.nz"))
 class MegaDownloader:
     """
     Wrapper mỏng gọi binary megatools (megadl / mega-get) để tải link mega.nz.

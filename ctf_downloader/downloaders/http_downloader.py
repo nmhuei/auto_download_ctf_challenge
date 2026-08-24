@@ -5,6 +5,7 @@ from typing import Optional, Callable
 from urllib.parse import urlparse, urljoin
 from ..utils.logger import Logger
 from ..utils.sanitize import sanitize_filename, extract_filename_from_headers, extract_filename_from_url
+from .registry import register_downloader
 
 CHUNK_SIZE = 65536
 # Số lần thử resume (mở lại kết nối + Range) khi mất kết nối giữa chừng
@@ -26,6 +27,7 @@ class LargeFileSkipped(DownloadFailed):
         super().__init__(f"skipped_large_file: vượt quá giới hạn dung lượng ({size} bytes)")
 
 
+@register_downloader("direct_file")
 class HttpDownloader:
     @staticmethod
     def _short_error(exc: Exception, max_len: int = 200) -> str:

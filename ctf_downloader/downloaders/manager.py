@@ -4,10 +4,13 @@ import requests
 from typing import List, Dict, Optional, Tuple
 
 from .http_downloader import HttpDownloader, DownloadFailed, LargeFileSkipped
+# Các import handler dưới đây giữ để kích hoạt @register_downloader khi nạp
+# module (GDriveDownloader còn được so khớp trực tiếp cho fallback_name).
 from .gdrive import GDriveDownloader
-from .dropbox import DropboxDownloader
-from .mediafire import MediafireDownloader
-from .mega import MegaDownloader
+from .dropbox import DropboxDownloader  # noqa: F401 — side-effect đăng ký
+from .mediafire import MediafireDownloader  # noqa: F401 — side-effect đăng ký
+from .mega import MegaDownloader, MEGA_MISSING_TOOL_MESSAGE
+from .registry import DOWNLOADERS
 from ..extractors.link_extractor import ExtractedLink
 from ..utils.logger import console, Logger
 from ..utils.sanitize import extract_filename_from_url
@@ -114,8 +117,14 @@ class DownloadManager:
         Message 'skipped_large_file: ...' đánh dấu file bị skip bởi consent gate.
         """
         try:
-            # 0. Mega: shell-out sang megatools — không có tool thì bỏ qua
-            if link_type == "mega":
+            handler = DOWNLOADERS.get(link_type)
+
+            # 0. Mega: shell-out sang megatools — manager tự kiểm tra tool,
+            #    không có thì bỏ qua với message hướng dẫn cài đặt
+            if handler is MegaDownloader:
+                if MegaDownloader.available_tool() is None:
+                    Logger.warning(MEGA_MISSING_TOOL_MESSAGE)
+                    return False, None, MEGA_MISSING_TOOL_MESSAGE
                 saved_path, msg = MegaDownloader.download(url, dest_dir, timeout=max(self.timeout * 10, 600))
                 return (saved_path is not None), saved_path, msg
 
@@ -123,55 +132,48 @@ class DownloadManager:
             expected_size: Optional[int] = None
             fallback_name: Optional[str] = None
 
-            # 1. Google Drive — luôn unknown-size (interstitial)
-            if link_type == "gdrive":
-                stream, expected_size = GDriveDownloader.get_download_stream(url, session=self.session, timeout=self.timeout)
-                file_id = GDriveDownloader.extract_file_id(url)
-                if file_id:
-                    fallback_name = f"gdrive_{file_id}.bin"
+            # 1-3. Handler trả stream (Google Drive / Dropbox / Mediafire) —
+            #      mỗi handler tự pre-flight dung lượng của mình
+            if handler is not None and hasattr(handler, "get_download_stream"):
+                stream, expected_size = handler.get_download_stream(url, session=self.session, timeout=self.timeout)
+                if handler is GDriveDownloader:
+                    file_id = GDriveDownloader.extract_file_id(url)
+                    if file_id:
+                        fallback_name = f"gdrive_{file_id}.bin"
 
-            # 2. Dropbox — pre-flight HEAD để biết trước dung lượng
-            elif link_type == "dropbox":
-                stream, expected_size = DropboxDownloader.get_download_stream(url, session=self.session, timeout=self.timeout)
+                # Các nhánh trả stream: gate consent rồi lưu qua save_response_stream
+                if stream is None:
+                    return False, None, f"Failed to download via {link_type} handler (không lấy được stream tải trực tiếp)."
 
-            # 3. Mediafire — pre-flight API get_info.php / scrape trang
-            elif link_type == "mediafire":
-                stream, expected_size = MediafireDownloader.get_download_stream(url, session=self.session, timeout=self.timeout)
-
-            # 4. Direct / GitHub / GitLab / Discord / catbox / 0x0 / HTTP thuần
-            else:
-                expected_size = HttpDownloader.probe_content_length(url, session=self.session, timeout=self.timeout)
                 if not self._confirm_large_download(url, expected_size):
+                    self._close_quietly(stream)
                     return False, None, self._skip_large_message(url, expected_size, self.size_limit_bytes)
 
-                saved_path = HttpDownloader.download_file(
-                    url, dest_dir, self.session,
-                    preferred_filename=preferred_name,
-                    timeout=self.timeout,
+                filename = preferred_name or fallback_name or extract_filename_from_url(url)
+                saved_path = HttpDownloader.save_response_stream(
+                    stream, dest_dir, filename,
                     force=self.force,
                     max_size=self.size_limit_bytes
                 )
                 if saved_path:
-                    return True, saved_path, "Direct download successful"
-                return False, None, "Failed to download file (HTTP status, connection error hoặc nội dung HTML)"
+                    return True, saved_path, f"Downloaded via {link_type} handler"
+                return False, None, f"Failed to download via {link_type} handler (lỗi khi ghi dữ liệu)."
 
-            # Các nhánh trả stream: gate consent rồi lưu qua save_response_stream
-            if stream is None:
-                return False, None, f"Failed to download via {link_type} handler (không lấy được stream tải trực tiếp)."
-
+            # 4. Default: Direct / GitHub / GitLab / Discord / catbox / 0x0 / HTTP thuần
+            expected_size = HttpDownloader.probe_content_length(url, session=self.session, timeout=self.timeout)
             if not self._confirm_large_download(url, expected_size):
-                self._close_quietly(stream)
                 return False, None, self._skip_large_message(url, expected_size, self.size_limit_bytes)
 
-            filename = preferred_name or fallback_name or extract_filename_from_url(url)
-            saved_path = HttpDownloader.save_response_stream(
-                stream, dest_dir, filename,
+            saved_path = HttpDownloader.download_file(
+                url, dest_dir, self.session,
+                preferred_filename=preferred_name,
+                timeout=self.timeout,
                 force=self.force,
                 max_size=self.size_limit_bytes
             )
             if saved_path:
-                return True, saved_path, f"Downloaded via {link_type} handler"
-            return False, None, f"Failed to download via {link_type} handler (lỗi khi ghi dữ liệu)."
+                return True, saved_path, "Direct download successful"
+            return False, None, "Failed to download file (HTTP status, connection error hoặc nội dung HTML)"
 
         except LargeFileSkipped as e:
             # Unknown-size: vượt ngưỡng phát hiện trong lúc stream -> đã ngắt sớm & dọn tmp

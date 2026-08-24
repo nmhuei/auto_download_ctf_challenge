@@ -4,8 +4,10 @@ import requests
 from ..utils.logger import Logger
 from ..utils.sanitize import extract_filename_from_headers, extract_filename_from_url
 from .http_downloader import HttpDownloader, DownloadFailed
+from .registry import register_downloader
 
 
+@register_downloader("dropbox", domains=("dropbox.com",))
 class DropboxDownloader:
     @staticmethod
     def get_direct_url(url: str) -> str:

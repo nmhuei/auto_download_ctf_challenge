@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 from typing import Tuple, Optional
 from ..utils.logger import Logger
 from ..utils.sanitize import extract_filename_from_headers, extract_filename_from_url
+from .registry import register_downloader
 
 MEDIAFIRE_API_INFO_URL = "https://www.mediafire.com/api/1.4/file/get_info.php"
 
@@ -16,6 +17,7 @@ _UNIT_MULTIPLIERS = {
 }
 
 
+@register_downloader("mediafire", domains=("mediafire.com",))
 class MediafireDownloader:
     @staticmethod
     def extract_quick_key(url: str) -> Optional[str]:

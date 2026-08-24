@@ -1,4 +1,5 @@
 import re
+import shutil
 import urllib.parse
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -114,14 +115,10 @@ class LinkExtractor:
             )
 
         # Mega.nz — chỉ đánh dấu downloadable khi có megatools (megadl/mega-get);
-        # DownloadManager dựa trên flag này để quyết định có thử tải hay không.
+        # kiểm tra tool tại đây bằng shutil.which, KHÔNG import ngược tầng
+        # downloaders (DownloadManager vẫn tự kiểm tra lại một lần lúc tải).
         if "mega.nz" in netloc or "mega.co.nz" in netloc:
-            try:
-                # Import lười để tránh phụ thuộc vòng extractors <-> downloaders
-                from ..downloaders.mega import MegaDownloader
-                has_mega_tool = MegaDownloader.available_tool() is not None
-            except Exception:
-                has_mega_tool = False
+            has_mega_tool = any(shutil.which(tool) for tool in ("megadl", "mega-get"))
             return ExtractedLink(
                 url=url,
                 link_type="mega",

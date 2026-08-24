@@ -4,6 +4,7 @@ from typing import Optional, Tuple
 from ..utils.logger import Logger
 from ..utils.sanitize import extract_filename_from_headers
 from .http_downloader import DownloadFailed
+from .registry import register_downloader
 
 # Các dấu hiệu HTML của Google Drive khi hết hạn mức tải / thiếu quyền
 _QUOTA_MARKERS = (
@@ -21,6 +22,7 @@ def _looks_like_quota_html(html_text: str) -> bool:
     return any(marker in lowered for marker in _QUOTA_MARKERS)
 
 
+@register_downloader("gdrive", domains=("drive.google.com", "docs.google.com"))
 class GDriveDownloader:
     @staticmethod
     def extract_file_id(url: str) -> Optional[str]:
