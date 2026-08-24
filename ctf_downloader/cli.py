@@ -6,6 +6,7 @@ import sys
 
 from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test cũ
     get_auth_for_workspace,
+    handle_doctor,
     handle_hoard,
     handle_instance,
     handle_pull,
@@ -164,6 +165,15 @@ Quick Examples:
     reg_parser.add_argument('-w', '--workspace', default=None,
                             help='Workspace để gắn credentials trong auth map (mặc định key=URL)')
 
+    # 7b. DOCTOR / HEALTH-CHECK — kiểm tra platform trước giờ giải
+    doctor_parser = subparsers.add_parser('doctor', aliases=['health', 'checkup'],
+                                          help='🩺 Health-check platform: URL/auth/capabilities/event-window/flag-format')
+    doctor_parser.add_argument('-u', '--url', help='Platform URL (vd https://ctf.example.com)')
+    doctor_parser.add_argument('-w', '--workspace', default=None,
+                               help='Workspace để lấy auth từ auth map (nếu không truyền -c/-t)')
+    doctor_parser.add_argument('-c', '--cookie', help='Cookie string or path to cookie file')
+    doctor_parser.add_argument('-t', '--token', help='API token or Bearer token')
+
     # 8. MENU / UI / INTERACTIVE
     menu_parser = subparsers.add_parser('menu', aliases=['ui', 'console'], help='Launch full interactive CTF suite dashboard')
     menu_parser.add_argument('-w', '--workspace', default=None, help='CTF workspace directory')
@@ -221,6 +231,8 @@ def main():
         handle_rank(args)
     elif cmd in ['watch', 'sync']:
         handle_watch(args)
+    elif cmd in ['doctor', 'health', 'checkup']:
+        handle_doctor(args)
     elif cmd in ['register', 'reg']:
         handle_register(args)
     elif cmd in ['storage', 'du', 'archive']:

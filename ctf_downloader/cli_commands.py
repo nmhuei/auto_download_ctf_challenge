@@ -380,6 +380,41 @@ def handle_register(args):
         sys.exit(1)
 
 
+def handle_doctor(args):
+    """``ctf doctor`` 🩺 — health-check platform trước giờ giải (P1-3).
+
+    Offline-safe: mỗi check tự bắt exception riêng; mạng chết vẫn render
+    đầy đủ report. Exit code: 0 khi có ít nhất 1 check pass | 1 khi tất cả
+    fail | 2 thiếu -u."""
+    from .services.health_service import HealthService
+
+    url = getattr(args, 'url', None)
+    if not url:
+        Logger.error("Usage: ctf doctor -u <platform-url> "
+                     "[-w workspace] [-c cookie] [-t token]")
+        sys.exit(2)
+
+    cookie_val = args.cookie
+    if cookie_val and os.path.isfile(cookie_val):
+        with open(cookie_val, 'r', encoding='utf-8') as f:
+            cookie_val = f.read().strip()
+
+    svc = HealthService()
+    try:
+        report = svc.check(
+            url,
+            cookie=cookie_val,
+            token=getattr(args, 'token', None),
+            workspace=getattr(args, 'workspace', None),
+        )
+    except Exception as e:
+        Logger.error(f'Doctor failed unexpectedly: {e}')
+        sys.exit(1)
+    report.render()
+    if report.passed == 0:
+        sys.exit(1)
+
+
 def handle_rank(args):
     cookie_val, token_val = get_auth_for_workspace(args.workspace, args.cookie, args.token)
     try:
