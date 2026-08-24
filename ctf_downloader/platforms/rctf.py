@@ -316,41 +316,55 @@ class RCTFPlatform(BasePlatform):
         }
 
         url = f"{self.base_url}/api/v1/leaderboard/now"
+        limit, max_pages = 100, 10
         try:
             # rCTF schema bắt buộc query params limit & offset trên
             # /api/v1/leaderboard/now — thiếu → lỗi validation → standings rỗng.
             # limit=100 an toàn dưới maxLimit mặc định của rCTF.
-            resp = self.session.get(url, params={"limit": 100, "offset": 0}, timeout=15)
-            if resp.status_code == 200:
+            all_entries: List[dict] = []
+            total: Optional[int] = None
+            offset = 0
+            # Phân trang: data.total > số dòng đã nhận → loop GET với
+            # offset += limit; chặn tối đa 10 trang để tránh loop vô hạn.
+            for _page in range(max_pages):
+                resp = self.session.get(
+                    url, params={"limit": limit, "offset": offset}, timeout=15)
+                if resp.status_code != 200:
+                    break
                 data = resp.json() or {}
                 data_field = data.get("data")
                 if isinstance(data_field, dict):
-                    leaderboard = data_field.get("leaderboard", [])
+                    page_rows = data_field.get("leaderboard", []) or []
                     total = data_field.get("total")
                 else:
-                    leaderboard = data_field if isinstance(data_field, list) else []
+                    page_rows = data_field if isinstance(data_field, list) else []
                     total = None
-                result["total_teams"] = len(leaderboard)
-                if isinstance(total, int) and total > len(leaderboard):
-                    Logger.info(
-                        f"rCTF leaderboard: total={total} nhưng chỉ nhận "
-                        f"{len(leaderboard)} đội (limit=100) — cân nhắc phân trang offset.")
-                standings = []
-                for idx, entry in enumerate(leaderboard, 1):
-                    name = entry.get("name")
-                    score = entry.get("score")
-                    pos = idx
-                    if (result["my_team"] and name == result["my_team"]) or (result["my_user"] and name == result["my_user"]):
-                        result["my_rank"] = f"{pos}th"
-                        result["my_score"] = score
+                if not page_rows:
+                    break
+                all_entries.extend(page_rows)
+                offset += limit
+                # Đủ total rồi, hoặc server trả trang ngắn hơn limit (hết dữ liệu)
+                if ((isinstance(total, int) and total <= len(all_entries))
+                        or len(page_rows) < limit):
+                    break
 
-                    standings.append({
-                        "pos": pos,
-                        "name": name,
-                        "score": score,
-                        "raw": entry
-                    })
-                result["standings"] = standings
+            result["total_teams"] = len(all_entries)
+            standings = []
+            for idx, entry in enumerate(all_entries, 1):
+                name = entry.get("name")
+                score = entry.get("score")
+                pos = idx
+                if (result["my_team"] and name == result["my_team"]) or (result["my_user"] and name == result["my_user"]):
+                    result["my_rank"] = f"{pos}th"
+                    result["my_score"] = score
+
+                standings.append({
+                    "pos": pos,
+                    "name": name,
+                    "score": score,
+                    "raw": entry
+                })
+            result["standings"] = standings
         except Exception as e:
             Logger.warning(f"Failed to fetch leaderboard from rCTF: {e}")
 

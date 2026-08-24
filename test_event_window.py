@@ -1325,5 +1325,84 @@ class TestMinorsKeepAlive(TempWorkspaceCase):
         self.assertEqual(tr.health_checks, 0)
 
 
+# ----------------------------------------------------------------------
+# rCTF fetch_scoreboard phân trang khi data.total > 100 (deferred item)
+# ----------------------------------------------------------------------
+
+class TestRCTFPagination(unittest.TestCase):
+    """fetch_scoreboard: data.total > len(leaderboard) → loop GET với
+    offset += limit (limit=100), chặn tối đa 10 trang; ghép standings.
+    Giữ hành vi cũ khi total <= 100."""
+
+    def _entry(self, i):
+        return {"id": i + 1, "name": f"Team{i:04d}", "score": 10000 - i}
+
+    def _make_session(self, total, per_page=100):
+        """Server trả đúng per_page dòng mỗi request theo offset; đếm số call."""
+        served = {"count": 0}
+        offsets = []
+
+        def get(url, *a, **kw):
+            if "/api/v1/leaderboard/now" not in url:
+                return make_resp(404)
+            params = kw.get("params") or {}
+            offset = int(params.get("offset", 0))
+            served["count"] += 1
+            offsets.append(offset)
+            # Server thật chỉ trả số dòng còn lại theo total
+            n = min(per_page, max(0, total - offset))
+            rows = [self._entry(offset + j) for j in range(n)]
+            return make_resp(200, json_data={
+                "kind": "goodLeaderboard",
+                "data": {"total": total, "leaderboard": rows}})
+
+        s = MagicMock()
+        s.get.side_effect = get
+        s.served_count = served
+        s.offsets_seen = offsets
+        return s
+
+    def test_total_gt_100_merges_two_pages(self):
+        # total=150 → trang 1: 100 dòng (offset=0), trang 2: 50 dòng (offset=100)
+        s = self._make_session(total=150, per_page=100)
+        p = RCTFPlatform("https://rctf.example.com", s)
+        result = p.fetch_scoreboard()
+        self.assertEqual(s.served_count["count"], 2)
+        self.assertEqual(s.offsets_seen, [0, 100])
+        self.assertEqual(len(result["standings"]), 150)
+        self.assertEqual(result["total_teams"], 150)
+        self.assertEqual(result["standings"][0]["pos"], 1)
+        self.assertEqual(result["standings"][99]["pos"], 100)
+        self.assertEqual(result["standings"][149]["pos"], 150)
+        self.assertEqual(result["standings"][149]["name"], "Team0149")
+
+    def test_total_le_100_keeps_single_request(self):
+        # Hành vi cũ: total <= 100 → chỉ 1 request, không loop offset
+        s = self._make_session(total=80, per_page=80)
+        p = RCTFPlatform("https://rctf.example.com", s)
+        result = p.fetch_scoreboard()
+        self.assertEqual(s.served_count["count"], 1)
+        self.assertEqual(len(result["standings"]), 80)
+        self.assertEqual(result["total_teams"], 80)
+
+    def test_hard_cap_ten_pages(self):
+        # Server luôn báo còn nữa → dừng ở tối đa 10 trang (10 x 100 = 1000 đội)
+        s = self._make_session(total=5000, per_page=100)
+        p = RCTFPlatform("https://rctf.example.com", s)
+        result = p.fetch_scoreboard()
+        self.assertEqual(s.served_count["count"], 10)
+        self.assertEqual(len(result["standings"]), 1000)
+        self.assertEqual(result["total_teams"], 1000)
+
+    def test_my_team_rank_found_on_second_page(self):
+        # Team của mình nằm ở đầu trang 2 (index 100) → pos 101 vẫn được dò ra
+        s = self._make_session(total=150, per_page=100)
+        p = RCTFPlatform("https://rctf.example.com", s)
+        p.ctf_info.team_name = "Team0100"
+        result = p.fetch_scoreboard()
+        self.assertEqual(result["my_rank"], "101th")
+        self.assertEqual(result["my_score"], 10000 - 100)
+
+
 if __name__ == "__main__":
     unittest.main()
