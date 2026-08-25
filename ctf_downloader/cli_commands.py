@@ -39,6 +39,13 @@ def get_auth_for_workspace(ws_path: str, cookie_arg: Optional[str] = None,
 
 def handle_pull(args):
     if args.interactive or not args.url:
+        if not sys.stdin.isatty():
+            # Live-verify v4: `ctf pull </dev/null` từng nổ EOFError traceback
+            # khi rẽ vào interactive menu — non-tty thì từ chối sạch kèm hint.
+            Logger.error("Thiếu --url và stdin không phải terminal tương tác.")
+            Logger.info("Dùng `ctf pull <url>` hoặc chạy trong terminal thật "
+                        "để mở menu.")
+            sys.exit(2)
         launch_interactive_menu()
         return
 

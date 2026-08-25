@@ -25,6 +25,7 @@ import io
 import json
 import os
 import shutil
+import sys
 import tarfile
 import tempfile
 import time as _real_time
@@ -454,6 +455,75 @@ class TestArchiveSkipsSymlinkDir(TempWorkspaceCase):
             for p in Path(extract_dir).rglob("*"))
         self.assertIn("challenge.zip", extracted)
         self.assertNotIn("secret", extracted)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+# ---------------------------------------------------------------------- #
+# N. Pull pipe — stdin đóng + thiếu --url phải exit sạch, không EOFError
+# ---------------------------------------------------------------------- #
+class TestPullPipeNoTty(unittest.TestCase):
+    """Live-verify v4: `ctf pull </dev/null` rẽ launch_interactive_menu()
+    rồi nổ EOFError traceback thô. Non-tty phải exit 2 kèm hint."""
+
+    def _run_handle_pull(self):
+        import io as _io
+        from argparse import Namespace
+        from ctf_downloader import cli_commands
+
+        ns = Namespace(interactive=False, url=None, cookie=None, token=None,
+                       output=None, threads=4, no_third_party=False,
+                       no_template=False, force=False, timeout=30,
+                       category=None, exclude=None, update=False,
+                       refresh_meta=False)
+        fake_stdin = type("FakeStdin", (), {"isatty": lambda self: False})()
+        orig_stdin = sys.stdin
+        sys.stdin = fake_stdin
+        try:
+            with contextlib.redirect_stdout(_io.StringIO()), \
+                    contextlib.redirect_stderr(_io.StringIO()), \
+                    patch.object(cli_commands, "launch_interactive_menu") as m_menu, \
+                    patch.object(cli_commands.Logger, "error") as m_err, \
+                    patch.object(cli_commands.Logger, "info") as m_info:
+                with self.assertRaises(SystemExit) as cm:
+                    cli_commands.handle_pull(ns)
+                m_menu.assert_not_called()
+        finally:
+            sys.stdin = orig_stdin
+        return cm.exception.code, " ".join(
+            str(c.args) for c in (*m_err.call_args_list,
+                                  *m_info.call_args_list))
+
+    def test_pipe_no_url_exits_2_with_hint(self):
+        code, msgs = self._run_handle_pull()
+        self.assertEqual(code, 2)
+        self.assertIn("--url", msgs)
+
+    def test_pipe_interactive_flag_also_refuses(self):
+        import io as _io
+        from argparse import Namespace
+
+        from ctf_downloader import cli_commands
+
+        ns = Namespace(interactive=True, url="https://x.example", cookie=None,
+                       token=None, output=None, threads=4, no_third_party=False,
+                       no_template=False, force=False, timeout=30,
+                       category=None, exclude=None, update=False,
+                       refresh_meta=False)
+        fake = type("F", (), {"isatty": lambda self: False})()
+        orig = sys.stdin
+        sys.stdin = fake
+        try:
+            with contextlib.redirect_stderr(io.StringIO()), \
+                    patch.object(cli_commands, "launch_interactive_menu") as m_menu:
+                with self.assertRaises(SystemExit) as cm:
+                    cli_commands.handle_pull(ns)
+                m_menu.assert_not_called()
+        finally:
+            sys.stdin = orig
+        self.assertEqual(cm.exception.code, 2)
 
 
 if __name__ == "__main__":
