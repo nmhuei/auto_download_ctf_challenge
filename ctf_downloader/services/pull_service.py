@@ -429,7 +429,10 @@ class PullService:
                             "last_entry", "remaining_time", "last_updated")
     # Field user-owned trong metadata.json mà incremental update không bao
     # giờ ghi đè (phục hồi sau khi WorkspaceBuilder viết lại toàn bộ file).
-    _USER_OWNED_META_KEYS = ("status", "submitted_flag")
+    # ``instance_info`` do instance_service quản TRÊN ĐỊA (is_container/
+    # active_instance/remaining_time) — platform không biết gì về trạng thái
+    # container local nên refresh-meta/redownload phải giữ nguyên (C9-03).
+    _USER_OWNED_META_KEYS = ("status", "submitted_flag", "instance_info")
 
     @staticmethod
     def run_update(config: DownloaderConfig,

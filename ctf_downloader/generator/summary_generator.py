@@ -1,10 +1,11 @@
 import math
 import os
-import json
 from collections import defaultdict
 from typing import List, Dict, Any
 from ..platforms.base import Challenge, CTFInfo
 from ..storage.constants import DEFAULT_CATEGORY, SOLVED_EMOJI_DONE, SUMMARY_FILES_LINE
+from ..storage.fileio import atomic_write_text
+from ..storage.workspace_repo import WorkspaceRepo
 from ..utils.sanitize import sanitize_folder_name
 
 
@@ -115,8 +116,13 @@ class SummaryGenerator:
 
         summary_content = "\n".join(lines)
         summary_path = os.path.join(base_output_dir, "SUMMARY.md")
-        with open(summary_path, "w", encoding="utf-8") as f:
-            f.write(summary_content)
+
+        # XCHECK hunter-c9: hai file tổng hợp này từng được ghi TRỰC TIẾP
+        # (open 'w' không atomic, không flock) trong khi rank-patcher/
+        # dashboard ghi cùng lúc qua WorkspaceRepo (atomic+flock) -> nội dung
+        # rách/ghi đè lost-update. Chuyển hết sang storage helpers, GIỮ
+        # nguyên format output (json indent=2 ensure_ascii=False, SUMMARY text).
+        atomic_write_text(summary_path, summary_content)
 
         # Build challenges.json
         json_data = {
@@ -151,8 +157,12 @@ class SummaryGenerator:
             ]
         }
         json_path = os.path.join(base_output_dir, "challenges.json")
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(_json_safe(json_data), f, indent=2, ensure_ascii=False)
-
+        # locked_update_json: ghi đè toàn bộ dưới flock riêng challenges.json.lock
+        # (mutator bỏ qua state hiện tại — semantics overwrite như cũ), atomic
+        # tmp+replace trong phạm vi khóa. _json_safe áp TRƯỚC để giữ hành vi
+        # thay NaN/Inf -> None như bản ghi trực tiếp trước đây.
+        WorkspaceRepo(base_output_dir).mutate_challenges(
+            lambda _current: _json_safe(json_data)
+        )
 
         return summary_path

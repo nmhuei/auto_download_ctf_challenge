@@ -51,8 +51,14 @@ def sanitize_folder_name(name: str, max_length: int = 80, default: str = "challe
     
     if not clean:
         return default
-        
-    return clean[:max_length]
+
+    clean = clean[:max_length]
+
+    # C9-02: NAME_MAX của Linux là 255 BYTE UTF-8 chứ không phải số ký tự
+    # (80 emoji = 320 byte -> os.makedirs OSError, challenge rơi khỏi
+    # workspace). Ép trần 254 byte; phần cắt rơi giữa multi-byte sequence
+    # bị bỏ qua khi decode thay vì tạo byte lỗi.
+    return clean.encode("utf-8")[:254].decode("utf-8", "ignore")
 
 
 def sanitize_filename(name: str, max_length: int = 120, default: str = "attachment.bin") -> str:

@@ -1,5 +1,6 @@
 import os
 import shutil
+import threading
 import requests
 from typing import Optional, Callable
 from urllib.parse import urlparse, urljoin
@@ -13,6 +14,15 @@ MAX_RESUME_ATTEMPTS = 3
 # Các HTTP redirect được theo dõi khi probe thủ công
 _REDIRECT_CODES = (301, 302, 303, 307, 308)
 _MAX_PROBE_REDIRECTS = 10
+
+# C9-04: registry khóa per-target (theo đường dẫn đích tuyệt đối). Hai thread
+# của pool tải 2 attachment trùng tên đích trước đây cùng thấy/cùng xoá
+# `.part` của nhau (fake-resume -> server trả 200) rồi rename đè nhau ->
+# mất dữ liệu im lặng. Khóa giữ TRỌN VÒNG ĐỜI một lần tải (kể cả retry/
+# resume tới khi rename xong) nên mọi thao tác .part/rename trên cùng đích
+# được tuần tự hoá.
+_TARGET_LOCKS_GUARD = threading.Lock()
+_TARGET_LOCKS = {}
 
 
 class DownloadFailed(Exception):
@@ -29,6 +39,30 @@ class LargeFileSkipped(DownloadFailed):
 
 @register_downloader("direct_file")
 class HttpDownloader:
+    @staticmethod
+    def _acquire_target_lock(target_path: str):
+        """Lấy khóa độc quyền cho đúng MỘT đường dẫn đích (C9-04).
+
+        Trả về ``(lock, waited)`` — hàm chỉ trả khi ĐÃ giữ được khóa, nên
+        caller có thể nhả an toàn trong ``finally``; nếu bị interrupt giữa
+        lúc chờ, exception ném ra trước khi gán nên caller không sở hữu khóa.
+        """
+        key = os.path.abspath(target_path)
+        with _TARGET_LOCKS_GUARD:
+            lock = _TARGET_LOCKS.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                _TARGET_LOCKS[key] = lock
+        if lock.acquire(blocking=False):
+            return lock, False
+        Logger.info(
+            f"Thread khác đang tải trùng đích "
+            f"'{os.path.basename(target_path)}' — chờ tuần tự để tránh "
+            f"ghi đè .part lẫn nhau."
+        )
+        lock.acquire()
+        return lock, True
+
     @staticmethod
     def _short_error(exc: Exception, max_len: int = 200) -> str:
         return str(exc).replace("\n", " ")[:max_len]
@@ -100,6 +134,8 @@ class HttpDownloader:
         target_path: Optional[str] = None
         part_path: Optional[str] = None
         attempt = 0
+        tlock = None           # C9-04: khóa per-target (nếu đích đã xác định)
+        tlock_waited = False   # True nếu có thread khác đang giữ khi ta đến
 
         try:
             os.makedirs(dest_dir, exist_ok=True)
@@ -110,6 +146,17 @@ class HttpDownloader:
             if preferred_filename:
                 target_path = os.path.join(dest_dir, sanitize_filename(preferred_filename))
                 part_path = target_path + ".part"
+                tlock, tlock_waited = HttpDownloader._acquire_target_lock(target_path)
+                if (tlock_waited and not force and os.path.exists(target_path)):
+                    # C9-04: worker khác vừa hoàn tất cùng đích trong lúc ta
+                    # chờ khóa — KHÔNG ghi đè bằng dữ liệu của URL mình
+                    # (lost update), trả về file đã có như nhánh
+                    # skip-if-exists bên dưới.
+                    Logger.info(
+                        f"'{os.path.basename(target_path)}' vừa được luồng khác "
+                        f"hoàn tất khi chờ trùng đích -> bỏ qua tải lại {url}."
+                    )
+                    return target_path
 
             while True:
                 offset = 0
@@ -202,6 +249,16 @@ class HttpDownloader:
                             filename = extract_filename_from_headers(resp.headers, fallback_url=url)
                         target_path = os.path.join(dest_dir, filename)
                         part_path = target_path + ".part"
+                        # C9-04: đích chỉ vừa biết từ headers — lấy khóa muộn
+                        # nhưng vẫn tuần tự hóa toàn bộ phần ghi/rename dưới.
+                        tlock, tlock_waited = HttpDownloader._acquire_target_lock(target_path)
+                        if (tlock_waited and not force and os.path.exists(target_path)):
+                            resp.close()
+                            Logger.info(
+                                f"'{os.path.basename(target_path)}' vừa được luồng khác "
+                                f"hoàn tất khi chờ trùng đích -> bỏ qua tải lại {url}."
+                            )
+                            return target_path
 
                     # Skip nếu đã tồn tại file hoàn chỉnh cùng kích thước
                     if (
@@ -281,6 +338,12 @@ class HttpDownloader:
                     except OSError:
                         pass
             return None
+        finally:
+            # C9-04: nhả khóa per-target trên MỌI đường thoát (thành công,
+            # skip, LargeFileSkipped/DownloadFailed, lỗi lạ) — thread đang
+            # chờ cùng đích không được treo vĩnh viễn.
+            if tlock is not None:
+                tlock.release()
 
     @staticmethod
     def save_response_stream(

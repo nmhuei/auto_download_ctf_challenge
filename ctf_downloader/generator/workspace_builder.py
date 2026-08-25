@@ -45,6 +45,23 @@ class WorkspaceBuilder:
                 norm.append({"content": str(hint), "cost": 0})
         return norm
     @staticmethod
+    def _existing_owner_id(challenge_dir: str) -> Optional[Any]:
+        """Id của challenge đang sở hữu ``challenge_dir`` (đọc metadata.json).
+
+        None nếu không xác định được (thư mục trống / metadata thiếu-hỏng) —
+        khi đó KHÔNG coi là có chủ, giữ nguyên hành vi tái sử dụng thư mục.
+        """
+        try:
+            with open(os.path.join(challenge_dir, "metadata.json"),
+                      encoding="utf-8-sig") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data.get("id")
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
     def create_challenge_workspace(
         base_output_dir: str,
         challenge: Challenge,
@@ -61,8 +78,20 @@ class WorkspaceBuilder:
             WorkspaceBuilder._safe_category(challenge), default=DEFAULT_CATEGORY
         )
         clean_name = sanitize_folder_name(challenge.name, default=f"chall_{challenge.id}")
-        
+
         challenge_dir = os.path.join(base_output_dir, clean_category, clean_name)
+
+        # C9-01: hai challenge khác id có thể va vào cùng clean_name sau
+        # sanitize ('web/login' vs 'web:login' -> 'web_login') — chia sẻ một
+        # thư mục làm metadata.json ghi đè lẫn nhau. Nếu thư mục đích đã có
+        # chủ sở hữu KHÁC id thì tách sang thư mục hậu tố '-<id>'
+        # deterministic; cùng id (pull lại/--update) tái sử dụng như cũ.
+        if os.path.isdir(challenge_dir):
+            owner_id = WorkspaceBuilder._existing_owner_id(challenge_dir)
+            if owner_id is not None and str(owner_id) != str(challenge.id):
+                challenge_dir = os.path.join(
+                    base_output_dir, clean_category, f"{clean_name}-{challenge.id}"
+                )
         os.makedirs(challenge_dir, exist_ok=True)
 
         # Create structured subdirectories for professional modularity

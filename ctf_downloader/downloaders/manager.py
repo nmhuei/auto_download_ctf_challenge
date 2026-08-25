@@ -92,6 +92,20 @@ class DownloadManager:
             f"{human_size(limit)}, người dùng không đồng ý tải."
         )
 
+    def _post_consent_gate(self, expected_size: Optional[int]) -> int:
+        """Ngưỡng ``max_size`` truyền xuống downloader SAU khi consent pass.
+
+        C9-05: consent chỉ thực sự được hỏi khi kích thước đã biết và vượt
+        ngưỡng — trường hợp đó phải NỚI hard gate (0), không thì gate cứng
+        trong downloader raise LargeFileSkipped ngay sau khi user đã đồng ý,
+        làm consent vô nghĩa. Các trường hợp còn lại (unknown size, nhỏ hơn
+        ngưỡng, gate tắt) giữ nguyên ngưỡng để vẫn cắt stream vượt giới hạn
+        giữa chừng (probe HEAD có thể đã thất bại)."""
+        limit = self.size_limit_bytes
+        if expected_size is not None and limit and expected_size > limit:
+            return 0
+        return limit
+
     @staticmethod
     def _close_quietly(stream) -> None:
         try:
@@ -151,11 +165,14 @@ class DownloadManager:
                     self._close_quietly(stream)
                     return False, None, self._skip_large_message(url, expected_size, self.size_limit_bytes)
 
+                # C9-05: user đã đồng ý -> nới hard gate (nếu consent được hỏi)
+                hard_gate = self._post_consent_gate(expected_size)
+
                 filename = preferred_name or fallback_name or extract_filename_from_url(url)
                 saved_path = HttpDownloader.save_response_stream(
                     stream, dest_dir, filename,
                     force=self.force,
-                    max_size=self.size_limit_bytes
+                    max_size=hard_gate
                 )
                 if saved_path:
                     return True, saved_path, f"Đã tải qua handler {link_type}"
@@ -171,7 +188,7 @@ class DownloadManager:
                 preferred_filename=preferred_name,
                 timeout=self.timeout,
                 force=self.force,
-                max_size=self.size_limit_bytes
+                max_size=self._post_consent_gate(expected_size)
             )
             if saved_path:
                 return True, saved_path, "Đã tải trực tiếp thành công"
