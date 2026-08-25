@@ -70,6 +70,26 @@ def get_spec(key: str) -> PlatformSpec:
         ) from None
 
 
+def display_label(key: str, max_len: int = 10) -> str:
+    """Nhãn platform an toàn cho UI — không bao giờ lộ key nội bộ ra màn hình
+    (synthesis-v6 N2: ``custom_rest`` từng bị slice ``[:10]`` thành ``custom_res``).
+
+    Trả ``spec.label`` đã đăng ký ('CTFd', 'GZ::CTF', 'rCTF', 'Custom REST /
+    Next.js CTF'…); key lạ → chính key (literal trung tính). Nhãn dài hơn
+    ``max_len`` được cắt tại biên từ ('Custom', không phải 'Custom RES') để
+    không gãy giữa token.
+    """
+    k = str(key)
+    if k not in PLATFORMS:
+        return k          # key lạ: giữ nguyên để còn tra cứu được
+    label = PLATFORMS[k].label
+    if len(label) <= max_len:
+        return label
+    parts = label.split()
+    head = parts[0] if parts else label
+    return head if 0 < len(head) <= max_len else label[:max_len]
+
+
 # ---------------------------------------------------------------------------
 # Kích hoạt đăng ký: import các module platform để decorator chạy.
 # KHÔNG xoá — nếu bỏ thì registry rỗng.

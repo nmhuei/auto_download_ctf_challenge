@@ -586,7 +586,10 @@ class TestStatusServiceSummaryStats(unittest.TestCase):
         # dòng Logger.info "Scanning all CTF workspaces in ..." + rich Table.
         self.assertIn("Scanning all CTF workspaces", out)
         self.assertIn("TestCTF", out)
-        self.assertIn("gzctf", out)   # PHOSPHOR: platform lowercase muted
+        # synthesis-v6 N2: platform render qua display_label (spec.label
+        # 'GZ::CTF') — không còn lộ key nội bộ lowercase 'gzctf'.
+        self.assertIn("GZ::CTF", out)
+        self.assertNotIn(" gzctf ", out)
         self.assertIn("0/1", out)
         # Workspace rỗng không xuất hiện trong bảng
         self.assertNotIn("ws_empty\n", out.split("Progress")[-1].split("TestCTF")[0])

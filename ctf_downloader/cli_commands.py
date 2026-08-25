@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from collections import Counter
 from typing import Optional
 
 from rich.console import Console
@@ -16,6 +17,7 @@ from rich.text import Text
 
 from .config import DownloaderConfig
 from .interactive_menu import launch_interactive_menu
+from .platforms.registry import display_label
 from .services.auth_service import AuthService
 from .services.instance_service import InstanceService
 from .services.pull_service import PullService
@@ -205,6 +207,9 @@ def handle_workspaces(args):
 
     total_solved = 0
     total_challs = 0
+    # N1 (synthesis-v6): title trùng giữa 2 workspace → gắn dirname faint
+    # để hàng còn phân biệt được (hiệu ứng D2: sort theo dirname ≠ title).
+    title_counts = Counter(str(s['title']) for s in rows)
     for stats in rows:
         total_solved += stats['solved_challenges']
         total_challs += stats['total_challenges']
@@ -212,6 +217,8 @@ def handle_workspaces(args):
         name_cell = _Text(str(stats['title'])[:35], style="fg.base")
         if stats.get('_ended'):
             name_cell.append(" · kết thúc", style=_MUTED_COLOR)
+        if title_counts[str(stats['title'])] > 1 and stats.get('_dir'):
+            name_cell.append(f" · {stats['_dir']}", style=_FAINT_COLOR)
 
         rate = stats['completion_rate']
         progress_cell = StatusService._meter_only(rate, 10)
@@ -229,7 +236,7 @@ def handle_workspaces(args):
 
         table.add_row(
             name_cell,
-            _Text(str(stats['platform'])[:10].lower(), style=_MUTED_COLOR),
+            _Text(display_label(str(stats['platform'])), style=_MUTED_COLOR),
             progress_cell,
             solved_cell,
         )

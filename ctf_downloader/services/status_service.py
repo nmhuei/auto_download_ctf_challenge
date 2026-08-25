@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import sys
+from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from rich import box
@@ -21,6 +22,7 @@ from rich.text import Text
 
 from ..storage.constants import FLAG_PLACEHOLDER
 from ..storage.workspace_repo import WorkspaceRepo
+from ..platforms.registry import display_label
 from ..ui.theme import FG_BASE, FG_MUTED, load_theme
 from ..utils.logger import Logger
 from ..utils.writeup_assessor import assess_writeup
@@ -1101,6 +1103,7 @@ class StatusService:
                 continue
             if stats['total_challenges'] > 0:
                 stats['_ended'] = False
+                stats['_dir'] = entry
                 try:
                     win = ((repo.read_challenges().get('ctf_info') or {})
                            .get('event_window') or {})
@@ -1120,12 +1123,17 @@ class StatusService:
 
         total_solved = 0
         total_challs = 0
+        # N1 (synthesis-v6): title CTF có thể trùng giữa 2 workspace — khi đó
+        # gắn thêm dirname faint để hàng còn phân biệt được.
+        title_counts = Counter(str(s['title']) for s in collected)
         for stats in collected:
             total_solved += stats['solved_challenges']
             total_challs += stats['total_challenges']
             name_cell = Text(str(stats['title'])[:35], style="fg.base")
             if stats['_ended']:
                 name_cell.append(" · ended", style="fg.muted")
+            if title_counts[str(stats['title'])] > 1 and stats.get('_dir'):
+                name_cell.append(f" · {stats['_dir']}", style="fg.faint")
 
             rate = stats['completion_rate']
             progress_cell = StatusService._meter_only(rate, 10)
@@ -1138,7 +1146,7 @@ class StatusService:
 
             table.add_row(
                 name_cell,
-                Text(str(stats['platform'])[:10].lower(), style="fg.muted"),
+                Text(display_label(str(stats['platform'])), style="fg.muted"),
                 progress_cell,
                 challs_cell,
             )
