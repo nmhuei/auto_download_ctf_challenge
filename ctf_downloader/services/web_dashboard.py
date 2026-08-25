@@ -520,6 +520,9 @@ class _DashboardHandler(BaseHTTPRequestHandler):
 
     dashboard: WebDashboard = None  # type: ignore[assignment]
     server_version = "CTFWebDashboard/2.0"
+    # Body submit chỉ vài trăm byte — 1MB là dư địa an toàn; CL vượt mốc
+    # này (hoặc âm/không-phải-số) bị từ chối 400 ngay khi parse header.
+    MAX_BODY_BYTES = 1024 * 1024
 
     def log_message(self, fmt, *args):  # noqa: N802 — im lặng, không spam stderr
         pass
@@ -558,10 +561,18 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             if urlparse(self.path).path != self.dashboard.SUBMIT_PATH:
                 self._reject_method()
                 return
+            # C6-04: CL âm / không-phải-số / quá-lớn (> ngưỡng 1MB hoặc
+            # tràn ssize_t khi rfile.read) phải là 400 sạch ngay tại đây,
+            # không để OverflowError rơi vào nhánh 500 lộ internals.
             try:
                 length = int(self.headers.get("Content-Length") or 0)
             except (TypeError, ValueError):
-                length = 0
+                length = -1
+            if not 0 <= length <= self.MAX_BODY_BYTES:
+                self._send_json(400, {"ok": False, "message": (
+                    "Content-Length không hợp lý — body submit tối đa "
+                    f"{self.MAX_BODY_BYTES} byte.")})
+                return
             raw = self.rfile.read(length) if length > 0 else b""
             code, payload, retry_after = \
                 self.dashboard.handle_submit_request(raw, self.headers)

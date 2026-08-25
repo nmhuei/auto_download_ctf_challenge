@@ -505,31 +505,53 @@ class TestServeRobustness:
                 timeout=10) as r:
             assert r.status == 200
 
-    @pytest.mark.parametrize("cl", ["-5", "abc"])
+    @pytest.mark.parametrize("cl", ["-5", "abc", "1.5",
+                                    "+999999999999999999999",
+                                    "999999999"])
     def test_post_lying_content_length_handled(self, server, cl):
+        """CL âm / không-phải-số / quá-lớn (> ngưỡng 1MB hoặc tràn
+        ssize_t) đều phải 400 sạch ngay từ khâu parse header."""
         resp = raw_roundtrip(
             server,
             ("POST /api/submit HTTP/1.1\r\nHost: x\r\n"
              "X-Requested-With: XMLHttpRequest\r\n"
              f"Content-Length: {cl}\r\n\r\n{{}}").encode())
-        assert b"400" in resp.split(b"\r\n")[0]
+        first = resp.split(b"\r\n")[0]
+        assert b"400" in first
+        assert b"500" not in first
 
-    def test_post_overflow_content_length_500_instead_of_400(self, server):
-        """BUG-HUNTER-C6-04: ``Content-Length`` vượt index-sized int
-        (vd '+999999999999999999999') — int() chấp nhận, rfile.read(length)
-        nổ OverflowError -> handler trả 500 kèm message Python lộ ra thay vì
-        400 sạch. Server KHÔNG chết (ThreadingHTTPServer cô lập request)."""
+    def test_post_overflow_content_length_clean_400_no_leak(self, server):
+        """FIX-HUNTER-C6-04: ``Content-Length`` cực đại (vd
+        '+999999999999999999999') phải trả 400 JSON sạch ngay từ khâu
+        parse — KHÔNG OverflowError -> 500 kèm message internals lộ ra."""
         resp = raw_roundtrip(
             server,
             ("POST /api/submit HTTP/1.1\r\nHost: x\r\n"
              "X-Requested-With: XMLHttpRequest\r\n"
              "Content-Length: +999999999999999999999\r\n\r\n{}").encode())
-        assert b"500" in resp.split(b"\r\n")[0]   # hành vi hiện tại (bug)
+        first = resp.split(b"\r\n")[0]
+        assert b"400" in first
+        assert b"500" not in first
+        assert b"OverflowError" not in resp
+        assert b"Internal error" not in resp
+        assert b"Traceback" not in resp
         # Server vẫn sống sau request độc:
         with urllib.request.urlopen(
                 f"http://127.0.0.1:{server}/api/status.json",
                 timeout=10) as r:
             assert r.status == 200
+
+    def test_post_valid_body_within_limit_submits_ok(self, server):
+        """Body hợp lệ ≤ ngưỡng vẫn submit bình thường (200, ok=true)."""
+        body = json.dumps({"challenge": "c6-04", "flag": "CTF{ok}"}).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{server}/api/submit", data=body,
+            headers={"X-Requested-With": "XMLHttpRequest",
+                     "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            payload = json.loads(r.read())
+            assert r.status == 200
+        assert payload["ok"] is True
 
     def test_post_truncated_body_half_close_400(self, server):
         body = b'{"challenge":'      # 13 bytes, khai báo 1000
