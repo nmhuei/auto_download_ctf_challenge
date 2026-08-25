@@ -303,6 +303,10 @@ def build_unified_parser():
     hist_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
     hist_parser.add_argument('--all', dest='show_all', action='store_true',
                              help='Hiện flag đầy đủ (mặc định chỉ 4 ký tự đầu + ***)')
+    hist_parser.add_argument('--tail', '--limit', dest='tail', type=int,
+                             metavar='N', default=100,
+                             help='Chỉ hiện N entry MỚI NHẤT (default: 100; '
+                                  'dùng <=0 hoặc --all để in toàn bộ)')
 
     # 14. SNIPER — preload flag, nộp tự động đúng giờ G (P2-6)
     sniper_parser = subparsers.add_parser('sniper',

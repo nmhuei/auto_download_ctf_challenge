@@ -312,20 +312,24 @@ class TestHistoryBoundaries(unittest.TestCase):
             err = exc
         return buf.getvalue(), err
 
-    def test_c14_13_no_limit_flag_documented(self):
-        # PASS (documentation): CLI history KHÔNG có --limit (cli.py chỉ định
-        # -w/--all); handle_history luôn render TOÀN BỘ entries. Premise
-        # "--limit 0/-1/>tổng" không tồn tại trên surface này.
-        from ctf_downloader import cli
-        # Kiểm chứng bằng source: section parser của history không định nghĩa
-        # --limit; handler luôn render toàn bộ entries.
-        src = inspect.getsource(cli)
-        hist_section = src.split("'history'")[1].split("# 14.")[0]
-        self.assertNotIn("--limit", hist_section)
+    def test_c14_13_tail_default_documented(self):
+        # UPDATED (perf-audit HS-B): history giờ CÓ --tail/--limit — mặc định
+        # chỉ render 100 entry MỚI NHẤT (--all / tail<=0 in hết). Premise cũ
+        # "KHÔNG có --limit, luôn render toàn bộ" không còn đúng kể từ khi
+        # print_table rich 2000 rows tốn ~0.4s. Namespace thủ công KHÔNG có
+        # attr ``tail`` vẫn render toàn bộ (backward-compat caller nội bộ).
+        from ctf_downloader.cli import build_unified_parser
+        import argparse as _ap
+        sub = next(a for a in build_unified_parser()._actions
+                   if isinstance(a, _ap._SubParsersAction))
+        hist = sub.choices['history']
+        opts = {o for act in hist._actions for o in act.option_strings}
+        self.assertIn("--tail", opts)
+        self.assertIn("--limit", opts)
         out, err = self._history([
             {"challenge_id": 1, "result": "correct", "flag": "PTIT{a}",
              "timestamp": "2026-01-01T00:00:00Z"},
-        ] * 5, extra={"limit": 0})   # nếu ai truyền limit thì handler cũng bỏ qua
+        ] * 5, extra={"limit": 0})   # attr lạ vẫn bị bỏ qua; 5 entry < cap 100
         self.assertIsNone(err)
         self.assertEqual(5, out.count("🚩✔"), "mọi entry đều được in")
 
@@ -356,15 +360,17 @@ class TestHistoryBoundaries(unittest.TestCase):
         self.assertIn("-", out)
 
     def test_c14_16_numeric_timestamp_does_not_crash(self):
-        # EXPECTED FAIL (BUG-C14-5, M): timestamp dạng số (int epoch) — shape
-        # mà status_service._solve_pulse chủ động hỗ trợ — đưa thẳng vào
-        # print_table -> rich NotRenderableError CRASH cả lệnh `ctf history`.
+        # FIXED (BUG-C14-5, M): trước đây timestamp dạng số (int epoch) —
+        # shape mà status_service._solve_pulse chủ động hỗ trợ — được đưa
+        # thẳng vào print_table -> rich NotRenderableError crash cả lệnh.
+        # Giờ _format_history_ts ép mọi cell về str (epoch -> datetime UTC).
         out, err = self._history([
             {"challenge_id": None, "result": "correct",
              "flag": "PTIT{x}", "timestamp": 1730000000},
         ])
         self.assertIsNone(err,
                          f"timestamp số làm history crash: {err!r}")
+        self.assertIn("2024-10-27", out, "epoch phải render thành datetime UTC")
 
     def test_c14_17_print_table_nonstr_contract(self):
         # PASS (documentation contract): passthrough non-str của

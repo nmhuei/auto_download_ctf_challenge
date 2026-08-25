@@ -164,34 +164,46 @@ class WorkspaceRepo:
     # Challenge lookup
     # ------------------------------------------------------------------
 
-    def find_challenge(self, q) -> "dict | None":
-        """Tìm challenge theo ``q``: exact id(str) -> exact name.lower() ->
-        substring name. Kết quả đến từ metadata.json có kèm ``_local_path``.
-        Không khớp -> None."""
+    def challenge_index(self) -> "list[dict]":
+        """Snapshot MỘT LẦN toàn bộ challenge (entries của challenges.json
+        trước, rồi mọi metadata.json trên đĩa kèm ``_local_path``) để caller
+        cần tra cứu NHIỀU query liên tiếp dựng index này đúng một lần rồi
+        truyền xuống :meth:`find_challenge(q, index=...)` — thay vì mỗi lần
+        gọi rescan toàn workspace (perf-audit HS-A: history 2000 entry với
+        300 cid distinct = ~90k lượt parse JSON, >2s)."""
         entries = []
         data = self.read_challenges()
         entries.extend(c for c in (data.get("challenges") or []) if isinstance(c, dict))
-
-        local = []
         for meta_path in self.iter_challenges():
             meta = self.read_metadata(meta_path)
             if not meta:
                 continue
             meta = dict(meta)
             meta["_local_path"] = str(meta_path.parent)
-            local.append(meta)
+            entries.append(meta)
+        return entries
+
+    def find_challenge(self, q, index=None) -> "dict | None":
+        """Tìm challenge theo ``q``: exact id(str) -> exact name.lower() ->
+        substring name. Kết quả đến từ metadata.json có kèm ``_local_path``.
+        Không khớp -> None.
+
+        ``index``: snapshot từ :meth:`challenge_index` dựng trước — khi có,
+        tra cứu chạy hoàn toàn trên bộ nhớ (không chạm đĩa); bỏ trống thì
+        tự snapshot như cũ (hành vi nguyên vẹn cho caller đơn lẻ)."""
+        entries = list(index) if index is not None else self.challenge_index()
 
         q_str = str(q)
         q_low = q_str.strip().lower()
 
-        for c in entries + local:   # tier 1: exact id
+        for c in entries:   # tier 1: exact id
             if str(c.get("id")) == q_str:
                 return c
-        for c in entries + local:   # tier 2: exact name
+        for c in entries:   # tier 2: exact name
             if str(c.get("name", "")).strip().lower() == q_low:
                 return c
         if q_low:
-            for c in entries + local:  # tier 3: substring name
+            for c in entries:  # tier 3: substring name
                 if q_low in str(c.get("name", "")).lower():
                     return c
         return None

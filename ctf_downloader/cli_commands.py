@@ -926,6 +926,25 @@ def _emit_empty_state(message: str, literal: str = "", tail: str = "") -> None:
     _emit_wrapped(segments)
 
 
+def _format_history_ts(value) -> str:
+    """Cell ``Thời gian (UTC)`` — LUÔN trả str (print_table passthrough
+    non-str làm rich NotRenderableError crash bảng — BUG-C14-5).
+
+    Epoch số (int/float, shape mà ``status_service._solve_pulse`` chủ động
+    hỗ trợ) -> datetime UTC dễ đọc; kiểu khác -> str nguyên văn; None/rỗng
+    -> ``-``."""
+    if value is None or value == '':
+        return '-'
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            import datetime as _dt
+            return _dt.datetime.fromtimestamp(
+                float(value), _dt.timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        except (OverflowError, OSError, ValueError):
+            return str(value)
+    return str(value)
+
+
 def handle_history(args):
     """``ctf history`` — bảng lịch sử submit từ submit_history.json.
 
@@ -950,15 +969,27 @@ def handle_history(args):
         return
 
     show_all = bool(getattr(args, 'show_all', False))
+    # PERF HS-B: render rich tốn O(rows) (~0.4s / 2000 rows) — mặc định chỉ
+    # in N entry MỚI NHẤT (--tail/--limit, default 100); --all hoặc tail<=0
+    # in hết. Namespace dựng thủ công thiếu attr ``tail`` giữ hành vi cũ.
+    tail = getattr(args, 'tail', None)
+    visible = entries
+    if not show_all and isinstance(tail, int) and tail > 0:
+        visible = entries[-tail:]
     rows = []
     # C6-02: entry thiếu challenge_id KHÔNG được đưa vào find_challenge —
     # cid=None rơi xuống tier substring ("none" in name) và gán nhầm tên
     # challenge nào đó chứa "none" cho một submit vô danh.
-    # PERF: find_challenge quét toàn bộ workspace metadata mỗi lần gọi —
-    # cache theo cid để history N entries chỉ scan tối đa (số cid distinct)
-    # lần thay vì N lần.
+    # PERF HS-A: index snapshot ĐÚNG MỘT LẦN trước vòng lặp — find_challenge
+    # tra trên bộ nhớ thay vì rescan toàn bộ workspace mỗi distinct cid
+    # (~90k JSON parse / 2000 entry, >2s). Index fail -> None = fallback
+    # đường snapshot-per-call cũ (đúng, chỉ chậm).
+    try:
+        chall_index = repo.challenge_index()
+    except Exception:
+        chall_index = None
     chall_cache = {}
-    for e in entries:
+    for e in visible:
         cid = e.get('challenge_id')
         if cid is None:
             chall = None
@@ -966,7 +997,7 @@ def handle_history(args):
             key = str(cid)
             if key not in chall_cache:
                 try:
-                    chall_cache[key] = repo.find_challenge(cid)
+                    chall_cache[key] = repo.find_challenge(cid, chall_index)
                 except Exception:
                     chall_cache[key] = None
             chall = chall_cache[key]
@@ -974,7 +1005,7 @@ def handle_history(args):
         icon = _HISTORY_RESULT_ICONS.get(e.get('result'), '❓')
         flag = str(e.get('flag', '') or '')
         shown = flag if show_all else _redact_flag(flag)
-        rows.append([e.get('timestamp') or '-', str(name),
+        rows.append([_format_history_ts(e.get('timestamp')), str(name),
                      f"{icon} {e.get('result') or 'unknown'}", shown])
     Logger.print_table('Lịch sử submit',
                        ['Thời gian (UTC)', 'Challenge', 'Kết quả', 'Flag'],
