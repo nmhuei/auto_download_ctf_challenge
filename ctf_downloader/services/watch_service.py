@@ -28,12 +28,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ..storage.fileio import atomic_write_json
 from ..storage.workspace_repo import WorkspaceRepo
+from .status_service import _METER_RAMP_3STOP
 from ..ui.theme import (
     ACCENT, ACCENT_DEEP, ACCENT_HI,
     ERROR, FG_BASE, FG_FAINT, FG_MUTED, INFO, SOLVED, WARN,
     load_theme,
 )
-from ..ui.widgets import footer_bar, gradient, meter
+from ..ui.widgets import footer_bar, meter
 from ..utils.logger import Logger
 
 try:
@@ -59,10 +60,9 @@ JITTER_FRACTION = 0.2                # ±20%
 CLOCK_SKEW_WARN_SECONDS = 120
 GRACE_DEFAULT = 300                  # wall > end+grace → final sync rồi exit
 
-# Gradient điểm mini-scoreboard (amber phosphor 3 điểm: tắt đèn → accent →
-# đỉnh nhấn, chuẩn hoá theo #1) — PHOSPHOR FIELD KIT spec §3.
-SCORE_GRADIENT_RGB = ((0x6B, 0x43, 0x00), (0xFF, 0xB0, 0x00),
-                     (0xFF, 0xE4, 0x9A))
+# Mini-scoreboard dùng chung meter ramp amber 3 mốc (than hồng → hổ phách →
+# vàng nhạt, PHOSPHOR FIELD KIT spec §3) đã chuẩn hoá ở
+# ``status_service._METER_RAMP_3STOP`` — mỗi ô một màu, không nội suy.
 MIN_PANEL_WIDTH = 40                 # dưới ngưỡng này ép width tối thiểu
 DEGRADE_WIDTH = 80                   # width < 80 → bỏ mini-scoreboard
 
@@ -1067,8 +1067,8 @@ class WatchService:
         return line
 
     def _render_mini_scoreboard(self) -> List[Any]:
-        """🏆 Mini scoreboard top-5 — meter gradient amber 3 điểm
-        (#6B4300 → #FFB000 → #FFE49A) chuẩn hoá theo điểm #1."""
+        """🏆 Mini scoreboard top-5 — meter ramp amber 3 mốc
+        (#6B4300 → #FFB000 → #FFE49A, ``_METER_RAMP_3STOP`` chung)."""
         rows = list(getattr(self, "_mini_sb_rows", None) or [])[:5]
         parts: List[Any] = []
         if not rows:
@@ -1079,7 +1079,7 @@ class WatchService:
             top = max(float(r.get("score") or 0) for r in rows)
         except (TypeError, ValueError):
             top = 0.0
-        colors = gradient(*SCORE_GRADIENT_RGB)
+        colors = _METER_RAMP_3STOP
         meter_w = 16
         parts.append(Text("🏆 SCOREBOARD TOP-5", style=FG_FAINT))
         for r in rows:

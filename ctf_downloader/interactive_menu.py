@@ -14,7 +14,7 @@ from .core import CTFDownloader
 from .config import DownloaderConfig
 from .utils.logger import Logger
 
-from .services.status_service import StatusService
+from .services.status_service import _METER_RAMP_3STOP, StatusService
 from .storage.global_config import (  # noqa: F401 — re-export để giữ tương thích
     CONFIG_DIR,
     GLOBAL_CONFIG_FILE,
@@ -26,10 +26,11 @@ from .storage.global_config import (  # noqa: F401 — re-export để giữ tư
 from . import __version__
 from .ui.banner import banner_b, tagline_text
 from .ui.theme import ACCENT, FG_BASE, FG_FAINT, FG_MUTED, INFO, WARN, load_theme
-from .ui.widgets import footer_bar, gradient, meter
+from .ui.widgets import footer_bar, meter
 
-#: Gradient meter spec §3.3: than hồng → hổ phách → vàng nhạt.
-_METER_GRAD = gradient((0x6B, 0x43, 0x00), (0xFF, 0xB0, 0x00), (0xFF, 0xE4, 0x9A))
+#: Meter dùng chung ramp 3 mốc spec §3.3 (than hồng → hổ phách → vàng nhạt)
+#: đã chuẩn hoá ở ``status_service._METER_RAMP_3STOP`` — mỗi ô nhận ĐÚNG một
+#: trong ba màu theo vị trí cột, không nội suy trung gian.
 
 _MENU_CON = None
 
@@ -148,7 +149,7 @@ class CTFInteractiveConsole:
 
             bar_len = 20
             ctx.append('\n  ')
-            ctx.append_text(meter(rate, bar_len, _METER_GRAD))
+            ctx.append_text(meter(rate, bar_len, _METER_RAMP_3STOP))
             ctx.append(f'  {solved}/{total} solved · {rate:.1f}%', style=FG_MUTED)
             ctx.append(f'  ·  {pts}/{tot_pts} pts', style=FG_MUTED)
 
