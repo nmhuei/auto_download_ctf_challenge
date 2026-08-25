@@ -1,5 +1,6 @@
 import sys
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -51,5 +52,11 @@ class Logger:
         for col in columns:
             table.add_column(col)
         for row in rows:
-            table.add_row(*row)
+            # Cell là dữ liệu (thường lấy từ SERVER: solver_names, tên
+            # challenge/category) → escape markup để tên chứa '[...]' hiện
+            # NGUYÊN VĂN như text thường, không inject style/làm vỡ bảng
+            # (hunter cycle-10). Non-str passthrough (RenderableType).
+            table.add_row(*[
+                escape(cell) if isinstance(cell, str) else cell
+                for cell in row])
         console.print(table)

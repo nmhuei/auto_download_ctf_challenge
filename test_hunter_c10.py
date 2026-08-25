@@ -530,18 +530,19 @@ class TestSolverNamesMarkdownInjection(unittest.TestCase):
         self.assertEqual(out[3].solver_names, ["[click](https://evil) pwn"])
 
     def test_print_table_interprets_markup_in_cells(self):
-        # Bằng chứng tầng hiển thị không escape: tag style HỢP LỆ bị rich
-        # tiêu hoá (style injection/bleed), không còn nguyên văn trong output.
+        # ĐÃ VÁ (fix hunter cycle-10 tại logger.print_table): cell dữ liệu
+        # server được escape → tag style HỢP LỆ KHÔNG còn bị tiêu hoá mà hiện
+        # NGUYÊN VĂN như text thường (không injection/bleed, không đổi style).
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             Logger.print_table("T", ["Solvers"], [["[dim]ghost[/]"]])
         rendered = buf.getvalue()
-        self.assertNotIn("[dim]", rendered)   # markup đã được TIÊU HOÁ, không escape
-        # Tag không hợp lệ thì [[..]] chỉ collapse — không crash nhưng text méo.
+        self.assertIn("[dim]ghost[/]", rendered)  # nguyên văn — markup đã escape
+        # Tag không hợp lệ cũng KHÔNG crash — text hiển thị đầy đủ.
         buf2 = io.StringIO()
         with contextlib.redirect_stdout(buf2):
             Logger.print_table("T", ["Solvers"], [["[[not-a-tag]]pwn"]])
-        self.assertIn("pwn", buf2.getvalue())
+        self.assertIn("[[not-a-tag]]pwn", buf2.getvalue())
 
 
 # ---------------------------------------------------------------------------
