@@ -2,7 +2,8 @@
 
 Thành phần:
   - PollScheduler: stdlib-only, dict task→deadline_monotonic, jitter ±20%,
-    backoff ×2 cap 600s (429 tôn trọng Retry-After ở tầng caller).
+    backoff ×2 cap 600s; 429 đi qua penalty ONE-SHOT (Retry-After hoặc
+    backoff nội bộ) — sống qua reward, interval cơ sở bất biến.
   - WindowGuard: monotonic cho mọi sleep nội bộ; wall-clock chỉ so start/end;
     clock-skew phát hiện qua lệch Date header server.
   - WatchStateStore: .ctf/watch_state.json atomic + lockfile pid chống chạy đôi.
@@ -118,6 +119,8 @@ class PollScheduler:
     def register(self, task: str, interval: float, due_now: bool = True) -> None:
         self._tasks[task] = {"interval": max(1.0, float(interval)),
                              "mult": 1.0,
+                             "rl_mult": 1.0,
+                             "penalty": None,
                              "deadline": 0.0 if due_now else self._deadline(interval)}
         if not due_now:
             self._tasks[task]["deadline"] = self._deadline(interval)
@@ -130,7 +133,10 @@ class PollScheduler:
         t = self._tasks[name]
         # Cap chỉ chặn TĂNG vô hạn — không được cắt ngắn interval gốc đã
         # đăng ký (R3: interval > cap phải giữ nguyên, không bị kéo về cap).
-        return min(t["interval"] * t["mult"], max(t["interval"], BACKOFF_CAP))
+        eff = min(t["interval"] * t["mult"], max(t["interval"], BACKOFF_CAP))
+        # Penalty one-shot (rate-limit Retry-After / backoff 429): sàn
+        # effective của kỳ postpone KẾ TIẾP — sống qua reward.
+        return max(eff, float(t.get("penalty") or 0.0))
 
     def due(self, task: str, now: Optional[float] = None) -> bool:
         if task not in self._tasks:
@@ -143,13 +149,17 @@ class PollScheduler:
 
     def postpone(self, task: str, interval: Optional[float] = None,
                  now: Optional[float] = None) -> float:
-        """Hẹn kỳ tiếp theo (jitter ±20%); ``interval`` override base."""
+        """Hẹn kỳ tiếp theo (jitter ±20%); ``interval`` override base.
+
+        Penalty one-shot (nếu có) áp cho ĐÚNG kỳ này rồi được tiêu —
+        interval cơ sở không bao giờ bị đổi bởi penalty."""
         t = self._tasks[task]
         if interval is not None:
             t["interval"] = max(1.0, float(interval))
         eff = self._effective_interval(task)
         t["deadline"] = (now if now is not None else time.monotonic()) \
             + self._deadline(eff) - time.monotonic()
+        t["penalty"] = None
         return t["deadline"]
 
     def penalize(self, task: str) -> float:
@@ -164,7 +174,8 @@ class PollScheduler:
         return self._effective_interval(task)
 
     def reward(self, task: str) -> None:
-        """Tick thành công → reset multiplier."""
+        """Tick thành công → reset multiplier. KHÔNG xoá penalty one-shot
+        (R1: backoff 429 phải sống qua reward của chính tick bị limit)."""
         t = self._tasks.get(task)
         if t is not None:
             t["mult"] = 1.0
@@ -173,6 +184,35 @@ class PollScheduler:
         t = self._tasks.get(task)
         if t is not None:
             t["interval"] = max(1.0, float(interval))
+
+    def set_penalty(self, task: str, seconds: float) -> None:
+        """Penalty ONE-SHOT cho kỳ postpone kế tiếp (R2): Retry-After của
+        server là tạm thời — không đụng interval cơ sở, không bị ``reward``
+        xoá, được tiêu ngay trong ``postpone`` kế tiếp."""
+        t = self._tasks.get(task)
+        if t is not None:
+            t["penalty"] = max(1.0, min(float(seconds), BACKOFF_CAP))
+
+    def rate_limit_backoff(self, task: str) -> float:
+        """Backoff ×2 riêng cho rate-limit KHÔNG Retry-After (R1).
+
+        Khác ``penalize`` ở chỗ mult lỗi thường bị ``reward`` reset ngay
+        tick sau — ``rl_mult`` chỉ reset khi tick thực sự thành công
+        (:meth:`clear_rate_limit`) nên giá trị trả về sống qua ít nhất
+        1 chu kỳ khi dùng kèm :meth:`set_penalty`."""
+        t = self._tasks.get(task)
+        if t is None:
+            return BACKOFF_CAP
+        t["rl_mult"] = min((t.get("rl_mult") or 1.0) * 2,
+                           max(1.0, BACKOFF_CAP / max(1.0, t["interval"])))
+        return min(t["interval"] * t["rl_mult"],
+                   max(t["interval"], BACKOFF_CAP))
+
+    def clear_rate_limit(self, task: str) -> None:
+        """Tick bình thường (không 429) → xoá streak backoff rate-limit."""
+        t = self._tasks.get(task)
+        if t is not None:
+            t["rl_mult"] = 1.0
 
     def next_timeout(self, now: Optional[float] = None) -> float:
         """Số giây tới deadline sớm nhất (≥0.05) — dùng cho sleep monotonic."""
@@ -311,6 +351,22 @@ def default_auto_sync_config(mode: str = "window",
             "auto_exit_on_end": auto_exit_on_end,
         },
     }
+
+
+def resolve_auto_sync_enabled(ws_cfg: Optional[dict],
+                              global_cfg: Optional[dict]) -> bool:
+    """Precedence hai tầng cho ``auto_sync.enabled`` (R6):
+
+    - Global config (``ctf config auto-sync on/off``) = MẶC ĐỊNH.
+    - ``.ctf/config.json`` của workspace = OVERRIDE — workspace thắng khi
+      có key ``enabled`` bool.
+    - Thiếu cả hai / dữ liệu lạ → mặc định BẬT (hành vi cũ).
+    """
+    for cfg in (ws_cfg, global_cfg):
+        val = (cfg or {}).get("auto_sync") or {}
+        if isinstance(val, dict) and isinstance(val.get("enabled"), bool):
+            return val["enabled"]
+    return True
 
 
 class WatchStateStore:
@@ -643,6 +699,17 @@ class WatchService:
         cfg = self.cfg_store.load() or default_auto_sync_config()
         return cfg.get("auto_sync") or default_auto_sync_config()["auto_sync"]
 
+    def _effective_auto_sync_enabled(self, auto_cfg: dict) -> bool:
+        """Consumer ``auto_sync.enabled`` (R6): global = mặc định,
+        workspace .ctf/config.json = override — xem
+        :func:`resolve_auto_sync_enabled`."""
+        try:
+            from ..storage.global_config import load_global_config
+            g_cfg = load_global_config()
+        except Exception:
+            g_cfg = None
+        return resolve_auto_sync_enabled(self.cfg_store.load(), g_cfg)
+
     def _resolve_window(self, auto_cfg: dict) -> Optional[WindowGuard]:
         """Ưu tiên: --start/--end (manual HIGH) > platform > CTFtime."""
         start, end = self.manual_start, self.manual_end
@@ -678,6 +745,15 @@ class WatchService:
         self._install_signal_handlers()
 
         auto_cfg = self._resolve_cfg()
+        # R6: gate auto_sync.enabled — global là mặc định, workspace
+        # .ctf/config.json override. TẮT → watch không chạy (exit 0),
+        # trước khi chiếm lock hay khởi tạo platform.
+        if not self._effective_auto_sync_enabled(auto_cfg):
+            Logger.warning(
+                "⏸️ Auto-sync đang TẮT (`ctf config auto-sync off`, hoặc "
+                ".ctf/config.json của workspace đặt enabled=false) — watch "
+                "không chạy. Bật lại: `ctf config auto-sync on`.")
+            return 0
         policy = auto_cfg.get("policy", {})
         intervals = {**DEFAULT_INTERVALS, **auto_cfg.get("intervals_sec", {})}
 
@@ -882,16 +958,23 @@ class WatchService:
         if resp.status_code == 304:
             return []     # endpoint không đổi — dùng kết quả của kỳ trước
         if resp.status_code == 429:
-            # Spec §5: tôn trọng Retry-After của server thay vì backoff mù
+            # Spec §5: tôn trọng Retry-After của server; thiếu header thì
+            # backoff nội bộ ×2 lũy tiến. Cả hai đi qua penalty ONE-SHOT
+            # (R1/R2): sống qua reward của tick này, không đổi interval
+            # cơ sở — hết rate-limit là tự quay về lịch thường.
+            ra = resp_headers.get("Retry-After")
             try:
-                delay = max(1.0, float(resp_headers.get("Retry-After")))
+                delay = max(1.0, float(ra))
+                why = "theo Retry-After"
+                self.scheduler.clear_rate_limit("notices")
             except (TypeError, ValueError):
-                delay = self.scheduler.penalize("notices")
-            else:
-                self.scheduler.set_interval("notices",
-                                            min(delay, BACKOFF_CAP))
+                delay = self.scheduler.rate_limit_backoff("notices")
+                why = "backoff ×2 nội bộ"
+            self.scheduler.set_penalty("notices", delay)
             return [f"⏳ notices bị rate-limit (429) — lùi "
-                    f"{delay:.0f}s theo Retry-After."]
+                    f"{delay:.0f}s ({why})."]
+        # Tick bình thường (200/304/…): xoá streak backoff rate-limit
+        self.scheduler.clear_rate_limit("notices")
         new_etag = resp_headers.get("ETag")
         if new_etag:
             etag_cache["notices"] = new_etag

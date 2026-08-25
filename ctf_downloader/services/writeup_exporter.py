@@ -85,6 +85,9 @@ class WriteupExporter:
     def __init__(self, workspace_path):
         self.root = Path(workspace_path)
         self.repo = WorkspaceRepo(self.root)
+        # Dirname đã dùng TRONG lần build hiện tại (R4) — hậu tố _2, _3…
+        # chỉ dành cho collision giữa các entry cùng lần chạy.
+        self._used_dirnames: set = set()
 
     # ------------------------------------------------------------------
     # collect
@@ -238,6 +241,7 @@ class WriteupExporter:
         index_lines.append("| ---: | :--- | :--- | ---: | :--- | :---: |")
         rows = []
         subs = []
+        self._used_dirnames = set()   # R4: phạm vi collision = lần chạy này
         for i, e in enumerate(entries, 1):
             sub = self._unique_entry_dirname(pack_dir, e)
             subs.append(sub)
@@ -295,21 +299,31 @@ class WriteupExporter:
         return re.sub(r"[\[\]()]", "_", raw)
 
     def _unique_entry_dirname(self, pack_dir: Path, entry: WriteupEntry) -> str:
-        """``_entry_dirname`` + hậu tố ``_2``, ``_3``… nếu thư mục đích đã
-        tồn tại. Hai tên challenge khác nhau có thể sanitize về cùng dirname
-        (vd ``Pwn Me`` vs ``Pwn_Me`` → cùng ``Web_Pwn_Me``) — không hậu tố,
-        bài sau GHI ĐÈ README của bài trước một cách âm thầm; subdir mới cũng
-        áp dụng cho INDEX/zip nên mọi link luôn trỏ đúng thư mục."""
+        """``_entry_dirname`` + hậu tố ``_2``, ``_3``… khi TRÙNG dirname với
+        một entry KHÁC CÙNG lần chạy (vd ``Pwn Me`` vs ``Pwn_Me`` → cùng
+        ``Web_Pwn_Me``) — không hậu tố, bài sau GHI ĐÈ README của bài trước
+        một cách âm thầm; subdir mới cũng áp dụng cho INDEX/zip nên mọi link
+        luôn trỏ đúng thư mục.
+
+        R4: dir đã tồn tại từ LẦN CHẠY TRƯỚC KHÔNG nhận hậu tố — re-run
+        export-pack cùng ngày ghi đè sạch subdir cũ (xem ``_export_entry``)
+        để pack giữ idempotent, không sinh bản cũ+mới trùng lặp trong zip.
+        """
         base = self._entry_dirname(entry)
         candidate = base
         n = 1
-        while (pack_dir / candidate).exists():
+        while candidate in self._used_dirnames:
             n += 1
             candidate = f"{base}_{n}"
+        self._used_dirnames.add(candidate)
         return candidate
 
     @staticmethod
     def _export_entry(entry: WriteupEntry, dest: Path) -> None:
+        # R4: xoá subdir cũ (nếu có từ lần chạy trước) trước khi ghi —
+        # README luôn fresh, solver file stale không còn sót lại.
+        if dest.exists():
+            shutil.rmtree(dest, ignore_errors=True)
         dest.mkdir(parents=True, exist_ok=True)
         (dest / "README.md").write_text(entry.writeup_md, encoding="utf-8")
         if entry.solver_files:

@@ -127,24 +127,28 @@ def test_a3_token_cli_uu_tien_hon_token_luu(monkeypatch):
 
 
 def test_a4_auth_entry_keyed_bang_URL_khong_bao_gio_duoc_resolve(monkeypatch):
-    """R1 (BUG — test FAIL chủ ý).
+    """R1 (đã fix) + R3 (review round): entry URL-keyed do register lưu khi
+    `--workspace` không phải dir thật phải đọc lại được — qua EXACT key URL
+    hoặc fallback cùng HOST.
 
-    RegisterService._auth_key lưu entry dưới key URL khi `--workspace`
-    không phải dir thật (register_service.py:142-148), nhưng
-    AuthService.resolve CHỈ tra cứu key = abspath(workspace)
-    (auth_service.py:29). Entry URL-keyed => dữ liệu ghi-only, mọi lệnh
-    (`pull`/`submit`/`rank`/...) đều không bao giờ thấy.
-    Fix đề xuất: resolve() nhận thêm optional url_key (caller có sẵn
-    repo.resolve_platform_url()) và tra cứu fallback theo URL.
+    - Workspace truyền đúng URL (vd `ctf pull https://ctf.example.com`)
+      -> resolve được ("CK", "TK").
+    - Path ảo KHÔNG mang thông tin platform -> KHÔNG tự tiện mượn entry
+      duy nhất (chống leak cookie chéo platform — R3): trả None.
     """
     monkeypatch.setattr(auth_mod, "load_global_config",
                         lambda: {"auth": {"https://ctf.example.com": {
                             "cookie": "CK", "token": "TK"}}})
-    ws = os.path.join(os.sep, "khong", "ton", "tai")   # không ai lưu key này
-    cookie, token = AuthService.resolve(ws)
-    # MONG MUỐN: fallback tra cứu theo URL -> ("CK", "TK"). Thực tế: (None, None).
+    # Workspace chính là URL -> exact/same-host lookup thấy entry
+    cookie, token = AuthService.resolve("https://ctf.example.com")
     assert (cookie, token) == ("CK", "TK"), (
-        "auth map entry lưu dưới key URL không bao giờ được resolve lại")
+        "auth map entry lưu dưới key URL phải resolve được qua URL workspace")
+    # Path ảo không có bằng chứng platform -> không mượn cookie bừa
+    ws = os.path.join(os.sep, "khong", "ton", "tai")
+    cookie2, _token2 = AuthService.resolve(ws)
+    assert cookie2 is None, (
+        "path ảo không xác định được platform -> không được mượn entry "
+        "URL duy nhất (R3 chống leak chéo platform)")
 
 
 # ----------------------------------------------------------------------

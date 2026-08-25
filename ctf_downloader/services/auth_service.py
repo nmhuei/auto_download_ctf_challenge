@@ -1,6 +1,7 @@
 """Xác thực tập trung: ưu tiên tham số CLI > auth map trong global config."""
 import os
 from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 from ..storage.global_config import load_global_config
 
@@ -15,8 +16,8 @@ class AuthService:
         """Trả về (cookie, token) cho workspace.
 
         Ưu tiên: tham số CLI > global config auth map[key=os.path.abspath(workspace)]
-        > fallback tra theo platform URL của workspace (entry do register lưu
-        khi --workspace không phải dir thật — R1).
+        > tra key URL chính xác của workspace (entry do register lưu khi
+        --workspace không phải dir thật — R1/R3).
         Nếu cookie_arg trỏ tới file thật thì đọc nội dung file làm cookie.
         """
         if cookie_arg:
@@ -36,33 +37,65 @@ class AuthService:
         return None, token_arg
 
     @staticmethod
-    def _url_keyed_entry(workspace: str,
-                         auth_map: dict) -> Optional[dict]:
-        """R1 fallback: entry register lưu dưới key URL phải đọc lại được.
+    def _url_host(value) -> Optional[str]:
+        """Host (netloc lowercase) của một URL; None nếu không parse được."""
+        try:
+            netloc = urlparse(str(value)).netloc.lower()
+        except Exception:
+            return None
+        return netloc or None
 
-        - Workspace là dir thật -> tra đúng platform URL của workspace qua
-          WorkspaceRepo.resolve_platform_url() (import muộn tránh vòng phụ thuộc).
-        - Workspace không tồn tại trên đĩa (path ảo) -> không có cách tra URL
-          chính xác; chấp nhận entry URL-keyed DUY NHẤT trong auth map.
+    @classmethod
+    def _url_keyed_entry(cls, workspace: str,
+                         auth_map: dict) -> Optional[dict]:
+        """Tra entry auth lưu dưới key URL (register với --workspace ảo).
+
+        Thứ tự (R3 — exact TRƯỚC mọi heuristic, chống leak cookie chéo
+        platform):
+
+        1. EXACT: workspace là dir thật → platform URL của workspace;
+           workspace là URL (vd ``ctf pull https://ctfB.com``) → chính nó.
+           So khớp key nguyên văn + bản không dấu ``/`` cuối.
+        2. Fallback cuối cùng: entry URL-keyed DUY NHẤT có HOST khớp host
+           platform của workspace (vd khác scheme/dấu ``/``). Host khác →
+           KHÔNG bao giờ mượn cookie — trả None thay vì gửi cookie sang
+           host lạ.
         """
         if not isinstance(auth_map, dict) or not auth_map:
             return None
-        url = None
-        if os.path.isdir(workspace):
-            try:
-                from ..storage.workspace_repo import WorkspaceRepo
-                url = WorkspaceRepo(workspace).resolve_platform_url()
-            except Exception:
-                return None
-            if not url:
-                return None
+
+        def _exact(url: str) -> Optional[dict]:
             for key in (url, str(url).rstrip('/')):
                 entry = auth_map.get(key)
                 if isinstance(entry, dict):
                     return entry
             return None
-        url_entries = [v for k, v in auth_map.items()
-                       if isinstance(k, str)
-                       and k.startswith(('http://', 'https://'))
-                       and isinstance(v, dict)]
-        return url_entries[0] if len(url_entries) == 1 else None
+
+        resolved_url = None
+        if os.path.isdir(workspace):
+            try:
+                from ..storage.workspace_repo import WorkspaceRepo
+                resolved_url = WorkspaceRepo(workspace).resolve_platform_url()
+            except Exception:
+                return None
+            if not resolved_url:
+                return None
+            hit = _exact(resolved_url)
+            if hit is not None:
+                return hit
+        elif str(workspace).startswith(('http://', 'https://')):
+            hit = _exact(str(workspace))
+            if hit is not None:
+                return hit
+            resolved_url = str(workspace)
+
+        # Fallback: DUY NHẤT entry cùng host với platform của workspace.
+        host = cls._url_host(resolved_url) if resolved_url else None
+        if not host:
+            return None     # không xác định được platform → không đoán mò
+        matches = [v for k, v in auth_map.items()
+                   if isinstance(k, str)
+                   and k.startswith(('http://', 'https://'))
+                   and isinstance(v, dict)
+                   and cls._url_host(k) == host]
+        return matches[0] if len(matches) == 1 else None

@@ -1174,16 +1174,17 @@ def _handle_storage_archive(args, StorageManager, human_size):
 #: Registry các key config toàn cục điều khiển được từ ``ctf config``.
 #: ``path`` = vị trí lưu trong global config JSON (~/.config/ctf_toolkit/
 #: config.json); ``values`` = bảng giá trị CLI hợp lệ -> giá trị lưu.
-#: Spec event-window §4 ("Đổi ý: ctf config auto-sync off"): tắt auto-sync
-#: định kỳ của watch trong event window (watch_service sẽ đọc
-#: ``auto_sync.enabled`` khi wire consumption — ngoài scope lệnh này).
+#: Spec event-window §4 ("Đổi ý: ctf config auto-sync off"). Precedence
+#: (R6): giá trị toàn cục là MẶC ĐỊNH; ``.ctf/config.json`` của workspace
+#: là OVERRIDE — watch_service đọc hai tầng qua resolve_auto_sync_enabled.
 _CONFIG_KEYS = {
     'auto-sync': {
         'path': ('auto_sync', 'enabled'),
         'values': {'on': True, 'off': False},
         'default': True,
         'desc': ('Tự động cập nhật challenge/scoreboard/notices '
-                 'trong event window (ctf watch)'),
+                 '(ctf watch) — mặc định toàn cục, workspace '
+                 '.ctf/config.json override'),
     },
 }
 

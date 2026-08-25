@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 
 import requests
 
+from ..services.session_factory import create_session
 from .base import EventTimes, normalize_epoch_to_utc
 
 # UA bắt buộc có contact — UA mặc định của requests bị CTFtime chặn 403.
@@ -82,7 +83,10 @@ class CTFtimeResolver:
 
     def __init__(self, session: Optional[requests.Session] = None,
                  user_agent: str = CTFTIME_USER_AGENT):
-        self.session = session or requests.Session()
+        # R5: mọi session đi qua create_session (retry/UA chuẩn) — hết
+        # session raw; UA CTFtime vẫn ghi đè ngay sau đó.
+        self.session = session or create_session(
+            custom_headers={"User-Agent": user_agent})
         self.session.headers["User-Agent"] = user_agent
 
     # ------------------------------------------------------------------

@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 
+from .http_client import create_session
 from .logger import Logger
 
 # Password mailbox tạm — mail.tm yêu cầu tối thiểu ~6 ký tự.
@@ -42,7 +43,9 @@ class TempMailClient:
         self.timeout = timeout
         self._rng = rng  # None -> dùng random module mặc định
         if session is None:
-            session = requests.Session()
+            # R5: session chuẩn qua factory (retry GET + UA browser) —
+            # utils không import ngược lên services, dùng http_client gốc.
+            session = create_session()
         self.session = session
         # Mailbox đang quản lý (address, password, jwt)
         self.address: Optional[str] = None
