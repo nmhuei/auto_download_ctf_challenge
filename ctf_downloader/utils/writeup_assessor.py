@@ -21,7 +21,9 @@ Heuristic CHỈ được áp khi ``status.writeup_auto == True`` (caller quyết
 """
 from __future__ import annotations
 
+import collections
 import difflib
+import hashlib
 import re
 from typing import Dict, List, Optional
 
@@ -47,18 +49,50 @@ _BOILERPLATE_LINES = (
 )
 
 
+def _template_similarity(md_text: str, reference_template: str) -> float:
+    """Similarity guard, bit-exact với
+    ``difflib.SequenceMatcher(None, md.strip(), ref.strip()).ratio()``.
+
+    Fast-path chứng minh được (isjunk=None ⇒ ``bjunk`` rỗng):
+
+    - Cả hai rỗng sau strip → ``_calculate_ratio(0, 0)`` = 1.0.
+    - Một trong hai rỗng → 0 match trên tổng > 0 = 0.0.
+    - ``a == b`` → 1.0: ``find_longest_match`` khởi tạo ``bestsize=0`` tại
+      (alo, blo) rồi vòng "extend" so sánh TRỰC TIẾP ký tự
+      ``(a[besti+k] == b[bestj+k])`` — không qua ``b2j`` nên KHÔNG bị autojunk
+      làm lỗi; chuỗi giống nhau extend tới hết độ dài chung ⇒ M=T ⇒ 2T/2T=1.0.
+
+    Writeup chưa đụng tới trong workspace thật có nội dung trùng khớp template
+    regenerate (cùng hàm sinh), nên nhánh ``a == b`` loại trọn chi phí
+    ``__chain_b`` + ``get_matching_blocks`` cho đúng nhóm chall phổ biến nhất.
+    """
+    sa = md_text.strip()
+    sb = reference_template.strip()
+    if not sa or not sb:
+        return 1.0 if not (sa or sb) else 0.0
+    if sa == sb:
+        return 1.0
+    return difflib.SequenceMatcher(None, sa, sb).ratio()
+
+
 def _word_count(text: str) -> int:
     return len(re.findall(r"\w+", text or "", re.U))
 
 
-def _section_text(md_text: str, keywords: tuple) -> str:
+def _section_text(md_text: str, keywords: tuple,
+                  headings: Optional[list] = None) -> str:
     """Lấy phần thân của mục heading đầu tiên khớp ``keywords`` (case-insensitive)
-    cho đến heading kế tiếp. Trả "" nếu không có mục."""
-    matches = list(HEADING_RE.finditer(md_text))
-    for idx, m in enumerate(matches):
+    cho đến heading kế tiếp. Trả "" nếu không có mục.
+
+    ``headings``: danh sách match của ``HEADING_RE`` trên ``md_text`` — truyền
+    từ trước khi cần quét nhiều mục trên cùng văn bản để tránh chạy lại regex.
+    """
+    if headings is None:
+        headings = list(HEADING_RE.finditer(md_text))
+    for idx, m in enumerate(headings):
         low = m.group(1).lower()
         if any(k in low for k in keywords):
-            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(md_text)
+            end = headings[idx + 1].start() if idx + 1 < len(headings) else len(md_text)
             return md_text[m.end():end]
     return ""
 
@@ -88,22 +122,63 @@ def _strip_reference_content(md_text: str, reference_template: str) -> str:
     return "\n".join(kept)
 
 
+# ---- Memo kết quả chấm (pure-function cache trong cùng process) ---------
+_ASSESS_MEMO_MAX = 4096
+_assess_memo: "collections.OrderedDict[bytes, Dict[str, object]]" = collections.OrderedDict()
+
+
+def _memo_digest(md_text: str, flag_format: Optional[str],
+                 reference_template: Optional[str]) -> bytes:
+    """Fingerprint nội dung 3 input (length-prefixed chống ghép biên)."""
+    h = hashlib.blake2b(digest_size=16)
+    for part in (md_text or "", flag_format or "", reference_template or ""):
+        raw = part.encode("utf-8", "surrogatepass")
+        h.update(len(raw).to_bytes(8, "little"))
+        h.update(raw)
+    return h.digest()
+
+
 def assess_writeup(md_text: str,
                    flag_format: Optional[str] = None,
                    reference_template: Optional[str] = None) -> Dict[str, object]:
-    """Chấm writeup theo thang 100đ. Trả về::
+    """Chấm writeup theo thang 100đ (memoized). Trả về::
 
         {"status": "skeleton|draft|complete", "score": int,
          "signals": {tên_tín_hiệu: bool/int}, "missing": [gợi ý tiếng Việt]}
+
+    Hàm là pure-function nên kết quả được memo theo nội dung đầu vào
+    (blake2b-128 của md/flag_format/reference_template) trong cùng process:
+    scan/render/watch tick chấm lại writeup KHÔNG ĐỔI chỉ tốn 1 lần hash.
+    Luôn trả bản copy — caller tự do mutate dict nhận về mà không nhiễm cache.
     """
+    try:
+        key = _memo_digest(md_text, flag_format, reference_template)
+    except Exception:            # input lạ (không encode được) — bỏ qua memo
+        return _assess_writeup_uncached(md_text, flag_format, reference_template)
+    memo = _assess_memo
+    hit = memo.get(key)
+    if hit is None:
+        hit = _assess_writeup_uncached(md_text, flag_format, reference_template)
+        memo[key] = hit
+        if len(memo) > _ASSESS_MEMO_MAX:   # bounded: FIFO theo LRU thứ tự truy cập
+            memo.popitem(last=False)
+    else:
+        memo.move_to_end(key)
+    return {"status": hit["status"], "score": hit["score"],
+            "signals": dict(hit["signals"]), "missing": list(hit["missing"])}
+
+
+def _assess_writeup_uncached(md_text: str,
+                             flag_format: Optional[str] = None,
+                             reference_template: Optional[str] = None) -> Dict[str, object]:
+    """Thân chấm điểm thuần — gọi qua ``assess_writeup`` để ăn memo."""
     md = md_text or ""
     signals: Dict[str, object] = {}
     missing: List[str] = []
 
     # ---- Guard skeleton (rẻ, chắc) -------------------------------------
     if reference_template:
-        ratio = difflib.SequenceMatcher(
-            None, md.strip(), reference_template.strip()).ratio()
+        ratio = _template_similarity(md, reference_template)
         signals["template_similarity"] = round(ratio, 4)
         if ratio >= SIMILARITY_SKELETON:
             return {
@@ -164,7 +239,8 @@ def assess_writeup(md_text: str,
 
     # ---- Evidence (max 30) -----------------------------------------------
     evidence_score = 0
-    code_blocks = CODE_FENCE_RE.findall(md_eff)
+    fence_matches = list(CODE_FENCE_RE.finditer(md_eff))
+    code_blocks = [m.group(1) for m in fence_matches]
     own_code = any(not _is_boilerplate_code(c) for c in code_blocks)
     if own_code:
         evidence_score += 18
@@ -191,7 +267,9 @@ def assess_writeup(md_text: str,
 
     # ---- Prose (max 25) ----------------------------------------------------
     prose_score = 0
-    recon_text = _section_text(md_eff, ("recon", "reconnaissance", "phân tích", "vulnerability"))
+    headings = list(HEADING_RE.finditer(md_eff))   # quét 1 lần cho cả 2 mục
+    recon_text = _section_text(md_eff, ("recon", "reconnaissance", "phân tích",
+                                        "vulnerability"), headings=headings)
     recon_words = _word_count(recon_text)
     if recon_words > 30:
         prose_score += 12
@@ -202,7 +280,8 @@ def assess_writeup(md_text: str,
     else:
         missing.append("Mục 'Reconnaissance' chưa có nội dung thực.")
 
-    exploit_text = _section_text(md_eff, ("exploit", "poc", "khai thác"))
+    exploit_text = _section_text(md_eff, ("exploit", "poc", "khai thác"),
+                                 headings=headings)
     exploit_words = _word_count(exploit_text)
     exploit_section_score = 0
     if exploit_words > 30:
@@ -216,7 +295,15 @@ def assess_writeup(md_text: str,
     prose_score += exploit_section_score
 
     # Bù dung lượng văn mới >500 ký tự lên tối đa 25.
-    body_no_code = CODE_FENCE_RE.sub("", md_eff)
+    # body_no_code ≡ CODE_FENCE_RE.sub("", md_eff) nhưng tái dùng đúng các
+    # match (span) đã tìm ở mục Evidence — bỏ một lượt quét regex toàn văn.
+    parts = []
+    pos = 0
+    for fm in fence_matches:
+        parts.append(md_eff[pos:fm.start()])
+        pos = fm.end()
+    parts.append(md_eff[pos:])
+    body_no_code = "".join(parts)
     prose_chars = len(body_no_code.strip())
     signals["prose_chars"] = prose_chars
     if prose_score < 25 and prose_chars > 500:
