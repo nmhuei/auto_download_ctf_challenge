@@ -310,14 +310,20 @@ class WorkspaceRepo:
 
         return st
 
-    def read_status(self, meta_path: PathLike) -> dict:
+    def read_status(self, meta_path: PathLike, meta: "dict | None" = None) -> dict:
         """Đọc block ``status`` của một challenge: normalize + migrate-on-read.
 
         Không ghi file — workspace cũ được nâng cấp "on the fly"; lần ghi
         status đầu tiên sẽ persist schema mới.
+
+        ``meta`` (tùy chọn): metadata.json ĐÃ đọc trước — caller quét toàn
+        workspace (status scan) đã cầm metadata rồi thì truyền vào đây để
+        tránh đọc JSON lại một lần nữa cho từng challenge.
         """
         meta_path = Path(meta_path)
-        return self._migrate_status(self.read_metadata(meta_path), meta_path)
+        if meta is None:
+            meta = self.read_metadata(meta_path)
+        return self._migrate_status(meta, meta_path)
 
     def update_status(self, meta_path: PathLike, mutator: Callable[[dict], "dict | None"]) -> dict:
         """Read-mutate-write block ``status`` trong flock (lock granularity

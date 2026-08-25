@@ -51,6 +51,17 @@ from ..utils.sanitize import sanitize_folder_name
 # Trục solve được tính là "đã giải bởi mình/team" — đủ điều kiện đưa vào pack.
 SOLVED_EXPORT_VALUES = ("solved_by_me", "solved_by_team")
 
+# Ký tự markdown đặc biệt cần backslash-escape khi nhúng dữ liệu user
+# (tên challenge/category) vào INDEX.md — chống markdown injection: tên
+# chứa ``[bold]`` / ``[x](http://evil)`` / ``|`` không được vỡ bảng hay
+# sinh link/format ngoài ý muốn.
+_MD_SPECIAL_RE = re.compile(r"([\\`*_\[\]|])")
+
+
+def _md_escape(value) -> str:
+    """Backslash-escape các ký tự markdown đặc biệt của ``value``."""
+    return _MD_SPECIAL_RE.sub(r"\\\1", str(value if value is not None else ""))
+
 # Regex flag generic (giống writeup_assessor.GENERIC_FLAG_RE): PREFIX{body}
 # với body đủ dài để loại nhiễu, không chứa {} hay newline.
 _FLAG_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9_]{2,24}\{[^{}\n]{4,256}\}")
@@ -230,7 +241,7 @@ class WriteupExporter:
             sub = self._entry_dirname(e)
             self._export_entry(e, pack_dir / sub)
             rows.append(
-                f"| {i} | {e.category} | {e.name} "
+                f"| {i} | {_md_escape(e.category)} | {_md_escape(e.name)} "
                 f"| {e.points if e.points is not None else '-'} "
                 f"| `{e.flag or 'N/A'}` | {OK if e.solver_files else '—'} |"
             )
@@ -241,7 +252,9 @@ class WriteupExporter:
         index_lines.append("")
         for i, e in enumerate(entries, 1):
             sub = self._entry_dirname(e)
-            index_lines.append(f"{i}. **[{e.category}] {e.name}** — [{sub}/README.md]({sub}/README.md)")
+            index_lines.append(
+                f"{i}. **[{_md_escape(e.category)}] {_md_escape(e.name)}**"
+                f" — [{sub}/README.md]({sub}/README.md)")
 
         index_lines.append("")
         index_lines.append("---")
@@ -275,7 +288,10 @@ class WriteupExporter:
     def _entry_dirname(entry: WriteupEntry) -> str:
         cat = sanitize_folder_name(entry.category, default="misc")
         name = sanitize_folder_name(entry.name, default="challenge")
-        return f"{cat}_{name}"
+        raw = f"{cat}_{name}"
+        # [ ] ( ) thoát sanitize nhưng phá markdown link trong INDEX.md
+        # (target ``(...)[...]`` vỡ parser) → thay bằng '_' cho an toàn.
+        return re.sub(r"[\[\]()]", "_", raw)
 
     @staticmethod
     def _export_entry(entry: WriteupEntry, dest: Path) -> None:

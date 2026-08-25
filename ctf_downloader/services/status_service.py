@@ -35,6 +35,10 @@ _status_console = Console(theme=load_theme(None))
 # (spec status-model §5: heuristic CHỈ ghi đè khi writeup_auto=True).
 WRITEUP_RANK = {"none": 0, "skeleton": 1, "draft": 2, "complete": 3}
 
+#: Sentinel cho kwarg chưa được truyền (khác None hợp lệ — flag_format=None
+#: nghĩa là "đã tra challenges.json và KHÔNG có flag_format").
+_UNSET = object()
+
 # Tag/label hợp lệ: lowercase [a-z0-9-], dài tối đa 24 ký tự.
 TAG_PATTERN = re.compile(r'^[a-z0-9-]{1,24}$')
 TAG_MAX_LEN = 24
@@ -97,7 +101,9 @@ class StatusService:
     SOLVED_VALUES = ("solved_by_me", "solved_by_team", "solved_other")
 
     @staticmethod
-    def compute_status(repo: WorkspaceRepo, meta_path) -> Dict[str, Any]:
+    def compute_status(repo: WorkspaceRepo, meta_path,
+                       meta: Optional[dict] = None,
+                       flag_format=_UNSET) -> Dict[str, Any]:
         """Trạng thái đa chiều đã normalize/migrate của một challenge.
 
         Ngoài read_status (normalize + migrate-on-read), hàm còn tự đánh giá
@@ -114,16 +120,27 @@ class StatusService:
           layout không sinh được reference) thì không nâng lên gì cả.
         - Tính toán thuần (không ghi file) — scan/render luôn tái suy ra từ
           nội dung writeup hiện tại.
+
+        ``meta`` / ``flag_format`` (tùy chọn): metadata.json và flag_format từ
+        challenges.json đã đọc trước — caller quét toàn workspace truyền vào
+        để tránh parse lại JSON mỗi challenge (hotspot O(N) trên workspace
+        500+ bài). ``read_status`` vẫn gọi theo interface tối thiểu
+        ``(meta_path)`` để tương thích các repo giả lập trong test.
         """
+        if meta is None:
+            meta = repo.read_metadata(meta_path)
         status = repo.read_status(meta_path)
-        return StatusService._apply_writeup_assessment(repo, meta_path, status)
+        return StatusService._apply_writeup_assessment(
+            repo, meta_path, status, meta=meta, flag_format=flag_format)
 
     # ------------------------------------------------------------------ #
     # Writeup assessment wiring (GAP-03)
     # ------------------------------------------------------------------ #
     @classmethod
     def _apply_writeup_assessment(cls, repo: WorkspaceRepo,
-                                  meta_path, status: Dict[str, Any]) -> Dict[str, Any]:
+                                  meta_path, status: Dict[str, Any],
+                                  meta: Optional[dict] = None,
+                                  flag_format=_UNSET) -> Dict[str, Any]:
         if not status.get("writeup_auto", True):
             return status
 
@@ -131,16 +148,18 @@ class StatusService:
         if not text:
             return status
 
-        flag_format = None
-        try:
-            data = repo.read_challenges()
-            flag_format = ((data.get("ctf_info") or {}).get("flag_format")) or None
-        except Exception:
+        if flag_format is _UNSET:
             flag_format = None
+            try:
+                data = repo.read_challenges()
+                flag_format = ((data.get("ctf_info") or {}).get("flag_format")) or None
+            except Exception:
+                flag_format = None
 
         reference_template = None
         try:
-            meta = repo.read_metadata(meta_path) or {}
+            if meta is None:
+                meta = repo.read_metadata(meta_path) or {}
             reference_template = cls._reference_template(meta)
         except Exception:
             reference_template = None
@@ -408,8 +427,19 @@ class StatusService:
     # ------------------------------------------------------------------ #
     @staticmethod
     def scan_local_challenges(repo: WorkspaceRepo) -> List[Dict[str, Any]]:
-        """Đọc metadata mọi challenge trong workspace, gắn trạng thái solved."""
+        """Đọc metadata mọi challenge trong workspace, gắn trạng thái solved.
+
+        flag_format từ challenges.json được đọc MỘT lần cho cả scan và metadata
+        của từng challenge được truyền xuyên suộc compute_status — không parse
+        lại JSON mỗi bài (hotspot O(N) khi workspace lớn).
+        """
         workspace_path = repo.root
+        try:
+            challenges_data = repo.read_challenges()
+            flag_format = (((challenges_data or {}).get("ctf_info") or {})
+                           .get("flag_format")) or None
+        except Exception:
+            flag_format = None
         results = []
         for meta_path in repo.iter_challenges():
             try:
@@ -421,7 +451,8 @@ class StatusService:
                 # Trạng thái đa chiều (normalize + migrate-on-read từ legacy:
                 # bool solved_by_me / marker README / placeholder flag thay rồi /
                 # instance_info.is_container) + tự đánh giá trục writeup
-                status = StatusService.compute_status(repo, meta_path)
+                status = StatusService.compute_status(
+                    repo, meta_path, meta=m, flag_format=flag_format)
                 m['_status'] = status
 
                 m['solved_by_me'] = status['solve'] == 'solved_by_me'
@@ -1047,7 +1078,12 @@ class StatusService:
             if not os.path.isdir(full_p):
                 continue
             repo = WorkspaceRepo(full_p)
-            stats = StatusService.summary_stats(repo)
+            try:
+                stats = StatusService.summary_stats(repo)
+            except Exception:
+                # Workspace không đọc được (vd systemd-private*, thư mục của
+                # user khác) → bỏ qua thay vì sập cả lượt scan.
+                continue
             if stats['total_challenges'] > 0:
                 stats['_ended'] = False
                 try:
