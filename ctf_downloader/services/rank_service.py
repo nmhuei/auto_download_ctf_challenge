@@ -76,7 +76,7 @@ class RankService:
         ))
 
     def fetch_ranking(self) -> Dict[str, Any]:
-        Logger.info("Fetching live leaderboard and ranking from CTF platform...")
+        Logger.info("Đang tải bảng xếp hạng live từ platform...")
         try:
             auth_ok = self.platform.authenticate()
         except Exception:
@@ -128,7 +128,7 @@ class RankService:
         _rank_console.print(self._render_scoreboard(data, top_n=top_n))
 
         if not data.get("standings"):
-            Logger.warning("No standings data available on the platform scoreboard.")
+            Logger.warning("Platform chưa có dữ liệu standings trên scoreboard.")
             return data
 
         if update_docs and self.workspace_path and os.path.exists(self.workspace_path):
@@ -261,7 +261,7 @@ class RankService:
         with open(ranking_md_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
 
-        Logger.info(f"Updated live ranking document: [bold cyan]{os.path.relpath(ranking_md_path, self.workspace_path)}[/bold cyan]")
+        Logger.info(f"Đã cập nhật bảng xếp hạng live: [bold cyan]{os.path.relpath(ranking_md_path, self.workspace_path)}[/bold cyan]")
 
         # 2. Update SUMMARY.md via WorkspaceRepo (chèn/thay dòng Live Rank)
         rank_badge = f"{LIVE_RANK_PREFIX} `#{my_rank}` / `{total_teams}` (Team: `{my_team}`)"

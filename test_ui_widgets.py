@@ -149,19 +149,20 @@ class FooterBarTests(unittest.TestCase):
     BINDINGS = [("↑↓", "chọn"), ("s", "sync"), ("q", "thoát")]
 
     def test_basic_render_markup(self):
-        out = footer_bar(self.BINDINGS, width=120)
+        # tty=True: unit test render thuần (mặc định gate theo stdout thật).
+        out = footer_bar(self.BINDINGS, width=120, tty=True)
         self.assertIn("[hi_fg]q[/] thoát", out)
         self.assertIn("[dim] · [/]", out)
         self.assertIn("[hi_fg]s[/] sync", out)
 
     def test_visible_length_strips_markup(self):
-        out = footer_bar(self.BINDINGS, width=120)
+        out = footer_bar(self.BINDINGS, width=120, tty=True)
         import re
         visible = len(re.sub(r"\[[^\]]*\]", "", out))
         self.assertLessEqual(visible, 120)
 
     def test_trim_keeps_quit_when_narrow(self):
-        out = footer_bar(self.BINDINGS, width=10)
+        out = footer_bar(self.BINDINGS, width=10, tty=True)
         self.assertIn("thoát", out)
         self.assertNotIn("sync", out)
 

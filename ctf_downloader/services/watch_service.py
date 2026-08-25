@@ -1175,8 +1175,9 @@ class WatchService:
             body.append(Text())
             body.extend(self._render_mini_scoreboard())
 
+        # TUI luôn tương tác → footer chrome không phụ thuộc stdout pipe.
         footer = footer_bar([("q", "thoát"), ("p", "pause"),
-                             ("r", "refresh-now")], width - 4)
+                             ("r", "refresh-now")], width - 4, tty=True)
         if footer:
             body.append(Text())
             body.append(Text.from_markup(footer))

@@ -21,6 +21,7 @@ Algorithms ported from btop++ (btop_draw.cpp / btop_theme.cpp):
 from __future__ import annotations
 
 import math
+import sys
 from functools import lru_cache
 from typing import Iterable, Optional, Sequence, Tuple
 
@@ -216,7 +217,17 @@ def _visible_len(markup: str) -> int:
     return len("".join(out))
 
 
-def footer_bar(bindings: Sequence[Tuple[str, str]], width: int) -> str:
+def _stdout_isatty() -> bool:
+    """stdout có phải TTY thật không (pattern submit_service — an toàn khi
+    stdout bị thay bằng object thiếu ``isatty``)."""
+    try:
+        return sys.stdout.isatty()
+    except Exception:
+        return False
+
+
+def footer_bar(bindings: Sequence[Tuple[str, str]], width: int,
+               tty: Optional[bool] = None) -> str:
     """Single-line keybinding bar, btop menu style::
 
         [↑↓] chọn  ·  [s] sync  ·  [q] thoát
@@ -225,8 +236,15 @@ def footer_bar(bindings: Sequence[Tuple[str, str]], width: int) -> str:
     dim ``·``. Items are dropped from the front (keeping the trailing
     quit binding) until the visible width fits ``width``. Returns rich
     markup as a plain string.
+
+    Footer là chrome tương tác: khi stdout KHÔNG phải TTY (pipe/redirect)
+    trả chuỗi rỗng — output piped phải machine-readable, không chrome
+    (uv-style). Caller TUI luôn-tương-tác (watch, menu) truyền
+    ``tty=True`` để giữ hành vi cũ.
     """
-    if not bindings or width < 1:
+    if tty is None:
+        tty = _stdout_isatty()
+    if not tty or not bindings or width < 1:
         return ""
 
     def render(key: str, label: str) -> str:

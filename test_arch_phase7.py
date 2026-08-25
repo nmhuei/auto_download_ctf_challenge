@@ -11,6 +11,7 @@ Kiểm tra:
   instance --sync gọi InstanceService.sync_containers.
 """
 import ast
+import io
 import json
 import os
 import shutil
@@ -659,8 +660,9 @@ class TestNewServiceCommands(unittest.TestCase):
 
 class TestPhosphorHelpScreen(unittest.TestCase):
     """Fix finding codex 05_help: `ctf --help` = HelpScreen spec §4.8
-    (banner B amber + tagline + CÚ PHÁP + LỆNH pad-12 + FooterBar), không
-    emoji chrome, không liệt kê alias trong bảng chính."""
+    (banner B amber + tagline + CÚ PHÁP + LỆNH pad-12), không emoji chrome,
+    không liệt kê alias trong bảng chính. Polish pass: FooterBar là chrome
+    tương tác — pipe (non-tty) không còn dòng keybinding."""
 
     @classmethod
     def setUpClass(cls):
@@ -669,10 +671,13 @@ class TestPhosphorHelpScreen(unittest.TestCase):
     def test_spec_markers_present(self):
         for marker in ("CÚ PHÁP", "LỆNH",
                        "bộ kit tác chiến capture-the-flag",
-                       "ctf <lệnh> [tuỳ chọn]",
-                       "q thoát"):
+                       "ctf <lệnh> [tuỳ chọn]"):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.out)
+
+    def test_footer_chrome_absent_on_pipe(self):
+        # Non-tty → machine-readable, không chrome keybinding (uv-style).
+        self.assertNotIn("q thoát", self.out)
 
     def test_app_header_first_line(self):
         # codex-r3 #2: help là lệnh thường duy nhất còn thiếu AppHeader —
@@ -716,32 +721,53 @@ class TestPhosphorHelpScreen(unittest.TestCase):
                 f"alias '{alias}' không được nằm trong bảng LỆNH")
 
 
-class TestAppHeaderFooterFrame(unittest.TestCase):
-    """Fix finding codex 01_status: lệnh thường bọc AppHeader đầu + FooterBar
-    cuối (spec §4.1/§4.7). Non-TTY → plain text không ANSI."""
+class _FakeTTY(io.StringIO):
+    """Buffer giả lập terminal cho redirect_stdout (isatty() → True)."""
 
-    def _frame_output(self):
+    def isatty(self):
+        return True
+
+
+class TestAppHeaderFooterFrame(unittest.TestCase):
+    """Lệnh thường bọc AppHeader đầu + FooterBar cuối (spec §4.1/§4.7).
+
+    Cập nhật polish pass: footer là chrome tương tác — pipe (non-TTY) phải
+    machine-readable KHÔNG footer; tty giả lập vẫn đủ chrome sau body."""
+
+    def _frame_output(self, buf_cls=None):
         import contextlib
-        import io
 
         from ctf_downloader import cli
 
-        buf = io.StringIO()
+        buf = buf_cls() if buf_cls else io.StringIO()
         with contextlib.redirect_stdout(buf):
             cli._run_framed(lambda a: print("BODY"), Namespace(workspace="wsA"),
                             "status")
         return buf.getvalue()
 
-    def test_header_before_body_footer_after(self):
+    @staticmethod
+    def _strip_ansi(text):
+        import re
+        return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+    def test_header_before_body_pipe_drops_footer(self):
         out = self._frame_output()
         self.assertIn("CTF·TOOLKIT", out)
         self.assertIn("status · wsA", out)
         self.assertIn("BODY", out)
         self.assertLess(out.index("CTF·TOOLKIT"), out.index("BODY"))
+        # Non-tty: không chrome keybinding (uv-style machine-readable).
+        self.assertNotIn("q thoát", out)
+        self.assertNotIn("di chuyển", out)
+
+    def test_fake_tty_header_before_body_footer_after(self):
+        out = self._strip_ansi(self._frame_output(_FakeTTY))
+        self.assertIn("BODY", out)
+        self.assertLess(out.index("CTF·TOOLKIT"), out.index("BODY"))
         self.assertGreater(out.index("q thoát"), out.index("BODY"))
 
-    def test_footer_bindings_standard_set(self):
-        out = self._frame_output()
+    def test_footer_bindings_standard_set_on_tty(self):
+        out = self._strip_ansi(self._frame_output(_FakeTTY))
         for frag in ("↑↓ di chuyển", "? help", "q thoát", " · "):
             self.assertIn(frag, out)
 
