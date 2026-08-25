@@ -873,7 +873,6 @@ class WatchService:
                 lines.extend(out or [])
                 self.scheduler.reward(task)
                 self.scheduler.postpone(task)
-                self.state_store.checkpoint_type(self.state, task)
             except KeyboardInterrupt:
                 raise
             except Exception as exc:
@@ -881,6 +880,16 @@ class WatchService:
                 lines.append(f"⚠️ task {task} lỗi: {str(exc)[:80]} "
                              f"— backoff {interval:.0f}s")
                 self.scheduler.postpone(task)
+                continue
+            # C11-02: checkpoint nằm NGOÀI try của task — nó raise (vd
+            # .ctf read-only) thì KHÔNG được penalize tick vừa thành công
+            # hay postpone lần hai (mọi task backoff luỹ tiến tới cap dù
+            # mạng khoẻ); đây là lỗi lưu state, không phải lỗi của task.
+            try:
+                self.state_store.checkpoint_type(self.state, task)
+            except Exception as exc:
+                lines.append(f"⚠️ checkpoint state {task} thất bại: "
+                             f"{str(exc)[:80]} — sẽ thử lại kỳ sau.")
         return lines
 
     def _sleep_until_next(self, guard: Optional[WindowGuard]) -> None:
@@ -956,6 +965,11 @@ class WatchService:
                                          headers=req_headers)
         resp_headers = getattr(resp, "headers", None) or {}
         if resp.status_code == 304:
+            # C11-01: 304 vẫn là tick BÌNH THƯỜNG (endpoint khoẻ, không
+            # đổi) — xoá streak rl_mult ngay tại đây; nếu thoát sớm thì
+            # endpoint đứng im mãi sẽ giữ streak cũ và 429 kế tiếp (dù rất
+            # sau) bị tính backoff luỹ tích ×8 thay vì bắt đầu lại ×2.
+            self.scheduler.clear_rate_limit("notices")
             return []     # endpoint không đổi — dùng kết quả của kỳ trước
         if resp.status_code == 429:
             # Spec §5: tôn trọng Retry-After của server; thiếu header thì

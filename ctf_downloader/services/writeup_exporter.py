@@ -253,6 +253,16 @@ class WriteupExporter:
             )
         index_lines.extend(rows)
 
+        # C11-03: prune pack về ĐÚNG tập subdir của lần chạy NÀY — entry
+        # mất điều kiện export giữa các lần chạy hoặc hậu tố collision
+        # (_2, _3) của lần trước phải biến mất khỏi pack dir (và zip mới
+        # đóng sau đây), không thì README stale — có thể còn flag/ghi chú
+        # cũ — còn nằm lại trong bản phân phối.
+        keep = set(subs)
+        for child in pack_dir.iterdir():
+            if child.is_dir() and child.name not in keep:
+                shutil.rmtree(child, ignore_errors=True)
+
         index_lines.append("")
         index_lines.append("## Chi tiết từng bài")
         index_lines.append("")

@@ -12,31 +12,46 @@ from ..ui.theme import load_theme
 
 console = Console(theme=load_theme(None), highlight=False)
 
+
+def _safe_body(msg: str, markup: bool) -> str:
+    """C11-04: msg của Logger hầu như luôn là DỮ LIỆU (tên challenge,
+    notice title/body, solver, path... lấy từ server) → mặc định escape để
+    '[/]' lạc loài không văng MarkupError CRASH cả lệnh, '[link=…]' không
+    inject OSC-8 hyperlink và tag lạ không bị rich nuốt mất chữ. Call-site
+    CHỦ Ý trang trí bằng rich markup của chính tool truyền ``markup=True``;
+    chrome nội bộ ([*], [+], [!], [-]) nằm trong template f-string nên
+    không bao giờ bị đụng tới."""
+    if markup:
+        return msg
+    return escape(msg if isinstance(msg, str) else str(msg))
+
+
 class Logger:
     @staticmethod
-    def info(msg: str):
+    def info(msg: str, markup: bool = False):
         # [*] là chrome điều hướng → amber tắt đèn (ACCENT_DEEP), không cyan.
-        console.print(f"[accent.deep][*][/accent.deep] {msg}")
+        console.print(f"[accent.deep][*][/accent.deep] {_safe_body(msg, markup)}")
 
     @staticmethod
-    def success(msg: str):
+    def success(msg: str, markup: bool = False):
         # [+] là chrome thuần → amber lead; green chỉ dành cho ngữ nghĩa
         # solve/✔ theo spec §3. Tag lồng để từng tên token resolve qua theme.
-        console.print(f"[bold][accent][+][/][/] {msg}")
+        console.print(f"[bold][accent][+][/][/] {_safe_body(msg, markup)}")
 
     @staticmethod
-    def warning(msg: str):
+    def warning(msg: str, markup: bool = False):
         # ! warn → warn amber #EAC54F (token spec, không vàng legacy).
-        console.print(f"[bold][warn][!][/][/] {msg}")
+        console.print(f"[bold][warn][!][/][/] {_safe_body(msg, markup)}")
 
     @staticmethod
-    def error(msg: str):
+    def error(msg: str, markup: bool = False):
         # ✗/- error → đỏ semantic token.
-        console.print(f"[bold][error][-][/][/] {msg}")
+        console.print(f"[bold][error][-][/][/] {_safe_body(msg, markup)}")
 
     @staticmethod
-    def step(step_num: int, total_steps: int, msg: str):
-        console.print(f"[bold][accent][{step_num}/{total_steps}][/][/] {msg}")
+    def step(step_num: int, total_steps: int, msg: str, markup: bool = False):
+        console.print(
+            f"[bold][accent][{step_num}/{total_steps}][/][/] {_safe_body(msg, markup)}")
 
     @staticmethod
     def banner():
