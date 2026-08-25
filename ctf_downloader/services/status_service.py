@@ -135,12 +135,13 @@ class StatusService:
         ``meta`` / ``flag_format`` (tùy chọn): metadata.json và flag_format từ
         challenges.json đã đọc trước — caller quét toàn workspace truyền vào
         để tránh parse lại JSON mỗi challenge (hotspot O(N) trên workspace
-        500+ bài). ``read_status`` vẫn gọi theo interface tối thiểu
-        ``(meta_path)`` để tương thích các repo giả lập trong test.
+        500+ bài). ``meta`` cũng được truyền xuyên suốt xuống ``read_status``
+        (tránh double-read metadata.json mỗi challenge); repo giả lập
+        cần nhận kwarg ``meta=None`` khớp ``WorkspaceRepo.read_status``.
         """
         if meta is None:
             meta = repo.read_metadata(meta_path)
-        status = repo.read_status(meta_path)
+        status = repo.read_status(meta_path, meta=meta)
         return StatusService._apply_writeup_assessment(
             repo, meta_path, status, meta=meta, flag_format=flag_format)
 

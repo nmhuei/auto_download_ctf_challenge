@@ -81,7 +81,9 @@ class FakeRepo:
         meta["status"] = json.loads(json.dumps(st))  # deep-copy rẻ
         return meta
 
-    def read_status(self, meta_path):
+    def read_status(self, meta_path, meta=None):
+        # kwarg meta khớp WorkspaceRepo.read_status — compute_status truyền
+        # metadata đã đọc xuyên suốt (perf: tránh double-read).
         return self.read_metadata(meta_path).get("status") or {}
 
     def is_container(self, meta):
