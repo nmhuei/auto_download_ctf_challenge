@@ -44,7 +44,7 @@ Credentials được lưu trong **auth map** tại `~/.config/ctf_toolkit/config
 | `workspaces` | Quét các workspace trên máy | `ctf workspaces -d ~/Workspace/CTF` |
 | `instance` | Bật/tắt/gia hạn container động | `ctf instance start --id 34 -w my_ctf` |
 | `submit` | Nộp flag lên platform | `ctf submit --id 16 -f "FLAG{...}"` · `ctf submit --auto` |
-| `hoard` | Lưu flag local, KHÔNG nộp | `ctf hoard 16 "FLAG{...}"` |
+| `hoard` | Lưu flag local, KHÔNG nộp | `ctf hoard 16 "FLAG{...}"` · `ctf hoard --list` |
 | `rank` | Scoreboard live + cập nhật RANKING.md | `ctf rank -n 20` |
 | `watch` | Auto-sync challenge/scoreboard trong event window | `ctf watch --once` |
 | `doctor` | Health-check platform (auth/capabilities/window) | `ctf doctor -u https://ctf.example.com` |
@@ -55,7 +55,8 @@ Credentials được lưu trong **auth map** tại `~/.config/ctf_toolkit/config
 | `export-pack` | Đóng gói writeup các bài solved | `ctf export-pack --out ./packs` |
 | `history` | Lịch sử submit flag | `ctf history --all` |
 | `sniper` | Preload flag, nộp ngay giờ G | `ctf sniper --start-at "2026-09-01T08:00:00+07:00"` |
-| `serve` | Dashboard web read-only | `ctf serve --port 8689` |
+| `serve` | Dashboard web local (POST submit qua gate CLI) | `ctf serve --port 8689` |
+| `open` | Mở thư mục challenge trong file manager | `ctf open 12` |
 | `register` | Tạo tài khoản + lưu auth map | `ctf register -u https://ctf.example.com --tempmail` |
 | `menu` | Interactive console đầy đủ | `ctf menu` |
 

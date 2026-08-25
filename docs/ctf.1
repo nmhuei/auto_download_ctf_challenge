@@ -1,4 +1,4 @@
-.TH CTF 1 "2026-08-24" "ctf-toolkit" "User Commands"
+.TH CTF 1 "2026-08-25" "ctf-toolkit" "User Commands"
 .SH NAME
 ctf \- bộ kit tác chiến Capture-The-Flag ngay trong terminal
 .SH SYNOPSIS
@@ -123,6 +123,13 @@ wizard tương tác.
 .B hoard " (flag-stash) " [\fItarget\fR] [\fIflag\fR]
 Lưu flag tìm được vào kho local (metadata.json) mà KHÔNG submit lên platform.
 Cùng kiểu tham số với submit (bỏ \-\-auto/\-\-force).
+.B \-\-list
+bảng mọi flag đang giữ chờ submit, sort theo điểm giảm dần,
+.B \-\-all
+hiện flag đầy đủ khi dùng cùng
+.B \-\-list ,
+.B \-\-remove
+gỡ flag khỏi kho cho challenge chỉ định.
 .TP
 .B note " (ghi-chu) " \fItarget\fR " [" \fInội dung\fR "]"
 Ghi/xoá note cho một challenge (lưu vào metadata.status.notes).
@@ -211,9 +218,21 @@ Xem lịch sử submit flag của workspace (submit_history.json), flag bị che
 hiện flag đầy đủ.
 .TP
 .B serve " (web)"
-Dashboard web read-only cho workspace, bind 127.0.0.1.
+Dashboard web cục bộ cho workspace (bind 127.0.0.1), render trực tiếp từ
+dữ liệu workspace. Chủ yếu read-only — điểm ghi DUY NHẤT là
+.B POST /api/submit
+để nộp flag qua gate của
+.B submit
+(format/blacklist/throttle), giới hạn 1 request / 5 giây.
 .B \-\-port
 chọn cổng (mặc định 8689).
+.TP
+.B open
+Mở thư mục challenge trong file manager/terminal (xdg-open).
+.I target
+là Challenge ID hoặc Name;
+.B \-w
+chọn workspace.
 .TP
 .B menu " (ui | console)"
 Console interactive đầy đủ (dashboard CTF suite).
