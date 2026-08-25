@@ -1,4 +1,5 @@
 import re
+import time
 import urllib.parse
 import requests
 from typing import List, Dict, Any, Optional, Tuple
@@ -34,6 +35,10 @@ def probe_rctf_challs(origin: str, session, info, done: set) -> bool:
           probes=(probe_rctf_challs,),
           supports_scoreboard=True)
 class RCTFPlatform(BasePlatform):
+    # TTL cache solve-attribution (giây) — cùng pattern CTFd/GZCTF: watch
+    # tạo platform 1 lần/process, không TTL thì by_team/by_other đóng băng.
+    SOLVE_ATTR_TTL: float = 300.0
+
     _last_verdict: str = "unknown"
 
     @property
@@ -251,11 +256,15 @@ class RCTFPlatform(BasePlatform):
 
     def fetch_solve_attribution(self, challenge_ids) -> Dict[Any, SolveAttribution]:
         """``users/me.solves[]`` có sẵn; ``challs/{id}/solves`` public bổ sung
-        solver_names / first-blood (0–1+N requests)."""
+        solver_names / first-blood (0–1+N requests). Cache có TTL
+        (SOLVE_ATTR_TTL): hết hạn → fetch lại cho phiên watch dài."""
         wanted = {str(c): c for c in (challenge_ids or [])}
+        now = time.monotonic()
+        ts = getattr(self, "_solve_attr_ts", None)
         cache = getattr(self, "_solve_attr_cache", None)
-        if cache is None:
+        if cache is None or ts is None or (now - ts) >= self.SOLVE_ATTR_TTL:
             cache = self._solve_attr_cache = {}
+            self._solve_attr_ts = now
             try:
                 r_me = self.session.get(f"{self.base_url}/api/v1/users/me", timeout=15)
                 if r_me.status_code == 200:

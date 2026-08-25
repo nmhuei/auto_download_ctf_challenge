@@ -1,5 +1,6 @@
 import json
 import re
+import time
 import urllib.parse
 import requests
 from typing import List, Dict, Any, Optional, Tuple
@@ -124,6 +125,11 @@ def probe_ctfd_challenges(origin: str, session, info, done: set) -> bool:
           probes=(probe_ctfd_challenges,),
           supports_scoreboard=True)
 class CTFdPlatform(BasePlatform):
+    # TTL cache solve-attribution (giây): watch tạo platform 1 lần/process —
+    # không TTL thì cache populate đúng 1 lần và by_team/by_other đóng băng
+    # từ tick 2. ~300s = đủ tươi cho watch, không spam API.
+    SOLVE_ATTR_TTL: float = 300.0
+
     # Các slug trang public dùng để dò rules / flag format (Pages API là admin-only)
     RULE_PAGE_SLUGS = [
         "rules", "rule", "Rules", "faq", "about", "welcome",
@@ -627,11 +633,16 @@ class CTFdPlatform(BasePlatform):
     def fetch_solve_attribution(self, challenge_ids) -> Dict[Any, SolveAttribution]:
         """2 requests: /teams/me (detect mode) + solves tương ứng.
         Teams mode: mỗi dòng mang ``user.id/name`` của thành viên submit —
-        ``by_me = row.user.id == me_id``. Users mode: by_team ≡ by_me."""
+        ``by_me = row.user.id == me_id``. Users mode: by_team ≡ by_me.
+        Cache có TTL (SOLVE_ATTR_TTL): hết hạn → fetch lại để by_team/
+        by_other theo kịp trong phiên watch dài."""
         wanted = {str(c): c for c in (challenge_ids or [])}
+        now = time.monotonic()
+        ts = getattr(self, "_solve_attr_ts", None)
         cache = getattr(self, "_solve_attr_cache", None)
-        if cache is None:
+        if cache is None or ts is None or (now - ts) >= self.SOLVE_ATTR_TTL:
             cache = self._solve_attr_cache = {}
+            self._solve_attr_ts = now
             try:
                 me_id, me_name = None, self.ctf_info.user_name
                 r_me = self.session.get(f"{self.base_url}/api/v1/users/me", timeout=10)

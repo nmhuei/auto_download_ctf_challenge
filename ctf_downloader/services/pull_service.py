@@ -412,20 +412,30 @@ class PullService:
                 # SolveAttribution dataclass (hoặc obj tương đương) → dict
                 attr = {"by_me": bool(getattr(attr, "by_me", False)),
                         "by_team": bool(getattr(attr, "by_team", False))}
+            target = ("solved_by_me" if attr.get("by_me", False)
+                      else "solved_by_team" if attr.get("by_team", False)
+                      else "solved_other")
 
-            def _mut(st):
-                target = ("solved_by_me" if attr.get("by_me", False)
-                          else "solved_by_team" if attr.get("by_team", False)
-                          else "solved_other")
-                if SOLVE_RANK.get(target, 0) > SOLVE_RANK.get(st["solve"], 0):
-                    st["solve"] = target
-                st["synced_at"] = now_str
+            # Review finding: chỉ GHI khi solve rank thực sự được nâng —
+            # fetch trả cache cũ giống hệt (TTL chưa hết) thì không đụng
+            # status.json, không stamp synced_at giả "tươi" mỗi tick.
+            try:
+                before_solve = repo.read_status(meta_path)["solve"]
+            except Exception:
+                continue
+            if SOLVE_RANK.get(target, 0) <= SOLVE_RANK.get(before_solve, 0):
+                continue
+
+            def _mut(st, _target=target):
+                if SOLVE_RANK.get(_target, 0) > SOLVE_RANK.get(st["solve"], 0):
+                    st["solve"] = _target
+                    # Stamp synced_at CHỈ khi dữ liệu thật sự thay đổi.
+                    st["synced_at"] = now_str
                 return st
 
             try:
-                before = repo.read_status(meta_path)["solve"]
                 after = repo.update_status(meta_path, _mut)["solve"]
-                if after != before:
+                if after != before_solve:
                     updated += 1
             except Exception:
                 continue

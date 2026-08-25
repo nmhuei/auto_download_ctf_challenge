@@ -254,5 +254,236 @@ class TestSyncVerifyDrift(SyncTestBase):
         self.assertEqual(v["unsolved_locally_solved_remotely"], [])
 
 
+# ---------------------------------------------------------------------------
+# Review finding [M] (commit 3fdbf3e): TTL cache attribution + synced_at
+# chỉ stamp khi dữ liệu thật sự đổi.
+#
+# Bằng chứng lỗi:
+# - _solve_attr_cache populate ĐÚNG 1 LẦN/process (ctfd.py:632, rctf.py:256,
+#   gzctf.py:755) → WatchService tạo platform 1 lần (_setup_platform) → từ
+#   tick 2 fetch_solve_attribution KHÔNG bao giờ hit network nữa →
+#   by_team/by_other đóng băng.
+# - PullService.sync_solve_attribution stamp ``status.synced_at`` vô điều
+#   kiện mỗi call → mỗi chu kỳ watch rewrite status.json mọi challenge với
+#   synced_at giả "tươi" trong khi dữ liệu cũ.
+#
+# Fix kỳ vọng: TTL ~300s trên cả 3 platform (fetch lại khi hết hạn) +
+# pull_service chỉ ghi khi solve rank thực sự được nâng.
+# ---------------------------------------------------------------------------
+
+import json as _json  # noqa: E402
+import time as _time  # noqa: E402
+from unittest import mock as _mock  # noqa: E402
+
+from ctf_downloader.platforms.ctfd import CTFdPlatform
+from ctf_downloader.platforms.gzctf import GZCTFPlatform
+from ctf_downloader.platforms.rctf import RCTFPlatform
+
+
+class _AttrFakeResponse:
+    def __init__(self, status_code=200, payload=None):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+
+    def json(self):
+        return self._payload
+
+
+class _AttrFakeSession:
+    """Session tối thiểu theo (method, url-substring) + đếm MỌI request.
+    Trùng nhiều route → chọn substring DÀI NHẤT (vd /users/me/solves phải
+    thắng /users/me)."""
+
+    def __init__(self, routes):
+        self.routes = list(routes)
+        self.calls = []
+
+    def _handle(self, method, url):
+        self.calls.append((method, url))
+        best, best_len = None, -1
+        for m, sub, resp in self.routes:
+            if m == method and sub in url and len(sub) > best_len:
+                best, best_len = resp, len(sub)
+        return best if best is not None else _AttrFakeResponse(404)
+
+    def get(self, url, timeout=None, **kw):
+        return self._handle("GET", url)
+
+    def post(self, url, timeout=None, **kw):
+        return self._handle("POST", url)
+
+
+def _ctfd_attr_session(solves_rows):
+    """CTFd users-mode: /teams/me 404 → solves lấy từ /users/me/solves."""
+    return _AttrFakeSession([
+        ("GET", "/api/v1/users/me",
+         _AttrFakeResponse(200, {"success": True,
+                                 "data": {"id": 7, "name": "me"}})),
+        ("GET", "/api/v1/users/me/solves",
+         _AttrFakeResponse(200, {"success": True, "data": solves_rows})),
+    ])
+
+
+def _rctf_attr_session():
+    return _AttrFakeSession([
+        ("GET", "/api/v1/users/me",
+         _AttrFakeResponse(200, {"success": True,
+                                 "data": {"name": "me",
+                                          "solves": [{"chalId": 4}]}})),
+        ("GET", "/api/v1/challs/4/solves",
+         _AttrFakeResponse(200, {"success": True,
+                                 "data": [{"userName": "alice",
+                                           "ts": 1755700000000}]})),
+    ])
+
+
+def _gzctf_attr_session():
+    return _AttrFakeSession([
+        ("GET", "/api/game/42/scoreboard",
+         _AttrFakeResponse(200, {"items": [
+             {"id": 11, "name": "teamX",
+              "solvedChallenges": [
+                  {"id": 4, "userName": "me", "firstBlood": False,
+                   "time": "2026-08-20T10:00:00Z"}]}]})),
+    ])
+
+
+class AttrTTLCacheTest(SyncTestBase):
+    """TTL cache attribution (a/b) + synced_at chỉ-stamp-khi-đổi (c)."""
+
+    def _sync(self, platform):
+        return PullService.sync_solve_attribution(platform, self.out_dir)
+
+    # ---- TTL default + pattern nhất quán 3 platform ------------------
+
+    def test_a0_default_ttl_300_tren_ca_3_platform(self):
+        self.assertEqual(CTFdPlatform.SOLVE_ATTR_TTL, 300.0)
+        self.assertEqual(RCTFPlatform.SOLVE_ATTR_TTL, 300.0)
+        self.assertEqual(GZCTFPlatform.SOLVE_ATTR_TTL, 300.0)
+
+    # ---- (b) trong TTL → dùng cache, không call mạng -----------------
+
+    def test_b_ctfd_trong_ttl_dung_cache_khong_call_mang(self):
+        s = _ctfd_attr_session([
+            {"challenge_id": 1, "user": {},
+             "date": "2026-08-20T10:00:00.000Z"},
+        ])
+        p = CTFdPlatform("https://ctf.test", s)
+        first = self._sync(p)
+        n_after_first = len(s.calls)
+        self.assertGreater(n_after_first, 0, "tick đầu phải hit network")
+        second = self._sync(p)
+        self.assertEqual(len(s.calls), n_after_first,
+                         "trong TTL phải dùng cache — không call mạng")
+        self.assertEqual(second, 0)
+
+    def test_b_rctf_trong_ttl_dung_cache_khong_call_mang(self):
+        s = _rctf_attr_session()
+        p = RCTFPlatform("https://r.test", s)
+        self._sync(p)
+        n1 = len(s.calls)
+        self.assertGreater(n1, 0)
+        self._sync(p)
+        self.assertEqual(len(s.calls), n1,
+                         "trong TTL phải dùng cache — không call mạng")
+
+    def test_b_gzctf_trong_ttl_dung_cache_khong_call_mang(self):
+        s = _gzctf_attr_session()
+        p = GZCTFPlatform("https://gz.test/games/42/challenges", s)
+        p.ctf_info.user_name = "me"
+        self._sync(p)
+        n1 = len(s.calls)
+        self.assertGreater(n1, 0)
+        self._sync(p)
+        self.assertEqual(len(s.calls), n1,
+                         "trong TTL phải dùng cache — không call mạng")
+
+    # ---- (a) quá TTL → platform fetch lại (mock đếm calls) -----------
+
+    def test_a_ctfd_qua_ttl_fetch_lai_network(self):
+        s = _ctfd_attr_session([
+            {"challenge_id": 1, "user": {},
+             "date": "2026-08-20T10:00:00.000Z"},
+        ])
+        p = CTFdPlatform("https://ctf.test", s)
+        clock = [1000.0]
+        with _mock.patch.object(_time, "monotonic", lambda: clock[0]):
+            self._sync(p)
+            n1 = len(s.calls)
+            clock[0] += CTFdPlatform.SOLVE_ATTR_TTL + 1  # > TTL
+            self._sync(p)
+        self.assertGreater(len(s.calls), n1,
+                           "quá TTL phải refetch — platform được gọi lại")
+
+    def test_a_rctf_qua_ttl_fetch_lai_network(self):
+        s = _rctf_attr_session()
+        p = RCTFPlatform("https://r.test", s)
+        clock = [1000.0]
+        with _mock.patch.object(_time, "monotonic", lambda: clock[0]):
+            self._sync(p)
+            n1 = len(s.calls)
+            clock[0] += RCTFPlatform.SOLVE_ATTR_TTL + 1
+            self._sync(p)
+        self.assertGreater(len(s.calls), n1,
+                           "quá TTL phải refetch — platform được gọi lại")
+
+    def test_a_gzctf_qua_ttl_fetch_lai_network(self):
+        s = _gzctf_attr_session()
+        p = GZCTFPlatform("https://gz.test/games/42/challenges", s)
+        p.ctf_info.user_name = "me"
+        clock = [1000.0]
+        with _mock.patch.object(_time, "monotonic", lambda: clock[0]):
+            self._sync(p)
+            n1 = len(s.calls)
+            clock[0] += GZCTFPlatform.SOLVE_ATTR_TTL + 1
+            self._sync(p)
+        self.assertGreater(len(s.calls), n1,
+                           "quá TTL phải refetch — platform được gọi lại")
+
+    # ---- (c) synced_at chỉ đổi khi dữ liệu thật sự đổi ---------------
+
+    def test_c_synced_at_khong_stamp_khi_data_khong_doi(self):
+        # Beta(2) đã solved_by_me từ setUp; server cũng báo by_me cho (2)
+        # → KHÔNG nâng gì → KHÔNG được đụng status.json (không stamp
+        # synced_at giả "tươi").
+        s = _ctfd_attr_session([
+            {"challenge_id": 2, "user": {},
+             "date": "2026-08-20T11:00:00.000Z"},
+        ])
+        p = CTFdPlatform("https://ctf.test", s)
+        mp = self.meta_path_of(2)
+        # Prime migrate-on-read (flag trong README được persist đúng 1 lần
+        # bởi chính test) để so sánh byte đo THUẦN hiệu ứng của sync.
+        self.repo.update_status(mp, lambda st: st)
+        with open(mp, "rb") as f:
+            before_raw = f.read()
+        updated = self._sync(p)
+        self._sync(p)  # lần 2 đi qua cache — cũng không được ghi
+        with open(mp, "rb") as f:
+            after_raw = f.read()
+        self.assertEqual(after_raw, before_raw,
+                         "data không đổi → status.json KHÔNG được ghi lại")
+        st = self.repo.read_status(mp)
+        self.assertIsNone(st["synced_at"],
+                          "không đổi dữ liệu → không được stamp synced_at")
+        self.assertEqual(updated, 0)
+
+    def test_c_synced_at_stamp_khi_co_solver_moi_nang_solve(self):
+        # Epsilon(4) unsolved → server báo solver khác đã giải (solved_other)
+        # → nâng rank + stamp synced_at LÚC NÀY.
+        s = _ctfd_attr_session([
+            {"challenge_id": 4, "user": {"id": 99, "name": "someone"},
+             "date": "2026-08-21T09:00:00.000Z"},
+        ])
+        p = CTFdPlatform("https://ctf.test", s)
+        mp = self.meta_path_of(4)
+        self.assertIsNone(self.repo.read_status(mp)["synced_at"])
+        updated = self._sync(p)
+        self.assertEqual(updated, 1)
+        st = self.repo.read_status(mp)
+        self.assertEqual(st["solve"], "solved_other")
+        self.assertTrue(st["synced_at"], "có solver mới → phải stamp synced_at")
+
+
 if __name__ == "__main__":
     unittest.main()

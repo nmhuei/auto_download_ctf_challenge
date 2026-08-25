@@ -1604,7 +1604,9 @@ class TestAttributionWatchTick(TempWorkspaceCase):
         svc._tick_challenges()
         st = self.repo.read_status(meta)
         self.assertEqual(st["solve"], "solved_by_me")   # nguyên tắc chỉ-nâng
-        self.assertTrue(st.get("synced_at"))             # nhưng vẫn stamp
+        # Review finding: data không đổi (không nâng gì) → KHÔNG stamp
+        # synced_at giả "tươi", không rewrite status.json mỗi tick.
+        self.assertIsNone(st.get("synced_at"))
 
     def test_fetch_raise_never_crashes_and_logs_warning(self):
         import ctf_downloader.services.watch_service as wsm

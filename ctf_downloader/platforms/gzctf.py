@@ -269,6 +269,10 @@ class GZCTFPlatform(BasePlatform):
     SUBMISSION_POLL_ATTEMPTS = 6
     SUBMISSION_POLL_INTERVAL = 1.0  # giây
 
+    # TTL cache solve-attribution (giây) — cùng pattern CTFd/rCTF: watch tạo
+    # platform 1 lần/process, không TTL thì by_team/by_other đóng băng.
+    SOLVE_ATTR_TTL: float = 300.0
+
     def __init__(self, base_url: str, session: requests.Session):
         # Extract game_id from base_url if present (e.g., https://.../games/6/challenges)
         parsed = urllib.parse.urlparse(base_url)
@@ -750,11 +754,16 @@ class GZCTFPlatform(BasePlatform):
 
     def fetch_solve_attribution(self, challenge_ids) -> Dict[Any, SolveAttribution]:
         """1–2 requests: /scoreboard (+ /team/{id} xác nhận membership).
-        Cache kết quả trong phiên; mọi exception → trả phần đã có ({})."""
+        Cache kết quả trong phiên; mọi exception → trả phần đã có ({}).
+        Cache có TTL (SOLVE_ATTR_TTL): hết hạn → fetch lại cho phiên watch
+        dài."""
         wanted = {str(c): c for c in (challenge_ids or [])}
+        now = time.monotonic()
+        ts = getattr(self, "_solve_attr_ts", None)
         cache = getattr(self, "_solve_attr_cache", None)
-        if cache is None:
+        if cache is None or ts is None or (now - ts) >= self.SOLVE_ATTR_TTL:
             cache = self._solve_attr_cache = {}
+            self._solve_attr_ts = now
             try:
                 self._fetch_all_attribution(cache)
             except Exception:
