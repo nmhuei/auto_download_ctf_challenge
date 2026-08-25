@@ -27,11 +27,20 @@ def atomic_write_text(path: PathLike, text: str) -> None:
     if p.is_symlink():
         p = p.resolve()
     tmp = _tmp_path(p)
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, p)
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)
+    except BaseException:
+        # Ghi/replace thất bại (vd ENOSPC): dọn tmp để không để lại rác
+        # <name>.tmp (nhất quán với locked_update_json), rồi raise lại.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def atomic_write_json(path: PathLike, obj) -> None:

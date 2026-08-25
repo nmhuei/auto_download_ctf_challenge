@@ -391,23 +391,34 @@ class StorageManager:
         patterns = list(strip_patterns or [])
 
         original_bytes = 0
-        with tarfile.open(archive_path, "w:gz") as tf:
-            for root, dirnames, filenames in os.walk(src):
-                dirnames[:] = sorted(
-                    d for d in dirnames if d not in DEFAULT_EXCLUDE_DIRS
-                    and not StorageManager._dir_excluded(root, d, src, patterns)
-                )
-                for fname in sorted(filenames):
-                    fpath = Path(root) / fname
-                    rel = fpath.relative_to(src).as_posix()
-                    if StorageManager._file_excluded(rel, patterns):
-                        continue
-                    try:
-                        size = fpath.stat().st_size
-                    except OSError:
-                        continue
-                    original_bytes += size
-                    tf.add(fpath, arcname=rel, recursive=False)
+        try:
+            with tarfile.open(archive_path, "w:gz") as tf:
+                for root, dirnames, filenames in os.walk(src):
+                    dirnames[:] = sorted(
+                        d for d in dirnames if d not in DEFAULT_EXCLUDE_DIRS
+                        and not StorageManager._dir_excluded(root, d, src, patterns)
+                    )
+                    for fname in sorted(filenames):
+                        fpath = Path(root) / fname
+                        rel = fpath.relative_to(src).as_posix()
+                        if StorageManager._file_excluded(rel, patterns):
+                            continue
+                        try:
+                            size = fpath.stat().st_size
+                        except OSError:
+                            continue
+                        original_bytes += size
+                        tf.add(fpath, arcname=rel, recursive=False)
+        except OSError as exc:
+            # ENOSPC/đĩa đầy giữa chừng: dọn archive nửa chừng để không để
+            # lại file rác trong _archives/, rồi báo lỗi có chủ đích.
+            try:
+                archive_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise StorageError(
+                f"Không thể đóng gói workspace '{src.name}': {exc}"
+            ) from exc
 
         archived_bytes = archive_path.stat().st_size
         ratio = (

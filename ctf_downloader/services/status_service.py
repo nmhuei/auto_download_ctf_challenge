@@ -313,7 +313,9 @@ class StatusService:
                 if not line.strip():
                     break
                 lines.append(line)
-        except EOFError:
+        except (EOFError, OSError):
+            # stdin đóng/không đọc được (EOF, pipe kín, output bị capture):
+            # coi như hết input, trả những dòng đã nhập.
             pass
         return "\n".join(lines).strip()
 
@@ -340,7 +342,9 @@ class StatusService:
         name = meta.get('name', target)
 
         def _mut(st):
-            st["notes"] = "" if remove else text
+            # Closure trễ ràng buộc: đọc ``content`` LÚC GỌI (đã gán từ argv
+            # hoặc prompt ở dưới) — dùng ``text`` gốc sẽ lưu None/rỗng.
+            st["notes"] = "" if remove else content
             return st
 
         try:
