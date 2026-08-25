@@ -248,6 +248,82 @@ class TestRankServicePath(unittest.TestCase):
         warn.assert_called_once()
         self.assertFalse((self.root / "RANKING.md").exists())
 
+    # ---- Diagnostic sweep: auth fail / platform không hỗ trợ scoreboard ----
+
+    def _make_service(self, platform):
+        """RankService thẳng (không qua facade) với platform giả."""
+        import ctf_downloader.services.rank_service as rs
+        with patch.object(rs, "create_session", return_value=MagicMock()), \
+             patch.object(rs.PlatformDetector, "detect_platform",
+                          return_value=platform):
+            return RankService(workspace_path=str(self.root),
+                               url="https://r.test")
+
+    def _diags(self, rd_mock):
+        return [c.args[0] for c in rd_mock.call_args_list]
+
+    def test_auth_fail_renders_warning_diagnostic_with_cookie_hint(self):
+        plat = MagicMock()
+        plat.authenticate.return_value = False
+        plat.fetch_scoreboard.return_value = {
+            "standings": [{"pos": 1, "name": "a", "score": 1}]}
+        svc = self._make_service(plat)
+
+        with patch("ctf_downloader.services.rank_service.render_diagnostic") as rd:
+            data = svc.fetch_ranking()
+
+        # Hành vi giữ nguyên: vẫn trả dữ liệu scoreboard công khai
+        self.assertEqual(data["standings"][0]["name"], "a")
+        warns = [d for d in self._diags(rd) if d.severity == "warning"]
+        self.assertTrue(warns)
+        self.assertTrue(any("cookie" in h.lower()
+                            for d in warns for h in d.hints))
+
+    def test_missing_scoreboard_support_raises_with_public_hint(self):
+        plat = MagicMock()
+        plat.authenticate.return_value = True
+        del plat.fetch_scoreboard          # platform không có API scoreboard
+        svc = self._make_service(plat)
+
+        with patch("ctf_downloader.services.rank_service.render_diagnostic") as rd:
+            with self.assertRaises(AttributeError):
+                svc.fetch_ranking()        # giữ hành vi cũ: raise -> CLI exit 1
+
+        errs = [d for d in self._diags(rd) if d.severity == "error"]
+        self.assertTrue(errs)
+        self.assertTrue(any("scoreboard công khai" in h
+                            for d in errs for h in d.hints))
+
+    def test_capability_scoreboard_false_hints_and_continues(self):
+        plat = MagicMock()
+        plat.authenticate.return_value = True
+        plat.info.capabilities = {"scoreboard": False}   # contract: platform.info
+        plat.fetch_scoreboard.return_value = {"standings": []}
+        svc = self._make_service(plat)
+
+        with patch("ctf_downloader.services.rank_service.render_diagnostic") as rd:
+            data = svc.fetch_ranking()
+
+        self.assertEqual(data, {"standings": []})   # flow đi tiếp như cũ
+        self.assertTrue(any("scoreboard công khai" in h
+                            for d in self._diags(rd) for h in d.hints))
+
+    def test_fetch_scoreboard_error_renders_diagnostic_and_reraises(self):
+        plat = MagicMock()
+        plat.authenticate.return_value = True
+        plat.fetch_scoreboard.side_effect = ConnectionError("reset by peer")
+        svc = self._make_service(plat)
+
+        with patch("ctf_downloader.services.rank_service.render_diagnostic") as rd:
+            with self.assertRaises(ConnectionError):   # giữ hành vi cũ: raise
+                svc.fetch_ranking()
+
+        errs = [d for d in self._diags(rd) if d.severity == "error"]
+        self.assertTrue(errs)
+        self.assertIn("ConnectionError", errs[0].cause)
+        self.assertTrue(any("kết nối mạng" in h for d in errs for h in d.hints))
+
+
 
 if __name__ == "__main__":
     unittest.main()

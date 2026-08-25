@@ -107,6 +107,29 @@ class PullService:
         ))
 
     @staticmethod
+    def _render_workspace_write_failure(exc: Exception) -> None:
+        """Render Diagnostic khi không tạo/ghi được thư mục workspace."""
+        render_diagnostic(Diagnostic(
+            "error",
+            "Không ghi được workspace",
+            cause=f"{type(exc).__name__}: {exc}",
+            hints=("kiểm tra quyền ghi và dung lượng đĩa trống của thư mục đích",
+                   "chọn thư mục output khác nếu đường dẫn hiện tại bị khoá"),
+        ))
+
+    @staticmethod
+    def _render_total_download_failure(failed: int, total: int) -> None:
+        """Render Diagnostic khi TOÀN BỘ challenge trong lượt pull thất bại
+        (lỗi per-challenge vẫn log riêng như cũ — đây là tổng kết nghiêm trọng)."""
+        render_diagnostic(Diagnostic(
+            "error",
+            f"Tải thất bại trên toàn bộ {failed}/{total} challenge",
+            hints=("kiểm tra kết nối mạng và cookie đăng nhập",
+                   *_DOCTOR_HINTS,
+                   "thử chạy lại với '-j 1' nếu platform rate-limit"),
+        ))
+
+    @staticmethod
     def run(config: DownloaderConfig,
             session: Optional[Any] = None) -> Dict[str, Any]:
         """Tải toàn bộ challenge của giải về workspace.
@@ -187,8 +210,16 @@ class PullService:
         Logger.print_table("CTF Challenges Overview", ["Category", "Count"], rows)
 
         # 4. Process Each Challenge
-        os.makedirs(config.output_dir, exist_ok=True)
+        try:
+            os.makedirs(config.output_dir, exist_ok=True)
+        except OSError as exc:
+            PullService._render_workspace_write_failure(exc)
+            return {"ok": False, "output_dir": config.output_dir,
+                    "summary_file": None, "total_files": 0,
+                    "challenges_processed": 0,
+                    "elapsed_seconds": time.time() - start_time}
         all_download_results: Dict[Any, List[Dict[str, Any]]] = {}
+        failed_challenges = 0
 
         with thread_local_sessions(master) as get_session:
             with Progress(
@@ -223,8 +254,13 @@ class PullService:
                         except Exception as exc:
                             Logger.error(f"Error processing '{chall.name}': {exc}")
                             all_download_results[chall.id] = []
+                            failed_challenges += 1
                         finally:
                             progress.advance(task_id)
+
+            if failed_challenges and failed_challenges == len(challenges):
+                PullService._render_total_download_failure(
+                    failed_challenges, len(challenges))
 
         # 5. Generate Top-level Summary
         Logger.info("Generating global SUMMARY.md and challenges.json...")
@@ -449,7 +485,15 @@ class PullService:
             base_ctf_dir = os.path.expanduser("~/Workspace/CTF")
             config.output_dir = os.path.abspath(os.path.join(base_ctf_dir, folder_name))
         output_dir = config.output_dir
-        os.makedirs(output_dir, exist_ok=True)
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except OSError as exc:
+            PullService._render_workspace_write_failure(exc)
+            return {"ok": False, "output_dir": output_dir,
+                    "summary_file": None, "total_files": 0,
+                    "new": 0, "updated": 0, "skipped": 0, "missing": 0,
+                    "challenges_processed": 0,
+                    "elapsed_seconds": time.time() - start_time}
 
         # generate_summary duyệt ctf_info.challenges — platform thật tự gắn;
         # platform giả/mock có thể bỏ trống nên bảo đảm danh sách khớp API.
@@ -499,6 +543,7 @@ class PullService:
                         break
 
         all_results: Dict[Any, List[Dict[str, Any]]] = {}
+        failed_downloads = 0
 
         # 3. Full pipeline (threaded) cho challenge mới + cần tải lại
         to_download = [(c, "new") for c in new_challs] + \
@@ -538,8 +583,13 @@ class PullService:
                             except Exception as exc:
                                 Logger.error(f"Error processing '{chall.name}': {exc}")
                                 all_results[chall.id] = []
+                                failed_downloads += 1
                             finally:
                                 progress.advance(task_id)
+
+            if failed_downloads and failed_downloads == len(to_download):
+                PullService._render_total_download_failure(
+                    failed_downloads, len(to_download))
 
         # 4. Cập nhật metadata động cho mọi challenge đã có (sequential, rẻ)
         attr_map = PullService._fetch_attribution_map(

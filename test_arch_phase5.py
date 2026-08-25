@@ -1226,6 +1226,44 @@ class TestPullServiceUIDiscipline(unittest.TestCase):
         self.assertIn("hint:", out)
         self.assertIn("ctf doctor -u <url>", out)
 
+    # ---- 1b. Diagnostic sweep: workspace không ghi được / fail tổng ----
+
+    def test_workspace_write_failure_renders_diagnostic(self):
+        fake_platform = self._fake_platform(n_challenges=1)
+
+        with mock.patch.object(self.pull_service.PlatformDetector,
+                               "detect_platform",
+                               return_value=fake_platform), \
+             mock.patch.object(self.pull_service.os, "makedirs",
+                               side_effect=OSError(13, "Permission denied")):
+            result = self.pull_service.PullService.run(self._config())
+
+        self.assertFalse(result["ok"])
+        out = self.stderr_buf.getvalue()
+        self.assertIn("error:", out)
+        self.assertIn("Không ghi được workspace", out)
+        self.assertIn("hint:", out)
+        self.assertIn("quyền ghi", out)          # hint hành động
+
+    def test_total_download_failure_renders_diagnostic_and_proceeds(self):
+        fake_platform = self._fake_platform(n_challenges=2)
+
+        with mock.patch.object(self.pull_service.PlatformDetector,
+                               "detect_platform",
+                               return_value=fake_platform), \
+             mock.patch.object(self.pull_service.PullService, "_full_process",
+                               side_effect=RuntimeError("boom")):
+            result = self.pull_service.PullService.run(self._config())
+
+        # Hành vi giữ nguyên: pipeline vẫn chạy tới hết (summary + ok=True),
+        # chỉ THÊM Diagnostic tổng kết thất bại toàn bộ.
+        self.assertTrue(result["ok"])
+        out = self.stderr_buf.getvalue()
+        self.assertIn("error:", out)
+        self.assertIn("Tải thất bại trên toàn bộ 2/2 challenge", out)
+        self.assertIn("kiểm tra kết nối mạng và cookie đăng nhập", out)
+        self.assertIn("-j 1", out)
+
     # ---- 2. Incremental update: diff summary +name/-name sorted ----
 
     def _seed_workspace(self):

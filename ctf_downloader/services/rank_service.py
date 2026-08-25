@@ -14,7 +14,16 @@ from ..platforms.detector import PlatformDetector
 from ..services.session_factory import create_session
 from ..storage.constants import LIVE_RANK_PREFIX
 from ..storage.workspace_repo import WorkspaceRepo
+from ..ui.diagnostics import Diagnostic, render as render_diagnostic
 from ..utils.logger import Logger, console
+
+#: Hint dùng chung cho vấn đề xác thực khi lấy scoreboard.
+_COOKIE_HINTS = (
+    "kiểm tra cookie/token còn hạn (lấy lại từ trình duyệt)",
+)
+
+#: Hint cho nền tảng không có bảng xếp hạng công khai.
+_NO_SCOREBOARD_HINT = "platform này chưa có scoreboard công khai"
 
 
 class RankService:
@@ -44,13 +53,61 @@ class RankService:
             return None
         return self.repo.resolve_platform_url()
 
+    def _render_auth_warning(self) -> None:
+        """Diagnostic cảnh báo xác thực thất bại (pipeline vẫn chạy —
+        scoreboard công khai vẫn lấy được, dữ liệu riêng của team thì không)."""
+        render_diagnostic(Diagnostic(
+            "warning",
+            "Xác thực thất bại — scoreboard có thể bị ẩn hoặc rút gọn với khách",
+            hints=_COOKIE_HINTS,
+        ))
+
     def fetch_ranking(self) -> Dict[str, Any]:
         Logger.info("Fetching live leaderboard and ranking from CTF platform...")
         try:
-            self.platform.authenticate()
+            auth_ok = self.platform.authenticate()
         except Exception:
-            pass
-        return self.platform.fetch_scoreboard()
+            auth_ok = None   # giữ hành vi cũ: lỗi authenticate không chặn flow
+        if auth_ok is False:
+            self._render_auth_warning()
+
+        fetcher = getattr(self.platform, "fetch_scoreboard", None)
+        if not callable(fetcher):
+            render_diagnostic(Diagnostic(
+                "error",
+                "Nền tảng không hỗ trợ bảng xếp hạng",
+                cause=f"platform {type(self.platform).__name__} thiếu "
+                      f"fetch_scoreboard()",
+                hints=(_NO_SCOREBOARD_HINT,),
+            ))
+            raise AttributeError(
+                f"{type(self.platform).__name__} does not support 'fetch_scoreboard'")
+
+        # Capability nói rõ không có scoreboard → báo trước rồi đi tiếp như cũ
+        # (base.fetch_scoreboard trả standings rỗng → panel "chưa có dữ liệu").
+        # Nguồn đúng là PlatformInfo do detector gắn lên platform (``.info``).
+        caps = getattr(getattr(self.platform, "info", None),
+                       "capabilities", None) or {}
+        if caps.get("scoreboard") is False:
+            render_diagnostic(Diagnostic(
+                "warning",
+                "Nền tảng này không hỗ trợ scoreboard công khai",
+                hints=(_NO_SCOREBOARD_HINT,
+                       *_COOKIE_HINTS),
+            ))
+
+        try:
+            return fetcher()
+        except Exception as exc:
+            render_diagnostic(Diagnostic(
+                "error",
+                "Lấy scoreboard thất bại",
+                cause=f"{type(exc).__name__}: {exc}" if str(exc)
+                      else type(exc).__name__,
+                hints=("kiểm tra kết nối mạng đến platform",
+                       *_COOKIE_HINTS),
+            ))
+            raise
 
     def display_and_update(self, top_n: int = 15, update_docs: bool = True) -> Dict[str, Any]:
         data = self.fetch_ranking()
