@@ -264,7 +264,7 @@ class CTFdPlatform(BasePlatform):
             for index, item in enumerate(raw_challs, start=1):
                 chall_id = item.get("id")
                 name = item.get("name", f"Challenge_{chall_id}")
-                category = item.get("category", "Misc").strip() or "Misc"
+                category = (item.get("category") or "Misc").strip() or "Misc"
                 value = item.get("value", 0)
                 solved_by_me = item.get("solved_by_me", False) or (chall_id in team_solves)
                 solves_count = item.get("solves", None)

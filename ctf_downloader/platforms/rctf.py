@@ -34,6 +34,17 @@ def probe_rctf_challs(origin: str, session, info, done: set) -> bool:
           probes=(probe_rctf_challs,),
           supports_scoreboard=True)
 class RCTFPlatform(BasePlatform):
+    _last_verdict: str = "unknown"
+
+    @property
+    def last_verdict(self) -> str:
+        """Verdict lần submit gần nhất (correct|incorrect|unknown|ratelimited)."""
+        return self._last_verdict
+
+    @last_verdict.setter
+    def last_verdict(self, value: str) -> None:
+        self._last_verdict = value
+
     def __init__(self, base_url: str, session: requests.Session):
         super().__init__(base_url, session)
         self.ctf_info.platform_type = "rctf"
@@ -137,7 +148,7 @@ class RCTFPlatform(BasePlatform):
             for item in raw_challs:
                 chall_id = item.get("id")
                 name = item.get("name", f"Challenge_{chall_id}")
-                category = item.get("category", "Misc").strip() or "Misc"
+                category = (item.get("category") or "Misc").strip() or "Misc"
                 points = item.get("points", 0)
                 author = item.get("author")
                 description = item.get("description", "")
@@ -222,9 +233,11 @@ class RCTFPlatform(BasePlatform):
                 self.last_verdict = "unknown"
                 return False, "🚫 Phiên xác thực hết hạn hoặc token không hợp lệ."
             else:
-                if resp.status_code == 200:
+                # HTTP 200 chỉ tính ĐÚNG khi kind thuộc họ 'good*'; kind lạ/
+                # thiếu -> unknown (không đánh dấu solved oan — C10-03).
+                if resp.status_code == 200 and kind.startswith("good"):
                     self.last_verdict = "correct"
-                    return True, f"✅ Đã nhận submission: {message or kind}"
+                    return True, f"🎉 Correct flag! {message or kind}"
                 self.last_verdict = "unknown"
                 return False, f"Máy chủ trả HTTP {resp.status_code}: {message or kind or resp.text[:100]}"
 

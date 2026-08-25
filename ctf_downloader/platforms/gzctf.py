@@ -171,8 +171,20 @@ def gzctf_probe_captcha(platform) -> Optional[Dict[str, Any]]:
         if not chal_id:
             raise PlatformRegisterUnsupported(
                 f"PowChallenge thiếu id/challenge: {chal}")
+        raw_diff = chal.get("difficulty")
+        try:
+            difficulty = int(raw_diff or 0)
+        except (TypeError, ValueError):
+            try:
+                difficulty = int(float(raw_diff))
+            except (TypeError, ValueError):
+                # difficulty dị ("easy", object...) -> từ chối sạch, không rò
+                # rẽ exception lạ ra ngoài hợp đồng register (C10-04).
+                raise PlatformRegisterUnsupported(
+                    f"⚠️ PowChallenge difficulty không hợp lệ ({raw_diff!r}) — "
+                    f"đăng ký thủ công tại {origin}/register.")
         return {"challenge_id": chal_id,
-                "difficulty": int(chal.get("difficulty") or 0)}
+                "difficulty": difficulty}
 
     # Loại captcha khác/không rõ -> an toàn là dừng
     raise PlatformRegisterUnsupported(
@@ -400,7 +412,7 @@ class GZCTFPlatform(BasePlatform):
             for category_name, chall_list in raw_categories.items():
                 for item in chall_list:
                     chall_id = item.get("id")
-                    title = item.get("title", f"Challenge_{chall_id}").strip()
+                    title = (item.get("title") or f"Challenge_{chall_id}").strip()
                     score = item.get("score", 0)
                     solved_count = item.get("solved", 0)
                     is_solved = chall_id in solved_chall_ids
@@ -686,8 +698,12 @@ class GZCTFPlatform(BasePlatform):
         my_item = None
         confirmed_by_user = False
         for item in items or []:
-            sols = item.get("solvedChallenges") or []
-            if profile and any(s.get("userName") == profile for s in sols):
+            if not isinstance(item, dict):
+                continue
+            sols = item.get("solvedChallenges")
+            if not isinstance(sols, list):
+                sols = []
+            if profile and any(isinstance(s, dict) and s.get("userName") == profile for s in sols):
                 my_item = item
                 confirmed_by_user = True
                 break
@@ -714,7 +730,12 @@ class GZCTFPlatform(BasePlatform):
             self._attribution_from_details(cache)
             return
 
-        for sol in my_item.get("solvedChallenges") or []:
+        my_sols = my_item.get("solvedChallenges")
+        if not isinstance(my_sols, list):
+            my_sols = []
+        for sol in my_sols:
+            if not isinstance(sol, dict):
+                continue
             cid = sol.get("id")
             if cid is None:
                 continue
@@ -734,7 +755,10 @@ class GZCTFPlatform(BasePlatform):
         cache = getattr(self, "_solve_attr_cache", None)
         if cache is None:
             cache = self._solve_attr_cache = {}
-            self._fetch_all_attribution(cache)
+            try:
+                self._fetch_all_attribution(cache)
+            except Exception:
+                pass  # hợp đồng base.py: KHÔNG BAO GIỜ raise — trả phần đã có
         return {orig: cache[k] for k, orig in wanted.items() if k in cache}
 
     def fetch_scoreboard(self) -> Dict[str, Any]:
