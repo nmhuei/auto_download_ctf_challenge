@@ -3,7 +3,8 @@ import os
 from collections import defaultdict
 from typing import List, Dict, Any
 from ..platforms.base import Challenge, CTFInfo
-from ..storage.constants import DEFAULT_CATEGORY, SOLVED_EMOJI_DONE, SUMMARY_FILES_LINE
+from ..services.status_service import ROW_GLYPHS
+from ..storage.constants import DEFAULT_CATEGORY, SUMMARY_FILES_LINE
 from ..storage.fileio import atomic_write_text
 from ..storage.workspace_repo import WorkspaceRepo
 from ..utils.sanitize import sanitize_folder_name
@@ -109,7 +110,13 @@ class SummaryGenerator:
                 files_str = f"{succ_files} file(s)" if succ_files > 0 else "-"
                 
                 solves_str = str(c.solves_count) if c.solves_count is not None else "-"
-                status_str = SOLVED_EMOJI_DONE if c.solved_by_me else "⏳ Unsolved"
+                # Spec status-model §6 (spec-audit GAP L): cột Status dùng bộ
+                # glyph chung tầng phosphor ROW_GLYPHS (status_service.py) thay
+                # emoji tự chọn ("✅ Solved"/"⏳ Unsolved"). Glyph là text thuần
+                # trong cell — không phá bảng markdown; bỏ phần style màu.
+                _G = ROW_GLYPHS["solve"]
+                status_str = (f"{_G['solved_by_me'][0]} Solved" if c.solved_by_me
+                              else f"{_G['unsolved'][0]} Unsolved")
                 
                 lines.append(f"| **[{c.name}]({rel_path})** | {c.points} | {solves_str} | {files_str} | {status_str} | [`{clean_cat}/{clean_name}`]({clean_cat}/{clean_name}) |")
             lines.append("")
