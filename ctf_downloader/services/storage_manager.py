@@ -414,13 +414,14 @@ class StorageManager:
         # archive lỗi (regression f8f94ea: không để lại rác).
         try:
             with locked_path(archive_path):
-                fd, tmp_name = tempfile.mkstemp(
-                    dir=str(dest), prefix=archive_path.name + ".",
-                    suffix=".tar.gz.tmp",
-                )
-                os.close(fd)
-                tmp_path = Path(tmp_name)
+                tmp_path: Optional[Path] = None
                 try:
+                    fd, tmp_name = tempfile.mkstemp(
+                        dir=str(dest), prefix=archive_path.name + ".",
+                        suffix=".tar.gz.tmp",
+                    )
+                    os.close(fd)
+                    tmp_path = Path(tmp_name)
                     with tarfile.open(tmp_path, "w:gz") as tf:
                         for root, dirnames, filenames in os.walk(src):
                             dirnames[:] = sorted(
@@ -442,21 +443,25 @@ class StorageManager:
                                 tf.add(fpath, arcname=rel, recursive=False)
                     os.replace(tmp_path, archive_path)
                 except BaseException:
-                    # ENOSPC/lỗi giữa chừng: dọn tmp để không để lại rác.
+                    # ENOSPC/lỗi giữa chừng lẫn Ctrl-C: dọn tmp + lockfile
+                    # TRONG LÚC CÒN GIỮ KHÓA (review-6 LOW) — unlink sau khi
+                    # unlocked sẽ đua với process chờ vừa được grant +
+                    # re-validate trên inode cũ; BaseException phải đi qua
+                    # đây nữa thì Ctrl-C không sót .lock. Re-raise nguyên
+                    # vẹn (StorageError chỉ chuyển cho OSError ở ngoài).
+                    if tmp_path is not None:
+                        try:
+                            tmp_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
                     try:
-                        tmp_path.unlink(missing_ok=True)
+                        archive_path.with_name(
+                            archive_path.name + ".lock").unlink(
+                                missing_ok=True)
                     except OSError:
                         pass
                     raise
         except OSError as exc:
-            # ENOSPC/đĩa đầy giữa chừng hoặc khóa/ghi thất bại: locked_path
-            # giữ lại lockfile khi caller raise — dọn nốt để _archives sạch
-            # hoàn toàn (tmp đã được dọn ở khối trong), rồi báo lỗi có chủ đích.
-            try:
-                archive_path.with_name(archive_path.name + ".lock").unlink(
-                    missing_ok=True)
-            except OSError:
-                pass
             raise StorageError(
                 f"Không thể đóng gói workspace '{src.name}': {exc}"
             ) from exc

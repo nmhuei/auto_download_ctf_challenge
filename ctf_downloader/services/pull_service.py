@@ -937,11 +937,15 @@ class PullService:
             try:
                 PullService._mark_removed_from_server(repo, mp,
                                                       reraise_oserror=True)
+                # Review-6 LOW: chỉ liệt kê "removed" khi persist THÀNH CÔNG
+                # — lỗi ghi (OSError) đã lộ qua write_errors, báo removed ở
+                # đây là nói dối bảng kết quả.
+                removed_local.append({"id": m.get("id"),
+                                      "name": m.get("name"),
+                                      "category": m.get("category"),
+                                      "path": str(mp)})
             except OSError as exc:
                 write_errors.append(f"mark-removed {mp}: {exc}")
-            removed_local.append({"id": m.get("id"), "name": m.get("name"),
-                                  "category": m.get("category"),
-                                  "path": str(mp)})
 
         verdict = PullService.verify(repo, platform)
         drift = verdict["unsolved_locally_solved_remotely"]
