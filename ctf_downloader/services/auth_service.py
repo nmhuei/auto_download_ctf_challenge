@@ -14,7 +14,9 @@ class AuthService:
     ) -> Tuple[Optional[str], Optional[str]]:
         """Trả về (cookie, token) cho workspace.
 
-        Ưu tiên: tham số CLI > global config auth map[key=os.path.abspath(workspace)].
+        Ưu tiên: tham số CLI > global config auth map[key=os.path.abspath(workspace)]
+        > fallback tra theo platform URL của workspace (entry do register lưu
+        khi --workspace không phải dir thật — R1).
         Nếu cookie_arg trỏ tới file thật thì đọc nội dung file làm cookie.
         """
         if cookie_arg:
@@ -26,7 +28,41 @@ class AuthService:
         abs_ws = os.path.abspath(workspace)
         cfg = load_global_config()
         auth_map = cfg.get('auth', {})
-        if abs_ws in auth_map:
-            saved = auth_map[abs_ws]
+        saved = auth_map.get(abs_ws)
+        if saved is None:
+            saved = AuthService._url_keyed_entry(workspace, auth_map)
+        if saved is not None:
             return saved.get('cookie'), token_arg or saved.get('token')
         return None, token_arg
+
+    @staticmethod
+    def _url_keyed_entry(workspace: str,
+                         auth_map: dict) -> Optional[dict]:
+        """R1 fallback: entry register lưu dưới key URL phải đọc lại được.
+
+        - Workspace là dir thật -> tra đúng platform URL của workspace qua
+          WorkspaceRepo.resolve_platform_url() (import muộn tránh vòng phụ thuộc).
+        - Workspace không tồn tại trên đĩa (path ảo) -> không có cách tra URL
+          chính xác; chấp nhận entry URL-keyed DUY NHẤT trong auth map.
+        """
+        if not isinstance(auth_map, dict) or not auth_map:
+            return None
+        url = None
+        if os.path.isdir(workspace):
+            try:
+                from ..storage.workspace_repo import WorkspaceRepo
+                url = WorkspaceRepo(workspace).resolve_platform_url()
+            except Exception:
+                return None
+            if not url:
+                return None
+            for key in (url, str(url).rstrip('/')):
+                entry = auth_map.get(key)
+                if isinstance(entry, dict):
+                    return entry
+            return None
+        url_entries = [v for k, v in auth_map.items()
+                       if isinstance(k, str)
+                       and k.startswith(('http://', 'https://'))
+                       and isinstance(v, dict)]
+        return url_entries[0] if len(url_entries) == 1 else None

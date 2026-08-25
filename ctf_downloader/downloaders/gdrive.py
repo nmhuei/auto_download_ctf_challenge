@@ -1,6 +1,7 @@
 import re
 import requests
 from typing import Optional, Tuple
+from ..services.session_factory import create_session
 from ..utils.logger import Logger
 from ..utils.sanitize import extract_filename_from_headers
 from .http_downloader import DownloadFailed
@@ -80,7 +81,7 @@ class GDriveDownloader:
         Raises DownloadFailed nếu phát hiện HTML hết quota.
         """
         if session is None:
-            session = requests.Session()
+            session = create_session()   # R5: mọi session đi qua factory
 
         file_id = GDriveDownloader.extract_file_id(url)
         if not file_id:

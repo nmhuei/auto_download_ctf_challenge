@@ -58,6 +58,8 @@ CHALLENGE_BURST_DURATION = 120       # ...trong 2 phút
 BACKOFF_CAP = 600                    # backoff ×2 cap 600s
 JITTER_FRACTION = 0.2                # ±20%
 CLOCK_SKEW_WARN_SECONDS = 120
+MAX_TRUSTED_SKEW_SECONDS = 21600     # R4: |offset| > 6h -> Date header bị coi
+                                     # là giả/hỏng, KHÔNG hiệu chỉnh wall_now
 GRACE_DEFAULT = 300                  # wall > end+grace → final sync rồi exit
 
 # Mini-scoreboard dùng chung meter ramp amber 3 mốc (than hồng → hổ phách →
@@ -126,7 +128,9 @@ class PollScheduler:
 
     def _effective_interval(self, name: str) -> float:
         t = self._tasks[name]
-        return min(t["interval"] * t["mult"], BACKOFF_CAP)
+        # Cap chỉ chặn TĂNG vô hạn — không được cắt ngắn interval gốc đã
+        # đăng ký (R3: interval > cap phải giữ nguyên, không bị kéo về cap).
+        return min(t["interval"] * t["mult"], max(t["interval"], BACKOFF_CAP))
 
     def due(self, task: str, now: Optional[float] = None) -> bool:
         if task not in self._tasks:
@@ -149,11 +153,14 @@ class PollScheduler:
         return t["deadline"]
 
     def penalize(self, task: str) -> float:
-        """Backoff ×2 cap 600s (tick lỗi). Trả effective interval mới."""
+        """Backoff ×2 cap 600s (tick lỗi). Trả effective interval mới.
+        Mult floor 1.0 (R3): interval > cap thì tick lỗi KHÔNG được làm
+        task chạy sớm hơn lịch gốc."""
         t = self._tasks.get(task)
         if t is None:
             return BACKOFF_CAP
-        t["mult"] = min(t["mult"] * 2, BACKOFF_CAP / max(1.0, t["interval"]))
+        t["mult"] = min(t["mult"] * 2,
+                        max(1.0, BACKOFF_CAP / max(1.0, t["interval"])))
         return self._effective_interval(task)
 
     def reward(self, task: str) -> None:
@@ -199,8 +206,21 @@ class WindowGuard:
 
     def apply_server_offset(self, offset_seconds: float) -> None:
         """Hiệu chỉnh wall-clock theo lệch Date header server (F-3):
-        offset > 0 nghĩa là server nhanh hơn local."""
-        self._server_offset = float(offset_seconds)
+        offset > 0 nghĩa là server nhanh hơn local.
+
+        R4: |offset| > MAX_TRUSTED_SKEW_SECONDS (6h) bị TỪ CHỐI — Date
+        header lệch cực đại (năm 2099...) là giả/hỏng; tin mù quáng sẽ đẩy
+        wall_now vài năm và kết thúc oan event window (ENDED + exit 0).
+        """
+        offset_seconds = float(offset_seconds)
+        if abs(offset_seconds) > MAX_TRUSTED_SKEW_SECONDS:
+            Logger.warning(
+                f"🕐 Bỏ qua hiệu chỉnh clock-skew {offset_seconds:+.0f}s — "
+                f"lệch vượt ngưỡng tin cậy "
+                f"({MAX_TRUSTED_SKEW_SECONDS // 3600}h), nghi ngờ Date "
+                f"header giả/lỗi mạng.")
+            return
+        self._server_offset = offset_seconds
 
     @staticmethod
     def _ts(dt: Optional[_dt.datetime]) -> Optional[float]:
@@ -636,6 +656,12 @@ class WatchService:
                 end = end or times.end_utc
         if start is None and end is None:
             return None
+        if start is not None and end is not None and start >= end:   # R6
+            Logger.warning(
+                f"⚠️ Event window bất thường: start ({start:%Y-%m-%d %H:%M} "
+                f"UTC) không sớm hơn end ({end:%Y-%m-%d %H:%M} UTC) — kiểm "
+                f"tra lại --start/--end hoặc dữ liệu giải; auto-sync sẽ "
+                f"không bao giờ ở trạng thái LIVE.")
         grace = int(auto_cfg.get("grace_seconds", GRACE_DEFAULT))
         self.guard = WindowGuard(start, end, grace_seconds=grace)
         self.state["window"] = {
@@ -830,6 +856,8 @@ class WatchService:
         if offset is not None and abs(offset) > CLOCK_SKEW_WARN_SECONDS:
             Logger.warning(f"🕐 Đồng hồ hệ thống lệch {offset:+.0f}s so với "
                            f"server — kiểm tra NTP/clock sync.")
+        # R4: ngưỡng tin cậy do WindowGuard.apply_server_offset tự thi hành
+        # (offset điên bị từ chối + cảnh báo tại đó).
         if offset is not None and self.guard is not None:
             self.guard.apply_server_offset(offset)
         return offset
@@ -841,8 +869,32 @@ class WatchService:
         ptype = getattr(getattr(self.platform, "ctf_info", None), "platform_type", "")
         if ptype != "ctfd":
             return []     # platform khác: chưa có endpoint công khai ổn định
-        resp = self.platform.session.get(
-            f"{self.platform.base_url}/api/v1/notices", timeout=10)
+        # Spec §5: ETag/304 cache per endpoint — gửi lại If-None-Match đã lưu
+        url = f"{self.platform.base_url}/api/v1/notices"
+        etag_cache = self.state.setdefault("etag_cache", {})
+        req_headers = {}
+        saved_etag = etag_cache.get("notices")
+        if saved_etag:
+            req_headers["If-None-Match"] = saved_etag
+        resp = self.platform.session.get(url, timeout=10,
+                                         headers=req_headers)
+        resp_headers = getattr(resp, "headers", None) or {}
+        if resp.status_code == 304:
+            return []     # endpoint không đổi — dùng kết quả của kỳ trước
+        if resp.status_code == 429:
+            # Spec §5: tôn trọng Retry-After của server thay vì backoff mù
+            try:
+                delay = max(1.0, float(resp_headers.get("Retry-After")))
+            except (TypeError, ValueError):
+                delay = self.scheduler.penalize("notices")
+            else:
+                self.scheduler.set_interval("notices",
+                                            min(delay, BACKOFF_CAP))
+            return [f"⏳ notices bị rate-limit (429) — lùi "
+                    f"{delay:.0f}s theo Retry-After."]
+        new_etag = resp_headers.get("ETag")
+        if new_etag:
+            etag_cache["notices"] = new_etag
         if resp.status_code != 200:
             return []
         data = resp.json() or {}

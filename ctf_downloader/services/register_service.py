@@ -273,6 +273,16 @@ class RegisterService:
             self._print_credentials({**creds, "url": url, "email": reg_email},
                                     created=False)
             raise
+        except Exception as exc:
+            # Van-an-toàn R2: exception thường giữa flow (mạng/tempmail chết
+            # giữa xác minh email...) — account CÓ THỂ đã tồn tại server-side
+            # nên credentials KHÔNG được mất, và attempt vẫn phải được ghi
+            # nhận để rate-limit không bị bypass.
+            Logger.error(f"Register lỗi giữa chừng: {str(exc)[:200]}")
+            self._print_credentials({**creds, "url": url, "email": reg_email},
+                                    created=False)
+            self._save_cfg(self._record_attempt(cfg, url))
+            raise
 
         # Van-an-toàn: ghi nhận MỌI lần attempt để siết rate limit.
         self._save_cfg(self._record_attempt(cfg, url))
