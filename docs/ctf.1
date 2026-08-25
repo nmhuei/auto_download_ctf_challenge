@@ -234,10 +234,60 @@ là Challenge ID hoặc Name;
 .B \-w
 chọn workspace.
 .TP
+.B config " [" \fIkey\fR "] [" \fIvalue\fR "]"
+Xem/đặt cấu hình toàn cục (hiện có
+.BR auto-sync ).
+Chi tiết và precedence hai tầng xem mục
+.BR CONFIG .
+.TP
 .B menu " (ui | console)"
 Console interactive đầy đủ (dashboard CTF suite).
 Tuỳ chọn:
 .BR \-w ", " \-c ", " \-t .
+.SH CONFIG
+Cấu hình toàn cục xem/đặt qua
+.BR config :
+.TP
+.B ctf config
+Liệt kê mọi key biết được kèm giá trị hiện tại.
+.TP
+.BI "ctf config " key
+Xem giá trị hiện tại của một key.
+.TP
+.BI "ctf config " key " " value
+Đặt giá trị mới và lưu vào global config.
+Hiện hỗ trợ duy nhất
+.B auto-sync
+với
+.B on
+|
+.BR off :
+bật/tắt auto-sync mặc định của
+.B watch
+cho mọi workspace.
+Key lạ hoặc giá trị lạ thoát với mã 2.
+.PP
+Precedence hai tầng khi
+.B watch
+quyết định auto-sync:
+global config là giá trị
+.B MẶC ĐỊNH
+cho mọi workspace; khối
+.I auto_sync.enabled
+trong
+.I <workspace>/.ctf/config.json
+(wizard của
+.B watch
+ghi) là
+.B OVERRIDE
+— workspace thắng khi có key bool.
+Thiếu cả hai hoặc dữ liệu lạ → BẬT (hành vi cũ).
+.PP
+Ví dụ — tắt auto-sync toàn cục, nhưng giữ bật cho một workspace:
+.nf
+    $ ctf config auto-sync off
+    $ ctf config auto-sync          # xem: off (lưu trong global)
+.fi
 .SH FILES
 .TP
 .I ~/.config/ctf_toolkit/config.json
@@ -245,17 +295,23 @@ Cấu hình toàn cục: bản đồ
 .I workspaces
 (theo đường dẫn),
 .I default_workspace
-và
+,
 .I auth
 (auth map chứa credentials theo workspace/URL do
 .B register
-lưu).
+lưu) và các giá trị đặt qua
+.B config
+(vd
+.IR auto_sync.enabled ).
 .TP
 .I <workspace>/.ctf/config.json
 Cấu hình riêng workspace: event window và SyncPolicy
 (wizard của
 .B watch
 ghi đúng một lần).
+.I auto_sync.enabled
+tại đây OVERRIDE giá trị toàn cục — xem mục
+.BR CONFIG .
 .TP
 .I <workspace>/challenges.json
 Metadata tổng của giải (points/solves/solved/status).

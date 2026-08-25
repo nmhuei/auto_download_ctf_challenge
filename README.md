@@ -57,6 +57,7 @@ Credentials được lưu trong **auth map** tại `~/.config/ctf_toolkit/config
 | `sniper` | Preload flag, nộp ngay giờ G | `ctf sniper --start-at "2026-09-01T08:00:00+07:00"` |
 | `serve` | Dashboard web local (POST submit qua gate CLI) | `ctf serve --port 8689` |
 | `open` | Mở thư mục challenge trong file manager | `ctf open 12` |
+| `config` | Xem/đặt cấu hình toàn cục — global là mặc định, workspace `.ctf/config.json` override | `ctf config auto-sync off` |
 | `register` | Tạo tài khoản + lưu auth map | `ctf register -u https://ctf.example.com --tempmail` |
 | `menu` | Interactive console đầy đủ | `ctf menu` |
 
