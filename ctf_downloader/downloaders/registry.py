@@ -1,9 +1,10 @@
 """Registry các downloader theo link_type.
 
-Thêm service tải mới: viết class handler (có `get_download_stream` kiểu
-(stream, expected_size) hoặc `download` kiểu mega) rồi trang trí
-`@register_downloader(...)`. DownloadManager tự tra bảng DOWNLOADERS lúc tải —
-không cần sửa if/elif trong manager.
+Thêm service tải mới: viết class handler rồi trang trí `@register_downloader(...)`
+— handler trả stream khai báo `streams = True` + method `get_download_stream()`
+kiểu (stream, expected_size); handler tải trực tiếp khai báo method `download`
+kiểu mega. DownloadManager tự tra bảng DOWNLOADERS lúc tải (nhánh stream theo
+flag `streams`) — không cần sửa if/elif trong manager.
 """
 
 from typing import Callable, Dict, Optional, Tuple, Type

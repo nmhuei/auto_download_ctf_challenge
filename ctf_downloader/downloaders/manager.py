@@ -133,8 +133,10 @@ class DownloadManager:
             fallback_name: Optional[str] = None
 
             # 1-3. Handler trả stream (Google Drive / Dropbox / Mediafire) —
-            #      mỗi handler tự pre-flight dung lượng của mình
-            if handler is not None and hasattr(handler, "get_download_stream"):
+            #      mỗi handler tự pre-flight dung lượng của mình.
+            #      Dispatch qua flag `streams = True` khai báo tường minh trên
+            #      class handler (không duck-typing hasattr(method)).
+            if handler is not None and getattr(handler, "streams", False):
                 stream, expected_size = handler.get_download_stream(url, session=self.session, timeout=self.timeout)
                 if handler is GDriveDownloader:
                     file_id = GDriveDownloader.extract_file_id(url)
@@ -143,7 +145,7 @@ class DownloadManager:
 
                 # Các nhánh trả stream: gate consent rồi lưu qua save_response_stream
                 if stream is None:
-                    return False, None, f"Failed to download via {link_type} handler (không lấy được stream tải trực tiếp)."
+                    return False, None, f"Tải thất bại qua handler {link_type} (không lấy được stream tải trực tiếp)."
 
                 if not self._confirm_large_download(url, expected_size):
                     self._close_quietly(stream)
@@ -156,8 +158,8 @@ class DownloadManager:
                     max_size=self.size_limit_bytes
                 )
                 if saved_path:
-                    return True, saved_path, f"Downloaded via {link_type} handler"
-                return False, None, f"Failed to download via {link_type} handler (lỗi khi ghi dữ liệu)."
+                    return True, saved_path, f"Đã tải qua handler {link_type}"
+                return False, None, f"Tải thất bại qua handler {link_type} (lỗi khi ghi dữ liệu)."
 
             # 4. Default: Direct / GitHub / GitLab / Discord / catbox / 0x0 / HTTP thuần
             expected_size = HttpDownloader.probe_content_length(url, session=self.session, timeout=self.timeout)
@@ -172,8 +174,8 @@ class DownloadManager:
                 max_size=self.size_limit_bytes
             )
             if saved_path:
-                return True, saved_path, "Direct download successful"
-            return False, None, "Failed to download file (HTTP status, connection error hoặc nội dung HTML)"
+                return True, saved_path, "Đã tải trực tiếp thành công"
+            return False, None, "Tải file thất bại (HTTP status, lỗi kết nối hoặc nội dung HTML)"
 
         except LargeFileSkipped as e:
             # Unknown-size: vượt ngưỡng phát hiện trong lúc stream -> đã ngắt sớm & dọn tmp
@@ -182,7 +184,7 @@ class DownloadManager:
             return False, None, str(e)
         except Exception as e:
             Logger.warning(f"Ngoại lệ khi tải {url}: {type(e).__name__}: {str(e)[:200]}")
-            return False, None, f"Exception during download: {type(e).__name__}: {str(e)[:200]}"
+            return False, None, f"Ngoại lệ khi tải: {type(e).__name__}: {str(e)[:200]}"
 
     # ------------------------------------------------------------------ #
     # Per-challenge orchestration

@@ -21,6 +21,7 @@ from ctf_downloader.extractors.link_extractor import LinkExtractor
 class FakeStreamHandler:
     """Handler giả trả stream như GDrive/Dropbox/Mediafire."""
 
+    streams = True  # flag dispatch tường minh (batch-3)
     calls = []
 
     @staticmethod
@@ -31,6 +32,8 @@ class FakeStreamHandler:
 
 class FakeSaveHandler:
     """Handler giả trả stream hợp lệ để đi tới save_response_stream."""
+
+    streams = True
 
     @staticmethod
     def get_download_stream(url, session=None, timeout=30):

@@ -9,6 +9,9 @@ from .registry import register_downloader
 
 @register_downloader("dropbox", domains=("dropbox.com",))
 class DropboxDownloader:
+    # Flag dispatch tường minh: handler trả stream qua get_download_stream()
+    streams = True
+
     @staticmethod
     def get_direct_url(url: str) -> str:
         """

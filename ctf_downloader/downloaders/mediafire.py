@@ -57,6 +57,9 @@ def _parse_size_number(raw: str) -> Optional[float]:
 
 @register_downloader("mediafire", domains=("mediafire.com",))
 class MediafireDownloader:
+    # Flag dispatch tường minh: handler trả stream qua get_download_stream()
+    streams = True
+
     @staticmethod
     def extract_quick_key(url: str) -> Optional[str]:
         """

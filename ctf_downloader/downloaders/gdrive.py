@@ -45,6 +45,9 @@ def _extract_confirm_token(html_text: str) -> Optional[str]:
 
 @register_downloader("gdrive", domains=("drive.google.com", "docs.google.com"))
 class GDriveDownloader:
+    # Flag dispatch tường minh: handler trả stream qua get_download_stream()
+    streams = True
+
     @staticmethod
     def extract_file_id(url: str) -> Optional[str]:
         """

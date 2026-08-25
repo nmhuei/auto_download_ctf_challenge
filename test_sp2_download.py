@@ -1111,5 +1111,74 @@ class TestDeferredMinorsBatch2(unittest.TestCase):
         self.assertEqual(repo.updates, ["/ws/Web/chall_a/metadata.json"])
 
 
+# ----------------------------------------------------------------------
+# Deferred-minors batch-3: dispatch nhánh stream qua class attribute
+# `streams = True` tường minh thay vì duck-typing hasattr(get_download_stream).
+# ----------------------------------------------------------------------
+
+class TestDeferredMinorsBatch3(unittest.TestCase):
+    """Manager rẽ nhánh stream dựa trên flag khai báo trên class handler."""
+
+    # --- 1. Handler trả stream phải khai báo flag tường minh ---
+    def test_stream_handlers_declare_explicit_flag(self):
+        from ctf_downloader.downloaders.gdrive import GDriveDownloader
+        from ctf_downloader.downloaders.mega import MegaDownloader
+
+        for cls in (GDriveDownloader, DropboxDownloader, MediafireDownloader):
+            self.assertIs(cls.streams, True,
+                          f"{cls.__name__} phải khai báo streams = True")
+        # Nhánh default HTTP và mega shell-out KHÔNG mang flag này
+        self.assertFalse(getattr(MegaDownloader, "streams", False))
+        self.assertFalse(getattr(HttpDownloader, "streams", False))
+
+    # --- 2. Dispatch theo flag, không soi method ---
+    def test_dispatch_routes_by_flag_not_duck_typing(self):
+        from ctf_downloader.downloaders import registry
+
+        mgr = DownloadManager(session=MagicMock(), size_limit_bytes=0)
+
+        class ProbeStreamHandler:
+            streams = True
+
+            @staticmethod
+            def get_download_stream(url, session=None, timeout=30):
+                return MagicMock(), 10  # (stream, expected_size)
+
+        class ProbePlainHandler:
+            pass  # không flag -> default HTTP branch dù chẳng có method nào
+
+        key_s, key_p = "_probe_streams_b3_", "_probe_plain_b3_"
+        registry.DOWNLOADERS[key_s] = ProbeStreamHandler
+        registry.DOWNLOADERS[key_p] = ProbePlainHandler
+        try:
+            # Có flag -> đi qua get_download_stream + save_response_stream
+            with patch(
+                "ctf_downloader.downloaders.manager.HttpDownloader.save_response_stream",
+                return_value="/tmp/probe.bin",
+            ) as save:
+                ok, path, _msg = mgr.download_url(
+                    "https://probe/x.bin", "/tmp",
+                    link_type=key_s, preferred_name="x.bin")
+            self.assertTrue(ok)
+            save.assert_called_once()
+
+            # Không flag -> nhánh HTTP default dù handler "trống trơn"
+            with patch(
+                "ctf_downloader.downloaders.manager.HttpDownloader.probe_content_length",
+                return_value=None,
+            ), patch(
+                "ctf_downloader.downloaders.manager.HttpDownloader.download_file",
+                return_value="/tmp/y.bin",
+            ) as dl:
+                ok, path, _msg = mgr.download_url(
+                    "https://probe/y.bin", "/tmp",
+                    link_type=key_p, preferred_name="y.bin")
+            self.assertTrue(ok)
+            dl.assert_called_once()
+        finally:
+            registry.DOWNLOADERS.pop(key_s, None)
+            registry.DOWNLOADERS.pop(key_p, None)
+
+
 if __name__ == "__main__":
     unittest.main()

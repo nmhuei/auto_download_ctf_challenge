@@ -1114,13 +1114,24 @@ class TestLockedUpdateJsonSymlink(TempWorkspaceCase):
         os.symlink(target, self.meta_path)
 
         from ctf_downloader.storage.fileio import locked_update_json
-        locked_update_json(self.meta_path, lambda m: {**m})
+        seen = {}
 
-        self.assertTrue((target.parent / "metadata.json.lock").exists(),
+        def mut(m):
+            # Đang dưới khóa: lockfile phải nằm cạnh ĐÍCH THẬT
+            seen["beside_target"] = (target.parent / "metadata.json.lock").exists()
+            seen["beside_link"] = (self.meta_path.parent / "metadata.json.lock").exists()
+            return {**m}
+
+        locked_update_json(self.meta_path, mut)
+
+        self.assertTrue(seen["beside_target"],
                         "lock phải tính trên đích thật (dùng chung lockfile "
                         "với caller đi đường dẫn khác)")
-        self.assertFalse(
-            (self.meta_path.parent / "metadata.json.lock").exists())
+        self.assertFalse(seen["beside_link"])
+        # Sau khi release + ghi thành công: lockfile được dọn sạch
+        self.assertFalse((target.parent / "metadata.json.lock").exists(),
+                         "lockfile phải được unlink sau khi release")
+        self.assertFalse((self.meta_path.parent / "metadata.json.lock").exists())
 
     def test_multiprocess_no_lost_update_through_symlink(self):
         """Nhiều process increment cùng counter qua symlink — không mất update."""
@@ -1333,6 +1344,86 @@ class TestHeaderPanelResponsive(TempWorkspaceCase):
         line = next(ln for ln in out.splitlines() if "NHỊP GIẢI" in ln)
         spark_line = out.splitlines()[out.splitlines().index(line) + 1]
         self.assertIn("⣀", spark_line)
+
+
+# ----------------------------------------------------------------------
+# Deferred-minors batch-3: dọn `.lock` sau khi locked_update_json thành công
+# ----------------------------------------------------------------------
+
+class TestLockfileCleanup(TempWorkspaceCase):
+    """Sau khi release lock + ghi atomically THÀNH CÔNG, `<name>.lock`
+    được unlink (try/except bỏ qua lỗi). Khi ghi THẤT BẤT, lockfile
+    được giữ lại — các waiter vẫn phối hợp trên cùng inode."""
+
+    def _meta(self):
+        self.meta_path.write_text(json.dumps({"n": 0}), encoding="utf-8")
+        return json.loads(self.meta_path.read_text(encoding="utf-8"))
+
+    def test_lockfile_removed_after_successful_update(self):
+        from ctf_downloader.storage.fileio import locked_update_json
+
+        self._meta()
+        result = locked_update_json(
+            self.meta_path, lambda m: {**m, "n": m.get("n", 0) + 1})
+
+        lock_path = pathlib.Path(str(self.meta_path) + ".lock")
+        self.assertEqual(result["n"], 1)
+        self.assertFalse(lock_path.exists(),
+                         "lockfile phải được dọn sau khi ghi thành công")
+        # Không rác tmp/bak/lock sót lại cho metadata.json
+        leftovers = [p.name for p in self.meta_path.parent.iterdir()
+                     if p.name.startswith("metadata.json.")
+                     and p.name != "metadata.json"]
+        self.assertEqual(leftovers, [], f"sót rác I/O: {leftovers}")
+
+    def test_lockfile_kept_when_write_fails(self):
+        from ctf_downloader.storage.fileio import locked_update_json
+
+        self._meta()
+        lock_path = pathlib.Path(str(self.meta_path) + ".lock")
+
+        with self.assertRaises(RuntimeError):
+            locked_update_json(self.meta_path,
+                               lambda m: (_ for _ in ()).throw(RuntimeError("boom")))
+
+        self.assertTrue(lock_path.exists(),
+                        "ghi thất bại -> giữ lockfile (waiter khác vẫn khóa đúng inode)")
+
+    def test_unlink_failure_is_silent(self):
+        from ctf_downloader.storage.fileio import locked_update_json
+
+        self._meta()
+        with patch("ctf_downloader.storage.fileio.os.unlink",
+                   side_effect=OSError("EBUSY")):
+            result = locked_update_json(
+                self.meta_path, lambda m: {**m, "n": 7})
+
+        self.assertEqual(result["n"], 7)
+        self.assertEqual(json.loads(self.meta_path.read_text())["n"], 7)
+
+    def test_multiprocess_still_consistent_with_cleanup(self):
+        """Cleanup lockfile không phá tính đúng đắn đa tiến trình."""
+        from ctf_downloader.storage.fileio import locked_update_json
+
+        target = self.root / "_shared" / "metadata.json"
+        target.parent.mkdir(exist_ok=True)
+        target.write_text(json.dumps({"n": 0}), encoding="utf-8")
+
+        root_dir = os.path.dirname(os.path.abspath(__file__))
+        script = (
+            "import sys; sys.path.insert(0, %r)\n"
+            "from ctf_downloader.storage.fileio import locked_update_json\n"
+            "for _ in range(10):\n"
+            "    locked_update_json(sys.argv[1], lambda m: {**m, 'n': m.get('n', 0) + 1})\n"
+        ) % root_dir
+
+        procs = [subprocess.Popen([sys.executable, "-c", script, str(target)])
+                 for _ in range(4)]
+        for p in procs:
+            self.assertEqual(p.wait(timeout=60), 0)
+
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["n"], 40)
+        self.assertFalse((target.parent / "metadata.json.lock").exists())
 
 
 if __name__ == "__main__":

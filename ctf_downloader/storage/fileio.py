@@ -57,6 +57,11 @@ def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, Non
     - BOM UTF-8 ở đầu file được tự động bỏ qua (utf-8-sig).
     - Gọi mutator(state); nếu mutator trả None thì giữ nguyên state.
     - Ghi lại bằng atomic write (trong phạm vi lock), trả về dict cuối cùng.
+    - Ghi THÀNH CÔNG: lockfile `<name>.lock` được unlink (lỗi unlink bỏ qua).
+      Unlink thực hiện TRƯỚC khi unlock, kèm re-validate inode sau mỗi lần
+      grant: process chờ dính inode mồ côi tự mở lại lockfile hiện hành thay
+      vì lọt vào vùng găng song song với process khác (tránh lost update).
+      Ghi THẤT BẠT: lockfile được giữ lại.
     - Nếu đích là symlink: resolve sang ĐÍCH THẬT trước khi tính lock path và
       ghi (nhất quán với atomic_write_text) — os.replace lên path symlink sẽ
       thay thế link bằng file thường, target gốc không bao giờ được cập nhật.
@@ -69,9 +74,25 @@ def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, Non
     p.parent.mkdir(parents=True, exist_ok=True)
     lock_path = p.with_name(p.name + ".lock")
 
-    with open(lock_path, "w") as lock_f:
+    while True:
+        lock_f = open(lock_path, "w")
         fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
         try:
+            # Re-validate: holder trước có thể vừa unlink lockfile (dọn cuối
+            # phiên) ngay trước khi ta được grant — khi đó flock của ta đang
+            # trên inode MỒ CÔI, không còn loại trừ lẫn nhau với process mở
+            # inode mới. Nếu lock path không trúng inode ta giữ -> bỏ lượt,
+            # mở lại theo inode hiện hành.
+            try:
+                st_path = os.stat(lock_path)
+                st_mine = os.fstat(lock_f.fileno())
+                live = (st_path.st_dev == st_mine.st_dev
+                        and st_path.st_ino == st_mine.st_ino)
+            except FileNotFoundError:
+                live = False
+            if not live:
+                continue
+
             raw = ""
             if p.exists():
                 try:
@@ -119,6 +140,16 @@ def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, Non
                     pass
                 raise
 
+            # Ghi thành công: dọn lockfile TRONG LÚC CÒN GIỮ KHÓA (unlink
+            # trước unlock). Process bị chặn trên inode này sẽ được grant
+            # sau khi ta unlock, thấy re-validate inode thất bại và tự mở
+            # lại lockfile hiện hành — nhờ vậy không có hai process nào cùng
+            # ở trong vùng găng trên hai inode khác nhau.
+            try:
+                os.unlink(lock_path)
+            except OSError:
+                pass
             return data
         finally:
             fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+            lock_f.close()
