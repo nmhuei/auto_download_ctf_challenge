@@ -132,17 +132,21 @@ class InstanceTracker:
         return random.uniform(POLL_INTERVAL_MIN, POLL_INTERVAL_MAX)
 
     # ------------------------------------------------------------------ #
-    def escalate(self, level: str, message: str) -> Optional[Tuple[str, str]]:
+    def escalate(self, level: str, message: str,
+                 key: Optional[str] = None) -> Optional[Tuple[str, str]]:
         """Phát escalation với repeat-suppression (ERROR mỗi 300s) và
-        CRITICAL mute các cấp thấp hơn. Trả (level, message) hoặc None."""
+        CRITICAL mute các cấp thấp hơn. Trả (level, message) hoặc None.
+
+        ``key``: khoá suppression tùy chọn — dùng khi ``message`` chứa phần
+        biến đổi mỗi lần (counter, delay...) để không vô hiệu hoá suppress."""
         if self.critical_muted and level != CRITICAL:
             return None
         now = _now()
-        key = f"{level}:{message}"
-        last = self.last_escalation.get(key)
+        skey = key if key is not None else f"{level}:{message}"
+        last = self.last_escalation.get(skey)
         if level != CRITICAL and last is not None and now - last < ESCALATION_REPEAT:
             return None
-        self.last_escalation[key] = now
+        self.last_escalation[skey] = now
         if level == CRITICAL:
             self.critical_muted = True
         return level, message
@@ -323,8 +327,14 @@ class InstanceKeepAlive:
         # clamp ≤600s — chưa có mốc neo thì dùng cap 10' theo spec §9.
         threshold = self.renew_threshold(tracker.est_lifetime)
         if remaining is not None and remaining <= threshold:
+            # C12-K1: chụp cờ TRƯỚC khi ghi đè state=DUE_SOON — 2 nhánh
+            # give-up trong _try_renew dựa trên "tick trước đã RENEW_FAILED";
+            # ghi đè mù ở đây biến chúng thành dead-code (renew lỗi non-fatal
+            # bị gọi vô hạn, whale lọt vì renew_count chỉ đếm success).
+            was_renew_failed = tracker.state == RENEW_FAILED
             tracker.state = DUE_SOON
-            return self._try_renew(tracker, events, remaining)
+            return self._try_renew(tracker, events, remaining,
+                                   was_renew_failed=was_renew_failed)
         tracker.state = ALIVE
         return events
 
@@ -358,7 +368,8 @@ class InstanceKeepAlive:
     # ------------------------------------------------------------------ #
     def _try_renew(self, tracker: InstanceTracker,
                    events: List[Tuple[str, str]],
-                   remaining: Optional[float]) -> List[Tuple[str, str]]:
+                   remaining: Optional[float],
+                   was_renew_failed: bool = False) -> List[Tuple[str, str]]:
         # Whale hết lượt renew → không gọi PATCH nữa (circuit breaker OPEN)
         if tracker.platform_kind != "gzctf":
             if tracker.renew_count >= WHALE_MAX_RENEWS:
@@ -377,7 +388,9 @@ class InstanceKeepAlive:
                 if ev:
                     events.append(ev)
 
-        if tracker.state == RENEW_FAILED and tracker.renew_attempts >= RENEW_MAX_ATTEMPTS:
+        # C12-K1: was_renew_failed = state tick trước là RENEW_FAILED (chụp
+        # trước khi tick này ghi đè DUE_SOON). Không dùng tracker.state ở đây.
+        if was_renew_failed and tracker.renew_attempts >= RENEW_MAX_ATTEMPTS:
             tracker.state = GIVE_UP
             ev = tracker.escalate(ERROR, f"❌ {tracker.name}: renew thất bại "
                                          f"{RENEW_MAX_ATTEMPTS} lần — bỏ cuộc.")
@@ -386,7 +399,7 @@ class InstanceKeepAlive:
             return events
 
         if remaining is not None and remaining <= SAFETY_MARGIN \
-                and tracker.state == RENEW_FAILED:
+                and was_renew_failed:
             # Quá sát mực chết — ngừng retry, báo ERROR
             tracker.state = GIVE_UP
             ev = tracker.escalate(ERROR, f"⏱️ {tracker.name}: còn "
@@ -436,9 +449,13 @@ class InstanceKeepAlive:
         tracker.renew_attempts += 1
         tracker.state = RENEW_FAILED
         delay = random.uniform(EXT_RETRY_MIN, EXT_RETRY_MAX)   # full-jitter
-        ev = tracker.escalate(WARNING, f"⚠️ {tracker.name}: renew lỗi "
-                                       f"({str(msg)[:80]}) — retry sau {delay:.0f}s "
-                                       f"({tracker.renew_attempts}/{RENEW_MAX_ATTEMPTS}).")
+        # C12-K1b: counter/delay đổi mỗi tick → phải tách khỏi escalation
+        # key, nếu không repeat-suppression vô hiệu (WARNING spam mỗi tick).
+        ev = tracker.escalate(
+            WARNING, f"⚠️ {tracker.name}: renew lỗi ({str(msg)[:80]}) — "
+                     f"retry sau {delay:.0f}s "
+                     f"({tracker.renew_attempts}/{RENEW_MAX_ATTEMPTS}).",
+            key=f"{WARNING}:{tracker.name}:renew-fail")
         if ev:
             events.append(ev)
         return events

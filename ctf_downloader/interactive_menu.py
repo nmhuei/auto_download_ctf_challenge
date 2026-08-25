@@ -173,52 +173,61 @@ class CTFInteractiveConsole:
 
     def run(self):
         while True:
-            self._load_saved_auth()
-            self._print_header()
+            # C12-M1: EOF/Ctrl-D (và Ctrl-C) ở prompt BẤT KỲ — kể cả prompt
+            # con trong submenu — phải thoát sạch lịch sự, không nổ
+            # EOFError/KeyboardInterrupt traceback ra ngoài run().
+            try:
+                self._load_saved_auth()
+                self._print_header()
 
-            _section('Chức năng')
-            for key, label in (
-                ('1', 'Clone / Tải giải đấu CTF mới về máy'),
-                ('2', 'Chọn / Chuyển đổi Workspace giải đấu đang làm việc'),
-                ('3', 'Xem Cây Cấu trúc & Tiến độ bài thi (Tree View)'),
-                ('4', 'Tra cứu & Xem chi tiết đề bài, hints, file đính kèm'),
-                ('5', 'Quản lý Container / Instance động (bật / tắt / gia hạn / trạng thái)'),
-                ('6', 'Nộp flag cho một bài thi cụ thể'),
-                ('7', 'Tự động quét & nộp hàng loạt flag đã giải trong workspace'),
-                ('8', 'Quét & tổng kết toàn bộ các giải đấu trên máy'),
-                ('9', 'Cấu hình & Lưu Cookie / Token cho giải này (nhớ vĩnh viễn)'),
-                ('0', 'Thoát'),
-            ):
-                _option(key, label)
-            _footer()
+                _section('Chức năng')
+                for key, label in (
+                    ('1', 'Clone / Tải giải đấu CTF mới về máy'),
+                    ('2', 'Chọn / Chuyển đổi Workspace giải đấu đang làm việc'),
+                    ('3', 'Xem Cây Cấu trúc & Tiến độ bài thi (Tree View)'),
+                    ('4', 'Tra cứu & Xem chi tiết đề bài, hints, file đính kèm'),
+                    ('5', 'Quản lý Container / Instance động (bật / tắt / gia hạn / trạng thái)'),
+                    ('6', 'Nộp flag cho một bài thi cụ thể'),
+                    ('7', 'Tự động quét & nộp hàng loạt flag đã giải trong workspace'),
+                    ('8', 'Quét & tổng kết toàn bộ các giải đấu trên máy'),
+                    ('9', 'Cấu hình & Lưu Cookie / Token cho giải này (nhớ vĩnh viễn)'),
+                    ('0', 'Thoát'),
+                ):
+                    _option(key, label)
+                _footer()
 
-            choice = _prompt('Chọn chức năng (0-9): ')
+                choice = _prompt('Chọn chức năng (0-9): ')
 
-            if choice == '0':
+                if choice == '0':
+                    _menu_console().print(
+                        Text('\nTạm biệt! Chúc bạn thi đấu CTF đạt kết quả cao.\n',
+                             style=FG_MUTED))
+                    break
+                elif choice == '1':
+                    self._menu_download_new()
+                elif choice == '2':
+                    self._menu_switch_workspace()
+                elif choice == '3':
+                    self._menu_view_tree()
+                elif choice == '4':
+                    self._menu_view_challenge_detail()
+                elif choice == '5':
+                    self._menu_container_manager()
+                elif choice == '6':
+                    self._menu_submit_flag()
+                elif choice == '7':
+                    self._menu_auto_submit()
+                elif choice == '8':
+                    self._menu_scan_workspaces()
+                elif choice == '9':
+                    self._menu_configure_auth()
+                else:
+                    Logger.warning('Lựa chọn không hợp lệ. Vui lòng chọn số từ 0 đến 9.')
+            except (EOFError, KeyboardInterrupt):
                 _menu_console().print(
                     Text('\nTạm biệt! Chúc bạn thi đấu CTF đạt kết quả cao.\n',
                          style=FG_MUTED))
                 break
-            elif choice == '1':
-                self._menu_download_new()
-            elif choice == '2':
-                self._menu_switch_workspace()
-            elif choice == '3':
-                self._menu_view_tree()
-            elif choice == '4':
-                self._menu_view_challenge_detail()
-            elif choice == '5':
-                self._menu_container_manager()
-            elif choice == '6':
-                self._menu_submit_flag()
-            elif choice == '7':
-                self._menu_auto_submit()
-            elif choice == '8':
-                self._menu_scan_workspaces()
-            elif choice == '9':
-                self._menu_configure_auth()
-            else:
-                Logger.warning('Lựa chọn không hợp lệ. Vui lòng chọn số từ 0 đến 9.')
 
     def _menu_download_new(self):
         _section('Tải & khởi tạo giải đấu CTF mới')
@@ -319,6 +328,10 @@ class CTFInteractiveConsole:
         else:
             try:
                 sel_idx = int(ch) - 1
+                # C12-M2: '00'/'-0'/'-1' tạo index ÂM — Python chọn lặng lẽ
+                # workspace cuối + ghi config. Bắt buộc check biên.
+                if not 0 <= sel_idx < len(workspaces):
+                    raise IndexError(sel_idx)
                 self.workspace_path = workspaces[sel_idx][0]
                 self.cookie = None
                 self.token = None

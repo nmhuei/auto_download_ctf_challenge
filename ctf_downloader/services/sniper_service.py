@@ -351,26 +351,28 @@ class SniperService:
         failed: List[Dict[str, Any]] = []
 
         # ---- Van an toàn #1: KHÔNG bao giờ bắn sớm hơn start ----
-        while True:
-            now = time.time()
-            if now >= start_ts:
-                break
-            _dim(
-                f"còn {self._human_wait(start_ts - now)} tới giờ G "
-                f"({summary['started_at']}) — đang canh…"
-            )
-            time.sleep(min(float(poll_interval), start_ts - now))
-        console.print(
-            f"[{ACCENT}]◆[/{ACCENT}] "
-            f"[bold {FG_BASE}]Window mở[/bold {FG_BASE}] "
-            f"[{FG_MUTED}]— sniper bắt đầu bắn theo hàng chờ.[/{FG_MUTED}]"
-        )
-
-        backoff_until = 0.0
-        backoff_step = BACKOFF_BASE_SECONDS
-        consecutive_ratelimits = 0
-
+        # C12-S1: try mở TỪ vòng chờ giờ G — Ctrl-C lúc canh giờ phải abort
+        # sạch (docstring hứa), không nổ traceback ra ngoài run().
         try:
+            while True:
+                now = time.time()
+                if now >= start_ts:
+                    break
+                _dim(
+                    f"còn {self._human_wait(start_ts - now)} tới giờ G "
+                    f"({summary['started_at']}) — đang canh…"
+                )
+                time.sleep(min(float(poll_interval), start_ts - now))
+            console.print(
+                f"[{ACCENT}]◆[/{ACCENT}] "
+                f"[bold {FG_BASE}]Window mở[/bold {FG_BASE}] "
+                f"[{FG_MUTED}]— sniper bắt đầu bắn theo hàng chờ.[/{FG_MUTED}]"
+            )
+
+            backoff_until = 0.0
+            backoff_step = BACKOFF_BASE_SECONDS
+            consecutive_ratelimits = 0
+
             while pending:
                 now = time.time()
 
