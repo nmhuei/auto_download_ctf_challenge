@@ -2,6 +2,7 @@ import re
 import requests
 from bs4 import BeautifulSoup
 from typing import Tuple, Optional
+from ..services.session_factory import create_session
 from ..utils.logger import Logger
 from ..utils.sanitize import extract_filename_from_headers, extract_filename_from_url
 from .registry import register_downloader
@@ -151,7 +152,7 @@ class MediafireDownloader:
         Returns (stream, expected_size) — expected_size lấy từ API/scrape pre-flight.
         """
         if session is None:
-            session = requests.Session()
+            session = create_session()   # mọi session đi qua factory
 
         # Pre-flight size (API + fallback scrape) — dùng cho consent gate
         expected_size = MediafireDownloader.get_expected_size(url, session, timeout)

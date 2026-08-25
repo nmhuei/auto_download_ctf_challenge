@@ -1,6 +1,7 @@
 import urllib.parse
 from typing import Tuple, Optional
 import requests
+from ..services.session_factory import create_session
 from ..utils.logger import Logger
 from ..utils.sanitize import extract_filename_from_headers, extract_filename_from_url
 from .http_downloader import HttpDownloader, DownloadFailed
@@ -54,7 +55,7 @@ class DropboxDownloader:
         response cuối (sau redirect), None nếu server không cho biết.
         """
         if session is None:
-            session = requests.Session()
+            session = create_session()   # mọi session đi qua factory
 
         direct_url = DropboxDownloader.get_direct_url(url)
         try:
