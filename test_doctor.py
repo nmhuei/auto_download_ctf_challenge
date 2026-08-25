@@ -283,6 +283,23 @@ class TestDoctorPhosphorRoles(unittest.TestCase):
         self.assertIn(self.SOLVED_ANSI + "✔", out)
         self.assertIn(self.ERROR_ANSI + "✗", out)
 
+    def test_ok_label_outside_green_span(self):
+        """synthesis-v6 MF1: semantic green CHỈ bọc glyph ✔ — ``Text(OK,
+        style=SOLVED)`` cũ đặt base-style SOLVED cho cả object nên nhuộm
+        green cả nhãn tên check lẫn dòng tổng kết. Sau fix: span green đóng
+        NGAY sau glyph, nhãn/text nằm ngoài."""
+        svc = HealthService()
+        report = svc.check(URL, cookie="session=abc", session=ctfd_session())
+        out = capture_render_ansi(report)
+        # Dạng lỗi cũ: cả cụm glyph+nhãn trong MỘT span solved.
+        self.assertNotIn(self.SOLVED_ANSI + "✔     URL sống", out)
+        self.assertNotIn(self.SOLVED_ANSI + "Tổng kết", out)
+        # Glyph vẫn xanh đúng vai trò; reset NGAY sau glyph (nhãn outside).
+        self.assertIn(self.SOLVED_ANSI + "✔\x1b[0m", out)
+        # Nhãn check vẫn hiện đầy đủ, không mất chữ sau khi tách span.
+        self.assertIn("URL sống", out)
+        self.assertIn("Tổng kết: 6/6 checks pass", out)
+
     def test_no_trailing_whitespace_padding_to_width(self):
         """codex-r2 P0c: bỏ padding trắng kéo dòng tới hết 80 cột — bảng
         natural width, không dòng nào kết thúc bằng run-space."""

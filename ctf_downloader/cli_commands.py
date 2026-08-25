@@ -1230,7 +1230,13 @@ def handle_config(args):
 
     if value is None:                                   # chế độ XEM
         shown = sorted(_CONFIG_KEYS.items()) if key is None else [(key, spec)]
-        Logger.info(f'Cấu hình toàn cục ({GLOBAL_CONFIG_FILE}):')
+        # Renderer PHOSPHOR thay Logger `[*]` legacy (synthesis-v6 MF3):
+        # heading faint + path literal neutral; hàng key wrap qua
+        # _emit_wrapped — continuation thụt đúng cột giá trị (cột 15,
+        # sau ``{name:<12} = ``), không bao giờ gãy về cột 1.
+        _emit_section_heading("CẤU HÌNH TOÀN CỤC")
+        _emit_wrapped([("· file ", _MUTED_COLOR),
+                       (GLOBAL_CONFIG_FILE, _INFO_COLOR)])
         for name, kspec in shown:
             node, found = cfg, True
             for part in kspec['path']:
@@ -1242,7 +1248,15 @@ def handle_config(args):
             current = node if found else kspec['default']
             rendered = _config_render(kspec, current)
             suffix = '' if found else ' (mặc định)'
-            Logger.info(f'  {name:<12} = {rendered}{suffix} — {kspec["desc"]}')
+            segments = [
+                (f"{name:<12}", "fg.base"),
+                ("=", _FAINT_COLOR),
+                (rendered, "fg.base"),
+            ]
+            if suffix:
+                segments.append((suffix, _FAINT_COLOR))
+            segments.append((f"— {kspec['desc']}", _MUTED_COLOR))
+            _emit_wrapped(segments, indent=" " * 15)
         return
 
     # Chế độ ĐẶT: ghi đúng path của key, giữ nguyên mọi dữ liệu khác

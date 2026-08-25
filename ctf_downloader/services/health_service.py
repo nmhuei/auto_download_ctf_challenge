@@ -187,10 +187,14 @@ class DoctorReport:
         out.print(Text("KẾT QUẢ", style=FG_FAINT))
         summary = f"Tổng kết: {self.passed}/{self.total} checks pass"
         if self.all_passed():
-            # Green chỉ đi kèm glyph ✔ (luật palette §3).
-            line = Text(style=SOLVED)
-            line.append(OK + " ")
-            line.append(summary + " — platform sẵn sàng cho giờ giải!")
+            # Green chỉ đi kèm glyph ✔ (luật palette §3): Text NỀN TRUNG TÍNH
+            # (synthesis-v6 MF1 — ``Text(style=SOLVED)`` đặt base-style cho cả
+            # object nên nhuộm green cả nhãn), glyph tô solved riêng, phần
+            # text fg.base.
+            line = Text()
+            line.append(OK + " ", style=SOLVED)
+            line.append(summary + " — platform sẵn sàng cho giờ giải!",
+                        style=FG_BASE)
         else:
             # Tổng kết accent amber; glyph ``!`` warn #EAC54F đúng vai trò
             # riêng (không tô cả cụm một màu).
@@ -218,7 +222,11 @@ class DoctorReport:
 
     @staticmethod
     def _ok_content(chk: DoctorCheck, width: int = 80) -> Text:
-        line = Text(OK, style=SOLVED)
+        # Text nền TRUNG TÍNH (synthesis-v6 MF1): ``Text(OK, style=SOLVED)``
+        # đặt base-style SOLVED cho cả object → mọi phần append sau đều
+        # tràn green. Glyph ✔ tự mang solved; nhãn/caps/detail style riêng.
+        line = Text()
+        line.append(OK, style=SOLVED)
         line.append("     ")
         line.append(chk.name)
         if chk.caps is not None:

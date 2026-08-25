@@ -98,3 +98,26 @@ def test_view_key_chua_dat_hien_mac_dinh(tmp_path, monkeypatch, capsys):
     _run(["config", "auto-sync"])
     out = capsys.readouterr().out
     assert "on" in out and "(mặc định)" in out
+
+
+def test_view_khong_con_chrome_logger_legacy(tmp_path, monkeypatch, capsys):
+    """synthesis-v6 MF3: chế độ xem render PHOSPHOR — không còn chrome
+    '[*]' legacy của Logger.info."""
+    _patch_global_cfg(monkeypatch, tmp_path)     # config trống → giá trị mặc định
+    _run(["config"])
+    out = capsys.readouterr().out
+    assert "[*]" not in out
+    flat = " ".join(out.split())
+    assert "auto-sync" in flat                    # hàng key vẫn đủ
+    assert "on" in flat and "(mặc định)" in flat  # giá trị + nhãn default
+
+
+def test_view_wrap_continuation_thut_dung_cot(capsys):
+    """synthesis-v6 MF3: hàng config dài wrap qua _emit_wrapped — continuation
+    thụt đúng cột giá trị (15 spaces sau ``{name:<12} = ``), không gãy về cột 1
+    kiểu soft-wrap của Logger."""
+    _run(["config"])
+    out = capsys.readouterr().out
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    conts = [ln for ln in lines if ln.startswith(" " * 15) and ln.strip()]
+    assert conts, f"hàng config dài phải wrap thụt đúng cột giá trị:\n{out}"

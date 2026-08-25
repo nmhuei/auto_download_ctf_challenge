@@ -416,7 +416,13 @@ def main():
     elif cmd in ['submit', 'flag']:
         handle_submit(args)
     elif cmd in ['hoard', 'flag-stash']:
-        handle_hoard(args)
+        # --list là surface xem → có chrome AppHeader/FooterBar như
+        # status/workspaces (synthesis-v6 MF2); nhánh ghi/remove giữ nhịp
+        # action trần như submit.
+        if getattr(args, 'list', False):
+            _run_framed(handle_hoard, args, 'hoard')
+        else:
+            handle_hoard(args)
     elif cmd in ['note', 'ghi-chu']:
         handle_note(args)
     elif cmd in ['tag', 'tags']:
@@ -444,7 +450,12 @@ def main():
     elif cmd == 'open':
         handle_open(args)
     elif cmd == 'config':
-        handle_config(args)
+        # Chế độ xem là surface → có chrome (synthesis-v6 MF3); chế độ đặt
+        # giá trị là action ghi file, giữ nhịp Logger như submit/sync set.
+        if getattr(args, 'value', None) is None:
+            _run_framed(handle_config, args, 'config')
+        else:
+            handle_config(args)
     elif cmd in ['menu', 'ui', 'console']:
         launch_interactive_menu(workspace_path=args.workspace, cookie=args.cookie, token=args.token)
     else:
