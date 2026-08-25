@@ -82,8 +82,15 @@ def test_persist_that_qua_vong_load_save_giu_du_lieu_khac(tmp_path, monkeypatch,
 def test_khong_key_liet_ke_cac_key_biet_duoc(capsys):
     _run(["config"])
     out = capsys.readouterr().out
-    assert "auto-sync" in out             # liệt kê đúng tên key CLI
-    assert "ctf watch" in out             # kèm mô tả ngữ nghĩa
+    # Logger đi qua rich Console: khi non-tty (pytest capsys) rich soft-wrap
+    # ở width 80 theo ranh giới từ — điểm wrap phụ thuộc ĐỘ DÀI desc, không
+    # phải hành vi liệt kê (R6/e798f82 kéo dài desc khiến 'ctf watch' bị
+    # ngắt thành 'ctf \nwatch'). Gộp whitespace trước khi assert để test
+    # không dính vào vị trí wrap.
+    flat = " ".join(out.split())
+    assert "auto-sync" in flat           # liệt kê đúng tên key CLI
+    assert "ctf watch" in flat           # kèm mô tả ngữ nghĩa
+    assert "workspace .ctf/config.json override" in flat   # R6: precedence
 
 
 def test_view_key_chua_dat_hien_mac_dinh(tmp_path, monkeypatch, capsys):
