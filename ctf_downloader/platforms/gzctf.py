@@ -311,7 +311,7 @@ class GZCTFPlatform(BasePlatform):
             if resp.status_code == 200:
                 user_data = resp.json()
                 self.ctf_info.user_name = user_data.get("userName") or user_data.get("realName")
-                Logger.success(f"Đã xác thực GZCTF với User: [bold cyan]{self.ctf_info.user_name}[/bold cyan] ({user_data.get('email')})")
+                Logger.success(f"Đã xác thực GZCTF với User: [bold cyan]{self.ctf_info.user_name}[/bold cyan] ({user_data.get('email')})", markup=True)
                 profile_ok = True
         except Exception:
             pass
@@ -325,7 +325,7 @@ class GZCTFPlatform(BasePlatform):
                     self.ctf_info.title = game_data.get("title", f"Game {self.game_id}")
                     self.ctf_info.team_name = game_data.get("teamName")
                     if self.ctf_info.team_name:
-                        Logger.info(f"Team: [bold magenta]{self.ctf_info.team_name}[/bold magenta] | Competition: [bold yellow]{self.ctf_info.title}[/bold yellow]")
+                        Logger.info(f"Team: [bold magenta]{self.ctf_info.team_name}[/bold magenta] | Competition: [bold yellow]{self.ctf_info.title}[/bold yellow]", markup=True)
                     return True
             except Exception as e:
                 Logger.warning(f"Không lấy được thông tin game {self.game_id}: {e}")

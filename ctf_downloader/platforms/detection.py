@@ -193,7 +193,8 @@ def detect_platform_info(base_url: str, session,
     if not quiet:
         Logger.info(
             f"Nhận diện platform: [bold green]{spec.label}[/bold green] "
-            f"(độ tin cậy: [bold yellow]{confidence}[/bold yellow])"
+            f"(độ tin cậy: [bold yellow]{confidence}[/bold yellow])",
+            markup=True
         )
     return platform, info
 

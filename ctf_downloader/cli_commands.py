@@ -526,7 +526,7 @@ def _handle_hoard_remove(args):
     repo.update_status(meta_path, _mut)
     shown_name = (meta or {}).get('name') or str(identifier)
     Logger.success("🗑 Đã gỡ flag khỏi kho cho "
-                   f"[bold cyan]{shown_name}[/bold cyan].")
+                   f"[bold cyan]{shown_name}[/bold cyan].", markup=True)
 
 
 def handle_hoard(args):

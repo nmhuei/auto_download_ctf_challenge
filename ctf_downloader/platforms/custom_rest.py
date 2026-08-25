@@ -54,7 +54,7 @@ class CustomRESTPlatform(BasePlatform):
                     user_data = data["data"]["user"]
                     username = user_data.get("username") or user_data.get("name") or user_data.get("email")
                     self.ctf_info.user_name = username
-                    Logger.success(f"Đã xác thực User: [bold cyan]{username}[/bold cyan]")
+                    Logger.success(f"Đã xác thực User: [bold cyan]{username}[/bold cyan]", markup=True)
                     return True
         except Exception:
             pass

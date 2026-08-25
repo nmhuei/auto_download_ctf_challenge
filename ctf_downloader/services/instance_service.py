@@ -110,7 +110,7 @@ class InstanceService:
         chall = self.find_challenge(challenge_id=challenge_id)
         name = chall.get('name', f'Challenge {challenge_id}') if chall else f'ID {challenge_id}'
 
-        Logger.info(f'Đang khởi động container instance cho [bold cyan]{name}[/bold cyan] (ID: {challenge_id})...')
+        Logger.info(f'Đang khởi động container instance cho [bold cyan]{name}[/bold cyan] (ID: {challenge_id})...', markup=True)
         success, info = self.platform.start_instance(challenge_id)
 
         if success:
@@ -126,14 +126,14 @@ class InstanceService:
                     entry = st.get('entry')
                     time_left = st.get('time_left') or time_left
 
-            Logger.success(f'Container instance của [bold cyan]{name}[/bold cyan] đã hoạt động!')
+            Logger.success(f'Container instance của [bold cyan]{name}[/bold cyan] đã hoạt động!', markup=True)
             if entry:
-                Logger.info(f'Điểm kết nối (entry): [bold green]{entry}[/bold green]')
+                Logger.info(f'Điểm kết nối (entry): [bold green]{entry}[/bold green]', markup=True)
                 if ':' in str(entry) and not str(entry).startswith('http'):
                     h, p = str(entry).split(':')
-                    Logger.info(f'Lệnh netcat: [bold yellow]nc {h} {p}[/bold yellow]')
+                    Logger.info(f'Lệnh netcat: [bold yellow]nc {h} {p}[/bold yellow]', markup=True)
             if time_left:
-                Logger.info(f'Thời gian còn lại: [bold magenta]{time_left}[/bold magenta]')
+                Logger.info(f'Thời gian còn lại: [bold magenta]{time_left}[/bold magenta]', markup=True)
 
             self._update_local_instance_info(challenge_id, entry, time_left, status='running')
             return True, info
@@ -146,7 +146,7 @@ class InstanceService:
         chall = self.find_challenge(challenge_id=challenge_id)
         name = chall.get('name', f'Challenge {challenge_id}') if chall else f'ID {challenge_id}'
 
-        Logger.info(f'Đang dừng container instance cho [bold cyan]{name}[/bold cyan] (ID: {challenge_id})...')
+        Logger.info(f'Đang dừng container instance cho [bold cyan]{name}[/bold cyan] (ID: {challenge_id})...', markup=True)
         success, msg = self.platform.stop_instance(challenge_id)
         if success:
             Logger.success(f'Đã dừng container cho {name}: {msg}')
@@ -159,7 +159,7 @@ class InstanceService:
         chall = self.find_challenge(challenge_id=challenge_id)
         name = chall.get('name', f'Challenge {challenge_id}') if chall else f'ID {challenge_id}'
 
-        Logger.info(f'Đang gia hạn thời gian container cho [bold cyan]{name}[/bold cyan] (ID: {challenge_id})...')
+        Logger.info(f'Đang gia hạn thời gian container cho [bold cyan]{name}[/bold cyan] (ID: {challenge_id})...', markup=True)
         success, msg = self.platform.extend_instance(challenge_id)
         if success:
             Logger.success(f'Đã gia hạn container cho {name}: {msg}')
@@ -207,7 +207,7 @@ class InstanceService:
             st = self.get_status(cid)
             if st.get('status') == 'running' or st.get('entry'):
                 active_count += 1
-                Logger.success(f"[RUNNING] ID {cid} ({cname}): [bold green]{st.get('entry')}[/bold green]")
+                Logger.success(f"[RUNNING] ID {cid} ({cname}): [bold green]{st.get('entry')}[/bold green]", markup=True)
         Logger.info(f'Sync hoàn tất! Có {active_count} container đang chạy.')
         return active_count
 
@@ -289,7 +289,7 @@ class InstanceService:
                     return m
 
                 self.repo.update_metadata(meta_path, _mut)
-                Logger.info(f'[bold green]✓[/bold green] Đã đồng bộ thông tin instance vào: [cyan]{os.path.relpath(meta_path, self.workspace_path)}[/cyan]')
+                Logger.info(f'[bold green]✓[/bold green] Đã đồng bộ thông tin instance vào: [cyan]{os.path.relpath(meta_path, self.workspace_path)}[/cyan]', markup=True)
 
                 # Mirror trục container của status đa chiều (spec §7).
                 # Trạng thái khác running/stopped (vd 'unknown') -> KHÔNG đụng

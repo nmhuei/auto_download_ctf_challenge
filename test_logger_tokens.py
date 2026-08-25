@@ -93,5 +93,38 @@ class TestLoggerPhosphorTokens(unittest.TestCase):
             logger_mod.console.get_style("highlight")
 
 
+class TestLoggerMarkupContract(unittest.TestCase):
+    """Follow-up C11-04: call-site CHỦ Ý trang trí bằng rich markup của tool
+    truyền ``markup=True`` để màu quay lại; default ``markup=False`` vẫn
+    escape tag đến từ dữ liệu server thành text NGUYÊN VĂN (không style)."""
+
+    def _render(self, msg: str, markup: bool = False) -> str:
+        buf = io.StringIO()
+        with patch.object(logger_mod, "console", Console(
+                file=buf, width=120, force_terminal=True,
+                color_system="truecolor", highlight=False,
+                theme=ui_theme.load_theme(None))):
+            with redirect_stdout(io.StringIO()):
+                logger_mod.Logger.success(msg, markup=markup)
+        return buf.getvalue()
+
+    def _strip_ansi(self, text: str) -> str:
+        return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+    def test_markup_true_renders_color_and_consumes_tags(self):
+        out = self._render("[bold green]ALL DONE[/bold green]", markup=True)
+        self.assertNotIn("[bold green]", out)  # tag được parse, không in literal
+        # bold green phát SGR thật quanh chữ
+        self.assertRegex(out, r"\x1b\[(?:1;)?32mALL DONE\x1b\[0m")
+        self.assertIn("[+] ALL DONE", self._strip_ansi(out))
+
+    def test_default_false_keeps_escape_verbatim_without_style(self):
+        out = self._render("[bold green]team[/]name</>")  # markup=False mặc định
+        self.assertIn("[bold green]team[/]name</>", self._strip_ansi(out))
+        # Sau chrome [+] không còn SGR nào: tag dữ liệu không biến thành màu.
+        body = out.split("[+]\x1b[0m", 1)[1]
+        self.assertNotRegex(body, r"\x1b\[")
+
+
 if __name__ == "__main__":
     unittest.main()

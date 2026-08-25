@@ -350,7 +350,7 @@ class StatusService:
         try:
             if remove:
                 repo.update_status(meta_path, _mut)
-                Logger.success(f"🗑️ Removed note from [bold cyan]{name}[/bold cyan].")
+                Logger.success(f"🗑️ Removed note from [bold cyan]{name}[/bold cyan].", markup=True)
             else:
                 content = (text or "").strip()
                 if not content:
@@ -359,7 +359,7 @@ class StatusService:
                     Logger.error("Note is empty — nothing saved.")
                     return False
                 repo.update_status(meta_path, _mut)
-                Logger.success(f"📝 Note saved for [bold cyan]{name}[/bold cyan].")
+                Logger.success(f"📝 Note saved for [bold cyan]{name}[/bold cyan].", markup=True)
             return True
         except Exception as e:
             Logger.warning(f"Không thể lưu note: {e}")
@@ -422,7 +422,7 @@ class StatusService:
             final = repo.update_status(meta_path, _mut)
             labels_str = ", ".join(final.get("labels") or []) or "(none)"
             Logger.success(
-                f"🏷️ {action} tag(s) for [bold cyan]{name}[/bold cyan]: {labels_str}")
+                f"🏷️ {action} tag(s) for [bold cyan]{name}[/bold cyan]: {labels_str}", markup=True)
             return True, rejected
         except Exception as e:
             Logger.warning(f"Không thể cập nhật tags: {e}")
@@ -1078,7 +1078,7 @@ class StatusService:
         from ..utils.logger import Logger
 
         base_dir = os.path.abspath(os.path.expanduser(base_dir))
-        Logger.info(f'Scanning all CTF workspaces in [info]{base_dir}[/]')
+        Logger.info(f'Scanning all CTF workspaces in [info]{base_dir}[/]', markup=True)
 
         if not os.path.exists(base_dir):
             Logger.warning(f'Directory {base_dir} does not exist.')

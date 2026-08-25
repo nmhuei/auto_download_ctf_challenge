@@ -261,7 +261,7 @@ class RankService:
         self.repo.write_ranking_md("\n".join(lines))
         ranking_md_path = str(self.repo.ranking_md_path)
 
-        Logger.info(f"Đã cập nhật bảng xếp hạng live: [bold cyan]{os.path.relpath(ranking_md_path, self.workspace_path)}[/bold cyan]")
+        Logger.info(f"Đã cập nhật bảng xếp hạng live: [bold cyan]{os.path.relpath(ranking_md_path, self.workspace_path)}[/bold cyan]", markup=True)
 
         # 2. Update SUMMARY.md via WorkspaceRepo (chèn/thay dòng Live Rank)
         rank_badge = f"{LIVE_RANK_PREFIX} `#{my_rank}` / `{total_teams}` (Team: `{my_team}`)"

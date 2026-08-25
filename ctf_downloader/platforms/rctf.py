@@ -110,7 +110,7 @@ class RCTFPlatform(BasePlatform):
                     user_name = data["data"].get("name")
                     self.ctf_info.user_name = user_name
                     self.ctf_info.team_name = user_name
-                    Logger.success(f"Đã xác thực rCTF với Team: [bold cyan]{user_name}[/bold cyan]")
+                    Logger.success(f"Đã xác thực rCTF với Team: [bold cyan]{user_name}[/bold cyan]", markup=True)
                     return True
         except Exception:
             pass
