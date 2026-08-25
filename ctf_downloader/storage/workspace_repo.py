@@ -37,6 +37,7 @@ from .constants import (
 from .fileio import (
     atomic_write_json,
     atomic_write_text,
+    locked_path,
     locked_update_json,
     locked_write_text,
 )
@@ -429,38 +430,88 @@ class WorkspaceRepo:
         return changed
 
     # ------------------------------------------------------------------
-    # SUMMARY.md live-rank patch
+    # SUMMARY.md — regenerate (SummaryGenerator) + live-rank patch
     # ------------------------------------------------------------------
+
+    @property
+    def summary_path(self) -> Path:
+        return self.root / "SUMMARY.md"
+
+    # Regex dòng Live Rank dùng chung bởi patch (thay) và regenerate
+    # (carry-forward) — một nguồn duy nhất tránh hai bên trôi khỏi nhau.
+    _LIVE_RANK_LINE_RE = r"-\s*\*\*Live Rank\*\*:[^\n]+"
+
+    def write_summary_md(self, content: str) -> None:
+        """Ghi đè TOÀN BỘ SUMMARY.md (đường regenerate của SummaryGenerator)
+        dưới khóa ``<name>.lock`` CHUNG với :meth:`patch_summary_live_rank`.
+
+        Hunter-c14: hai writer trước đây cùng dùng atomic_write_text KHÔNG
+        khóa -> cửa sổ đọc-sửa-viết giữa patcher và regenerate gây lost
+        update (bản stale của patcher đè toàn bộ summary vừa regenerate).
+
+        Regenerate xây nội dung từ đầu nên mặc định làm MẤT badge Live Rank
+        mà RankService đã patch ở bản cũ; ở đây carry-forward dòng đó sang
+        bản mới (chèn trước dòng files-line như patch, hoặc nối cuối) trừ
+        khi content mới tự mang badge. Đọc file cũ thực hiện TRONG khóa
+        nên không có khe hở giữa đọc-carry và ghi.
+        """
+        with locked_path(self.summary_path):
+            current = ""
+            try:
+                current = self.summary_path.read_text(encoding="utf-8")
+            except OSError:
+                pass  # không đọc được/có sẵn: coi như không có badge để carry
+            m = re.search(self._LIVE_RANK_LINE_RE, current)
+            if m and LIVE_RANK_PREFIX not in content:
+                if SUMMARY_FILES_LINE_PREFIX in content:
+                    content = content.replace(
+                        SUMMARY_FILES_LINE_PREFIX,
+                        f"{m.group(0)}\n{SUMMARY_FILES_LINE_PREFIX}", 1)
+                else:  # không có anchor chèn trước: nối cuối cho khỏi mất
+                    content = content.rstrip("\n") + "\n" + m.group(0) + "\n"
+            atomic_write_text(self.summary_path, content)
 
     def patch_summary_live_rank(self, rank_line: str) -> bool:
         """Chèn ``rank_line`` vào SUMMARY.md ngay trước dòng
         ``- **Total Files Downloaded**:``, hoặc thay dòng Live Rank cũ nếu đã có.
-        Trả False nếu SUMMARY.md thiếu hoặc không có điểm neo."""
-        summary_path = self.root / "SUMMARY.md"
+        Trả False nếu SUMMARY.md thiếu hoặc không có điểm neo.
+
+        Hunter-c14: đọc-mutate-ghi diễn ra TRONG CÙNG khóa ``<name>.lock``
+        với :meth:`write_summary_md` (trước đây chỉ atomic_write_text không
+        khóa — bản stale của patcher từng ghi đè lost-update lên summary
+        vừa regenerate). Ghi vẫn qua atomic_write_text nhưng NẰM TRONG phạm
+        vi khóa."""
+        summary_path = self.summary_path
         if not summary_path.exists():
             return False
-        try:
-            text = summary_path.read_text(encoding="utf-8")
-        except OSError:
-            return False
+        anchored = False
+        with locked_path(summary_path):
+            try:
+                text = summary_path.read_text(encoding="utf-8")
+            except OSError:
+                return False
 
-        if LIVE_RANK_PREFIX in text:
-            # repl dạng lambda: rank_line được chèn NGUYÊN VĂN. Nếu truyền
-            # rank_line làm replacement chuỗi, re.sub sẽ coi `\` là escape
-            # (tên team chứa backslash làm hỏng/vỡ output).
-            new_text = re.sub(r"-\s*\*\*Live Rank\*\*:[^\n]+", lambda m: rank_line, text)
-        elif SUMMARY_FILES_LINE_PREFIX in text:
-            new_text = text.replace(
-                SUMMARY_FILES_LINE_PREFIX, f"{rank_line}\n{SUMMARY_FILES_LINE_PREFIX}", 1
-            )
-        else:
-            return False
+            if LIVE_RANK_PREFIX in text:
+                anchored = True
+                # repl dạng lambda: rank_line được chèn NGUYÊN VĂN. Nếu truyền
+                # rank_line làm replacement chuỗi, re.sub sẽ coi `\` là escape
+                # (tên team chứa backslash làm hỏng/vỡ output).
+                new_text = re.sub(self._LIVE_RANK_LINE_RE,
+                                  lambda m: rank_line, text)
+            elif SUMMARY_FILES_LINE_PREFIX in text:
+                anchored = True
+                new_text = text.replace(
+                    SUMMARY_FILES_LINE_PREFIX,
+                    f"{rank_line}\n{SUMMARY_FILES_LINE_PREFIX}", 1
+                )
+            else:
+                return False
 
-        try:
-            atomic_write_text(summary_path, new_text)
-        except OSError:
-            return False
-        return True
+            try:
+                atomic_write_text(summary_path, new_text)
+            except OSError:
+                return False
+        return anchored
 
     # ------------------------------------------------------------------
     # RANKING.md (dump scoreboard live của RankService)

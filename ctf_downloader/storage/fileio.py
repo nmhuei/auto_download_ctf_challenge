@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Callable, Union
+from typing import Callable, Iterator, Union
 
 PathLike = Union[str, Path]
 
@@ -102,6 +103,63 @@ def locked_write_text(path: PathLike, text: str) -> None:
             # Ghi thành công: dọn lockfile TRONG LÚC CÒN GIỮ KHÓA (unlink
             # trước unlock) — process chờ sẽ thấy re-validate thất bại và
             # tự mở lại lockfile hiện hành (nhất quán locked_update_json).
+            try:
+                os.unlink(lock_path)
+            except OSError:
+                pass
+            return
+        finally:
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+            lock_f.close()
+
+
+@contextlib.contextmanager
+def locked_path(path: PathLike) -> Iterator[Path]:
+    """Context manager GIỮ khóa độc quyền trên lockfile ``<name>.lock`` của
+    ``path``, yield đường đích (đã resolve symlink) cho caller tự đọc/ghi
+    TRONG phạm vi ``with``.
+
+    Dùng cho các giao thức đọc-sửa-viết mà helper đóng gói sẵn
+    (locked_write_text / locked_update_json / locked_update_json-text)
+    không phủ hết — vd SUMMARY.md: patcher đọc-mutate rồi ghi qua
+    atomic_write_text, regenerate ghi đè toàn bộ; cả hai phải chia sẻ
+    CÙNG một lock key thì lost update mới không thể xảy ra.
+
+    Giao thức khóa giống hệt locked_write_text / locked_update_json:
+    - Khóa trên LOCKFILE RIÊNG ``<name>.lock`` (os.replace thay inode đích
+      nên flock trên đích mất tác dụng sau lần replace đầu tiên).
+    - Re-validate inode lockfile sau khi grant (chống vùng găng trên inode
+      mồ côi khi holder trước vừa unlink).
+    - Caller ghi THÀNH CÔNG: lockfile được unlink TRƯỚC khi unlock. Caller
+      raise: giữ lại lockfile (nhất quán locked_update_json).
+    """
+    p = Path(path)
+    if p.is_symlink():
+        p = p.resolve()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = p.with_name(p.name + ".lock")
+
+    while True:
+        lock_f = open(lock_path, "w")
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+        try:
+            try:
+                st_path = os.stat(lock_path)
+                st_mine = os.fstat(lock_f.fileno())
+                live = (st_path.st_dev == st_mine.st_dev
+                        and st_path.st_ino == st_mine.st_ino)
+            except FileNotFoundError:
+                live = False
+            if not live:
+                continue
+            try:
+                yield p
+            except BaseException:
+                # Thất BẠT: giữ lại lockfile như các helper khác.
+                raise
+            # Thành công: dọn lockfile TRONG LÚC CÒN GIỮ KHÓA (unlink trước
+            # unlock) — process chờ sẽ thấy re-validate thất bại và tự mở
+            # lại lockfile hiện hành.
             try:
                 os.unlink(lock_path)
             except OSError:

@@ -30,6 +30,39 @@ def sanitize_ctf_title(title: str, fallback_domain: str = "") -> str:
     clean = re.sub(r'_+', '_', clean).strip('_')
     return clean or "CTF_Workspace"
 
+# ECMA-48 escape: CSI ``ESC [ ... final`` + OSC ``ESC ] ... BEL/ST``.
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_ANSI_OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+# Ký tự điều khiển còn lại (bao cả \n \r \t) — không bao giờ hợp lệ trong
+# tên team/category do server trả về.
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def strip_ansi(value) -> str:
+    """Gỡ ESC sequence và ký tự điều khiển khỏi dữ liệu SERVER kiểm soát
+    (tên team/title scoreboard). Không gỡ thì terminal injection đi nguyên
+    vào output rich Text (\x1b[31m đổi màu, OSC đổi title terminal...).
+    None -> chuỗi rỗng; kiểu khác được ép str."""
+    text = str(value) if value is not None else ""
+    text = _ANSI_CSI_RE.sub("", text)
+    text = _ANSI_OSC_RE.sub("", text)
+    return _CTRL_RE.sub("", text)
+
+
+def md_cell(value) -> str:
+    r"""Sanitize một giá trị dữ liệu ngoài để nhúng vào MỘT ô của bảng
+    markdown (RANKING.md / SUMMARY.md):
+      - gập \r\n/\r/\n thành khoảng trắng TRƯỚC — newline sinh hàng bảng
+        giả (strip_ansi đứng sau sẽ chỉ gỡ control còn lại);
+      - strip_ansi: ESC không được vào file .md;
+      - thay ``|`` bằng thực thể HTML &#124; — pipe sinh cột ảo vỡ bảng.
+    Backslash-escape (``\|``) KHÔNG đủ: pipe vẫn còn trong text thô nên bộ
+    đếm cell vẫn thấy bảng vỡ. Văn bản sạch đi qua nguyên vẹn (no-op)."""
+    text = str(value) if value is not None else ""
+    text = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    return strip_ansi(text).replace("|", "&#124;")
+
+
 def sanitize_folder_name(name: str, max_length: int = 80, default: str = "challenge") -> str:
     """
     Sanitize challenge or category name to be safe across Linux, macOS, and Windows.

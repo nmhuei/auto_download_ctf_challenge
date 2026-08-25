@@ -5,8 +5,8 @@ from typing import List, Dict, Any
 from ..platforms.base import Challenge, CTFInfo
 from ..services.status_service import ROW_GLYPHS
 from ..storage.constants import DEFAULT_CATEGORY, SUMMARY_FILES_LINE
-from ..storage.fileio import atomic_write_text
 from ..storage.workspace_repo import WorkspaceRepo
+from ..utils.sanitize import md_cell
 from ..utils.sanitize import sanitize_folder_name
 
 
@@ -24,6 +24,29 @@ def _safe_int(value) -> int:
         return int(value)
     except (TypeError, ValueError, OverflowError):
         return 0
+
+
+def _points_value(value):
+    """Điểm dạng số phục vụ TỔNG/HIỂN THỊ: giữ nguyên phần lẻ (13.37) thay
+    vì cắt cụt qua ``int()`` như _safe_int. None / không-phải-số /
+    NaN/Inf -> None (caller hiển thị '-'; tổng bỏ qua)."""
+    if value is None:
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(num):
+        return None
+    return int(num) if num.is_integer() else num
+
+
+def _points_display(value) -> str:
+    """Cell điểm trong bảng SUMMARY: số in đúng dạng platform trả
+    (13.37 stays 13.37), thiếu điểm (None/rác) -> '-' thay vì in chữ
+    'None' ra markdown."""
+    num = _points_value(value)
+    return "-" if num is None else str(num)
 
 
 def _json_safe(obj):
@@ -64,7 +87,8 @@ class SummaryGenerator:
         
         for chall in challenges:
             by_category[_safe_category(chall.category)].append(chall)
-            total_points += _safe_int(chall.points)
+            chall_pts = _points_value(chall.points)
+            total_points += chall_pts if chall_pts is not None else 0
             chall_files = all_results.get(chall.id, [])
             total_files += sum(1 for f in chall_files if f.get("success"))
 
@@ -90,13 +114,15 @@ class SummaryGenerator:
         lines.append("| Category | Challenges | Total Points |")
         lines.append("| :--- | :--- | :--- |")
         for cat, challs in sorted(by_category.items(), key=lambda kv: str(kv[0])):
-            cat_pts = sum(_safe_int(c.points) for c in challs)
-            lines.append(f"| **{cat}** | {len(challs)} | {cat_pts} |")
+            cat_pts = sum(_points_value(c.points) or 0 for c in challs)
+            # md_cell: category do server kiểm soát — '|' sinh cột ảo,
+            # newline sinh hàng giả (hunter-c14 BUG-C14-3).
+            lines.append(f"| **{md_cell(cat)}** | {len(challs)} | {cat_pts} |")
         lines.append("")
 
         # Detailed Table per Category
         for cat, challs in sorted(by_category.items(), key=lambda kv: str(kv[0])):
-            lines.append(f"## 📁 {cat}\n")
+            lines.append(f"## 📁 {md_cell(cat)}\n")
             lines.append("| Challenge | Points | Solves | Files | Status | Path |")
             lines.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
             
@@ -118,18 +144,24 @@ class SummaryGenerator:
                 status_str = (f"{_G['solved_by_me'][0]} Solved" if c.solved_by_me
                               else f"{_G['unsolved'][0]} Unsolved")
                 
-                lines.append(f"| **[{c.name}]({rel_path})** | {c.points} | {solves_str} | {files_str} | {status_str} | [`{clean_cat}/{clean_name}`]({clean_cat}/{clean_name}) |")
+                # Tên challenge cũng dữ liệu server — '|' vỡ bảng 6 cột;
+                # điểm None -> '-' (không in chữ 'None' ra cell).
+                lines.append(f"| **[{md_cell(c.name)}]({rel_path})** | {_points_display(c.points)} | {solves_str} | {files_str} | {status_str} | [`{clean_cat}/{clean_name}`]({clean_cat}/{clean_name}) |")
             lines.append("")
 
         summary_content = "\n".join(lines)
         summary_path = os.path.join(base_output_dir, "SUMMARY.md")
 
-        # XCHECK hunter-c9: hai file tổng hợp này từng được ghi TRỰC TIẾP
+        # XCHECK hunter-c9/c14: hai file tổng hợp này từng được ghi TRỰC TIẾP
         # (open 'w' không atomic, không flock) trong khi rank-patcher/
         # dashboard ghi cùng lúc qua WorkspaceRepo (atomic+flock) -> nội dung
-        # rách/ghi đè lost-update. Chuyển hết sang storage helpers, GIỮ
-        # nguyên format output (json indent=2 ensure_ascii=False, SUMMARY text).
-        atomic_write_text(summary_path, summary_content)
+        # rách/ghi đè lost-update. SUMMARY.md giờ qua WorkspaceRepo
+        # write_summary_md: locked_write CÙNG khóa <name>.lock với
+        # patch_summary_live_rank + carry-forward badge Live Rank qua lần
+        # regenerate; GIỮ nguyên format output (json indent=2
+        # ensure_ascii=False, SUMMARY text).
+        repo = WorkspaceRepo(base_output_dir)
+        repo.write_summary_md(summary_content)
 
         # Build challenges.json
         json_data = {
@@ -168,7 +200,7 @@ class SummaryGenerator:
         # (mutator bỏ qua state hiện tại — semantics overwrite như cũ), atomic
         # tmp+replace trong phạm vi khóa. _json_safe áp TRƯỚC để giữ hành vi
         # thay NaN/Inf -> None như bản ghi trực tiếp trước đây.
-        WorkspaceRepo(base_output_dir).mutate_challenges(
+        repo.mutate_challenges(
             lambda _current: _json_safe(json_data)
         )
 

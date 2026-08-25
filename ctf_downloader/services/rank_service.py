@@ -19,6 +19,7 @@ from ..storage.workspace_repo import WorkspaceRepo
 from ..ui.diagnostics import Diagnostic, render as render_diagnostic
 from ..ui.theme import ACCENT_DEEP, FG_BASE, load_theme
 from ..utils.logger import Logger
+from ..utils.sanitize import md_cell, strip_ansi
 
 #: Console riêng với theme PHOSPHOR FIELD KIT (spec §3) — các token
 #: ``fg.base`` / ``accent.deep`` … chỉ resolve trên console có load_theme().
@@ -148,7 +149,10 @@ class RankService:
           ``on accent.deep``.
         - Footer tóm tắt ``rank X/Y · gap N pts`` muted.
         """
-        title = data.get("title") or "CTF Competition"
+        # Hunter-c14 BUG-C14-1: title/tên team do SERVER kiểm soát — strip
+        # ANSI/control trước khi bọc Text() để ESC không đi nguyên vào
+        # terminal (terminal injection: đổi màu/clear screen/OSC title).
+        title = strip_ansi(data.get("title")) or "CTF Competition"
         my_team = data.get("my_team")
         my_user = data.get("my_user")
         my_rank = data.get("my_rank")
@@ -172,13 +176,17 @@ class RankService:
             table.add_column("GAP", justify="right", style="fg.muted",
                              no_wrap=True)
 
-            top_score = standings[0].get("score") or 0
+            # Hunter-c14 BUG-C14-7: standings có thể chưa sort từ server —
+            # top_score lấy MAX thay vì standings[0], cộng clamp tại nguồn
+            # để gap luôn >= 0 (không bao giờ in '--N pts'); footer phía
+            # dưới đã clamp theo cùng cách.
+            top_score = max((s.get("score") or 0) for s in standings)
             for idx, s in enumerate(standings[:top_n], 1):
                 pos = s.get("pos") or idx
-                name = s.get("name") or "Unknown"
+                name = strip_ansi(s.get("name") or "") or "Unknown"
                 score = s.get("score") or 0
 
-                gap_pts = top_score - score
+                gap_pts = max(0, top_score - score)
                 gap_str = "-" if gap_pts == 0 else f"-{gap_pts} pts"
 
                 is_me = ((my_team and name == my_team)
@@ -218,14 +226,12 @@ class RankService:
             padding=(0, 1),
         )
 
-        if update_docs and self.workspace_path and os.path.exists(self.workspace_path):
-            self._save_ranking_docs(data)
-
-        return data
-
     def _save_ranking_docs(self, data: Dict[str, Any]):
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        title = data.get("title") or "CTF Competition"
+        # Hunter-c14 BUG-C14-2: mọi giá trị server-control nhúng vào
+        # RANKING.md đi qua md_cell — '|' sinh cột ảo, newline sinh hàng
+        # bảng giả, ESC làm bẩn file. So sánh is_me dùng giá trị THÔ.
+        title = md_cell(data.get("title")) or "CTF Competition"
         my_team = data.get("my_team") or "-"
         my_user = data.get("my_user") or "-"
         my_rank = data.get("my_rank") or "-"
@@ -238,8 +244,8 @@ class RankService:
         lines = [
             f"# 🏆 Live Ranking & Scoreboard: {title}\n",
             f"- **Last Updated**: `{now_str}`",
-            f"- **Team**: `{my_team}`",
-            f"- **User**: `{my_user}`",
+            f"- **Team**: `{md_cell(my_team)}`",
+            f"- **User**: `{md_cell(my_user)}`",
             f"- **Current Rank**: `#{my_rank}` / `{total_teams} teams`",
             f"- **Total Points**: `{my_score} pts`\n",
             "## 📊 Top Standings\n",
@@ -253,9 +259,9 @@ class RankService:
             score = s.get("score") or 0
             is_me = (my_team and name == my_team) or (my_user and name == my_user)
             if is_me:
-                lines.append(f"| **#{pos}** | **{name} (You)** 🎯 | **{score}** |")
+                lines.append(f"| **#{pos}** | **{md_cell(name)} (You)** 🎯 | **{score}** |")
             else:
-                lines.append(f"| #{pos} | {name} | {score} |")
+                lines.append(f"| #{pos} | {md_cell(name)} | {score} |")
 
         lines.append("")
         self.repo.write_ranking_md("\n".join(lines))
