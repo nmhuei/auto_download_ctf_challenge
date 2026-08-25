@@ -37,6 +37,7 @@ _ctf() {
                 'export-pack:Đóng gói writeup đã solve thành pack zip'
                 'history:Lịch sử submit flag của workspace'
                 'open:Mở thư mục challenge trong file manager/terminal'
+                'config:Xem/đặt cấu hình toàn cục (vd: ctf config auto-sync off)'
                 'sniper:Nộp flag tự động đúng giờ G'
                 'serve:Dashboard web read-only cho workspace'
             )
@@ -226,6 +227,11 @@ _ctf() {
                     _arguments \
                         ':target:(challenge id/name)' \
                         '(-w --workspace)'{-w,--workspace}'[CTF workspace directory]:dir:_directories'
+                    ;;
+                config)
+                    _arguments \
+                        ':key:(auto-sync)' \
+                        ':value:(on off)'
                     ;;
                 serve|web)
                     _arguments \

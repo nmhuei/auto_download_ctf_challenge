@@ -6,6 +6,7 @@ import sys
 
 from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test cũ
     get_auth_for_workspace,
+    handle_config,
     handle_doctor,
     handle_export_pack,
     handle_hoard,
@@ -74,6 +75,7 @@ class _PhosphorHelpParser(argparse.ArgumentParser):
             ('history', 'Lịch sử submit flag của workspace'),
             ('serve', 'Dashboard web read-only cho workspace'),
             ('open', 'Mở thư mục challenge trong file manager'),
+            ('config', 'Xem/đặt cấu hình toàn cục (auto-sync…)'),
             ('menu', 'Console interactive đầy đủ'),
         ]
 
@@ -325,6 +327,15 @@ def build_unified_parser():
     open_parser.add_argument('target', help='Challenge ID hoặc Name')
     open_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory')
 
+    # 17. CONFIG — xem/đặt cấu hình toàn cục (spec event-window §4:
+    #     "Đổi ý: ctf config auto-sync off")
+    config_parser = subparsers.add_parser('config',
+                                          help='Xem/đặt cấu hình toàn cục (vd: ctf config auto-sync off)')
+    config_parser.add_argument('key', nargs='?',
+                               help='Tên key (vd auto-sync). Bỏ trống để liệt kê mọi key')
+    config_parser.add_argument('value', nargs='?',
+                               help="Giá trị mới (auto-sync: on|off). Bỏ trống để chỉ xem giá trị hiện tại")
+
     return parser
 
 
@@ -432,6 +443,8 @@ def main():
         handle_serve(args)
     elif cmd == 'open':
         handle_open(args)
+    elif cmd == 'config':
+        handle_config(args)
     elif cmd in ['menu', 'ui', 'console']:
         launch_interactive_menu(workspace_path=args.workspace, cookie=args.cookie, token=args.token)
     else:

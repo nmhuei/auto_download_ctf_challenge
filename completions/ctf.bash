@@ -9,7 +9,7 @@ _ctf() {
 
     local GLOBAL_OPTS="-v --version -i --interactive -w --workspace"
 
-    local SUBCOMMANDS="pull download clone status tree ls dashboard note ghi-chu tag tags workspaces scan instance container spawn submit flag hoard flag-stash rank scoreboard leaderboard watch register reg doctor health checkup menu ui console storage du archive sync resync export-pack history log open sniper serve web"
+    local SUBCOMMANDS="pull download clone status tree ls dashboard note ghi-chu tag tags workspaces scan instance container spawn submit flag hoard flag-stash rank scoreboard leaderboard watch register reg doctor health checkup menu ui console storage du archive sync resync export-pack history log open sniper serve web config"
 
     # Tìm subcommand cuối (bỏ qua option và giá trị của nó)
     local cmd=""
@@ -33,6 +33,7 @@ _ctf() {
             export-pack)                  cmd="export-pack" ;;
             history|log)                  cmd="history" ;;
             open)                         cmd="open" ;;
+            config)                       cmd="config" ;;
             sniper)                       cmd="sniper" ;;
             serve|web)                    cmd="serve" ;;
         esac
@@ -58,6 +59,7 @@ _ctf() {
         export-pack) opts="-w --workspace --out" ;;
         history)     opts="-w --workspace --all" ;;
         open)        opts="-w --workspace" ;;
+        config)      opts="key value on off auto-sync" ;;
         sniper)      opts="-w --workspace --start-at --retry-wrong --poll" ;;
         serve)       opts="-w --workspace --port" ;;
         *)           opts="$GLOBAL_OPTS $SUBCOMMANDS" ;;

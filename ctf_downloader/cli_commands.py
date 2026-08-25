@@ -1165,3 +1165,96 @@ def _handle_storage_archive(args, StorageManager, human_size):
         Logger.success(f"Đã chuyển workspace vào thùng rác: {trash}")
     else:
         Logger.info('Giữ nguyên workspace gốc.')
+
+
+# ----------------------------------------------------------------------
+# CONFIG — xem/đặt cấu hình toàn cục (spec event-window §4)
+# ----------------------------------------------------------------------
+
+#: Registry các key config toàn cục điều khiển được từ ``ctf config``.
+#: ``path`` = vị trí lưu trong global config JSON (~/.config/ctf_toolkit/
+#: config.json); ``values`` = bảng giá trị CLI hợp lệ -> giá trị lưu.
+#: Spec event-window §4 ("Đổi ý: ctf config auto-sync off"): tắt auto-sync
+#: định kỳ của watch trong event window (watch_service sẽ đọc
+#: ``auto_sync.enabled`` khi wire consumption — ngoài scope lệnh này).
+_CONFIG_KEYS = {
+    'auto-sync': {
+        'path': ('auto_sync', 'enabled'),
+        'values': {'on': True, 'off': False},
+        'default': True,
+        'desc': ('Tự động cập nhật challenge/scoreboard/notices '
+                 'trong event window (ctf watch)'),
+    },
+}
+
+
+def _config_render(spec, stored):
+    """Giá trị lưu trong JSON -> chuỗi hiển thị CLI (vd True -> 'on')."""
+    for name, val in spec['values'].items():
+        if val == stored:
+            return name
+    return str(stored)
+
+
+def handle_config(args):
+    """``ctf config`` — xem/đặt cấu hình toàn cục.
+
+    - Không đối số: liệt kê mọi key biết được + giá trị hiện tại.
+    - ``ctf config <key>``: xem giá trị hiện tại của một key.
+    - ``ctf config <key> <value>``: đặt giá trị mới + persist global config.
+    Exit code: 0 thành công | 2 key lạ hoặc giá trị lạ.
+    """
+    from .storage.global_config import (
+        GLOBAL_CONFIG_FILE, load_global_config, save_global_config,
+    )
+
+    key = getattr(args, 'key', None)
+    value = getattr(args, 'value', None)
+
+    if key is not None and key not in _CONFIG_KEYS:
+        Logger.error(f"Key không hỗ trợ: '{key}'. Các key biết được: "
+                     f"{', '.join(sorted(_CONFIG_KEYS))}.")
+        sys.exit(2)
+
+    spec = _CONFIG_KEYS.get(key)          # None khi liệt kê (không có key)
+    normalized = None
+    if value is not None:
+        normalized = value.strip().lower()
+        if normalized not in spec['values']:
+            Logger.error(f"Giá trị không hợp lệ cho '{key}': '{value}' "
+                         f"(nhận: {'|'.join(spec['values'])}).")
+            sys.exit(2)
+
+    cfg = load_global_config()
+
+    if value is None:                                   # chế độ XEM
+        shown = sorted(_CONFIG_KEYS.items()) if key is None else [(key, spec)]
+        Logger.info(f'Cấu hình toàn cục ({GLOBAL_CONFIG_FILE}):')
+        for name, kspec in shown:
+            node, found = cfg, True
+            for part in kspec['path']:
+                if isinstance(node, dict) and part in node:
+                    node = node[part]
+                else:
+                    found = False
+                    break
+            current = node if found else kspec['default']
+            rendered = _config_render(kspec, current)
+            suffix = '' if found else ' (mặc định)'
+            Logger.info(f'  {name:<12} = {rendered}{suffix} — {kspec["desc"]}')
+        return
+
+    # Chế độ ĐẶT: ghi đúng path của key, giữ nguyên mọi dữ liệu khác
+    # (workspaces/auth/…) đang có trong global config.
+    new_val = spec['values'][normalized]
+    node = cfg
+    for part in spec['path'][:-1]:
+        child = node.get(part) if isinstance(node, dict) else None
+        if not isinstance(child, dict):
+            child = {}
+            node[part] = child
+        node = child
+    node[spec['path'][-1]] = new_val
+    save_global_config(cfg)
+    Logger.success(f"Đã lưu {key} = {_config_render(spec, new_val)} "
+                   f"({GLOBAL_CONFIG_FILE}).")
