@@ -344,13 +344,205 @@ def handle_submit(args):
         sys.exit(1)
 
 
+def _sanitize_points(raw) -> int:
+    """points metadata có thể là float('inf') (literal Infinity từ platform
+    API) / None / rác — sanitize về int >= 0, KHÔNG bao giờ raise."""
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _age_human(iso_ts) -> str:
+    """Tuổi flag từ ``status.updated_at`` (ISO-8601 UTC 'Z') → '5m'/'3h'/'2d'.
+    Thiếu/hỏng timestamp → '-'."""
+    import datetime as dt
+
+    if not iso_ts:
+        return '-'
+    try:
+        ts = str(iso_ts).strip().replace('Z', '+00:00')
+        then = dt.datetime.fromisoformat(ts)
+        if then.tzinfo is None:
+            then = then.replace(tzinfo=dt.timezone.utc)
+        delta = dt.datetime.now(dt.timezone.utc) - then
+    except ValueError:
+        return '-'
+    secs = max(0, int(delta.total_seconds()))
+    if secs < 60:
+        return f"{secs}s"
+    mins = secs // 60
+    if mins < 60:
+        return f"{mins}m"
+    hours = mins // 60
+    if hours < 48:
+        return f"{hours}h"
+    days = hours // 24
+    if days < 30:
+        return f"{days}d"
+    return f"{days // 30}mo"
+
+
+#: Trạng thái flag được tính là "đang giữ trong kho" chờ submit.
+_HOARD_STATES = ('hoarded', 'found_unverified')
+
+
+def _collect_hoarded(repo: WorkspaceRepo) -> list:
+    """Quét workspace trả về mọi challenge đang GIỮ flag (state ∈
+    hoarded/found_unverified và có value). Mỗi dòng: name/points/state/value/
+    note/updated_at — sort điểm giảm dần (tie-break tên A→Z)."""
+    rows = []
+    for meta_path in repo.iter_challenges():
+        meta = repo.read_metadata(meta_path)
+        if not meta:
+            continue
+        st = repo.read_status(meta_path, meta=meta)
+        fl = st.get('flag') or {}
+        state = fl.get('state')
+        value = str(fl.get('value') or '').strip()
+        if state not in _HOARD_STATES or not value:
+            continue
+        rows.append({
+            'name': str(meta.get('name') or meta.get('id') or '?'),
+            'points': _sanitize_points(meta.get('points')),
+            'state': state,
+            'value': value,
+            'note': str(st.get('notes') or '').strip(),
+            'updated_at': st.get('updated_at'),
+        })
+    rows.sort(key=lambda r: (-r['points'], r['name'].lower()))
+    return rows
+
+
+def _render_hoard_list(args):
+    """``ctf hoard -w WS --list`` — bảng rich các flag đang giữ chờ submit.
+
+    PHOSPHOR như handle_workspaces: heading UPPERCASE faint, bảng borderless
+    (box=None), footer muted tổng kết ``N flags chờ submit · X điểm đang giữ``.
+    Glyph lấy TỪ STATUS_ICONS (🏴 hoarded / ❓ found_unverified); flag bị che
+    mặc định (4 ký tự đầu + ***) giống history, ``--all`` hiện đầy đủ.
+    Workspace chưa có gì → EmptyState thân thiện, KHÔNG lỗi."""
+    from rich.table import Table
+    from rich.text import Text as _Text
+
+    from .storage.constants import STATUS_ICONS
+    from .ui.theme import load_theme
+
+    ws = args.workspace
+    if not os.path.isdir(ws):
+        Logger.error(f"Workspace không tồn tại: {ws}")
+        sys.exit(1)
+    repo = WorkspaceRepo(ws)
+    entries = _collect_hoarded(repo)
+
+    ws_console = Console(theme=load_theme(None), highlight=False)
+    ws_console.print()
+    _emit_section_heading("KHO FLAG CHỜ SUBMIT", ws_console)
+
+    if not entries:
+        ws_path = os.path.abspath(ws)
+        _emit_empty_state(
+            "Kho trống — lưu flag bằng ",
+            literal="ctf hoard <challenge> <FLAG>",
+            tail=f" (workspace: {ws_path}).",
+        )
+        return
+
+    show_all = bool(getattr(args, 'show_all', False))
+    table = Table(
+        box=None, show_header=True, show_edge=False,
+        header_style=_FAINT_COLOR, padding=(0, 2), pad_edge=False)
+    table.add_column("CHALLENGE", no_wrap=False)
+    table.add_column("PTS", no_wrap=True, justify="right")
+    table.add_column("FLAG", no_wrap=True)
+    table.add_column("NOTE", no_wrap=False)
+    table.add_column("TUỔI", no_wrap=True, justify="right")
+
+    for e in entries:
+        glyph = STATUS_ICONS['flag'].get(e['state'], '❓')
+        shown = e['value'] if show_all else _redact_flag(e['value'])
+        note = e['note']
+        if len(note) > 40:
+            note = note[:39] + '…'
+        name_cell = _Text(e['name'], style="fg.base")
+        flag_cell = _Text(f"{glyph} ", style=_MUTED_COLOR)
+        flag_cell.append(shown, style="fg.base" if show_all else _MUTED_COLOR)
+        table.add_row(
+            name_cell,
+            _Text(str(e['points']), style=_MUTED_COLOR),
+            flag_cell,
+            _Text(note or '-', style=_MUTED_COLOR),
+            _Text(_age_human(e['updated_at']), style=_FAINT_COLOR),
+        )
+
+    ws_console.print(table)
+    total_pts = sum(e['points'] for e in entries)
+    footer = _Text(
+        f"{len(entries)} flags chờ submit · {total_pts} điểm đang giữ",
+        style=_MUTED_COLOR)
+    ws_console.print(footer)
+    ws_console.print()
+
+
+def _handle_hoard_remove(args):
+    """``ctf hoard <chal> --remove`` — gỡ flag khỏi kho: state về ``none``,
+    xoá value. Trục solve KHÔNG bị hạ (nguyên tắc chỉ-nâng). Resolve qua
+    StatusService.resolve_challenge (exact id → exact name → substring)."""
+    from .services.status_service import (
+        AmbiguousChallengeError,
+        ChallengeNotFoundError,
+    )
+
+    chall_id = getattr(args, 'id', None)
+    chall_name = getattr(args, 'name', None)
+    identifier = chall_id or chall_name or getattr(args, 'target', None)
+    if not identifier:
+        Logger.error("Usage: ctf hoard <challenge_id|name> --remove")
+        sys.exit(2)
+
+    repo = WorkspaceRepo(args.workspace)
+    try:
+        meta_path, meta = StatusService.resolve_challenge(repo, identifier)
+    except ChallengeNotFoundError as e:
+        Logger.error(str(e))
+        sys.exit(1)
+    except AmbiguousChallengeError as e:
+        Logger.error(str(e))
+        StatusService._print_matches(e.matches)
+        sys.exit(1)
+
+    def _mut(st):
+        st["flag"]["value"] = None
+        st["flag"]["state"] = "none"
+        return st
+
+    repo.update_status(meta_path, _mut)
+    shown_name = (meta or {}).get('name') or str(identifier)
+    Logger.success("🗑 Đã gỡ flag khỏi kho cho "
+                   f"[bold cyan]{shown_name}[/bold cyan].")
+
+
 def handle_hoard(args):
-    """GAP-02 / spec §7: ``ctf hoard <chal> <FLAG>`` — lưu flag tìm được vào kho
-    local (flag.value=x, state=hoarded) KHÔNG submit lên platform.
+    """GAP-02 / spec §7: ``ctf hoard`` — kho flag local.
+
+    Ba nhánh:
+      - ``--list``: bảng các flag đang giữ (state=hoarded/found_unverified)
+        chờ submit; ``--all`` hiện flag đầy đủ.
+      - ``<chal> --remove``: gỡ flag khỏi kho (state về none, xoá value).
+      - mặc định: ``<chal> <FLAG>`` lưu vào kho (flag.value=x, state=hoarded)
+        KHÔNG submit lên platform — qua SubmitService.hoard_flag.
 
     Quyết định đặt tên: tên ``flag`` theo spec đã bị ``submit`` dùng làm alias
     (tồn tại từ trước) — nên lệnh mới là ``hoard``, alias ``flag-stash``.
     """
+    if getattr(args, 'list', False):
+        _render_hoard_list(args)
+        return
+
+    if getattr(args, 'remove', False):
+        _handle_hoard_remove(args)
+        return
+
     chall_id = getattr(args, 'id', None) or (
         args.target if args.target and str(args.target).isdigit() else None)
     chall_name = getattr(args, 'name', None) or (
@@ -359,7 +551,9 @@ def handle_hoard(args):
     flag_value = args.flag or args.flag_val
 
     if not identifier or not flag_value:
-        Logger.error("Usage: ctf hoard <challenge_id|name> <FLAG>")
+        Logger.error("Usage: ctf hoard <challenge_id|name> <FLAG>\n"
+                     "       ctf hoard -w WS --list [--all]\n"
+                     "       ctf hoard <challenge_id|name> --remove")
         sys.exit(2)
 
     try:

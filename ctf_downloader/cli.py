@@ -207,11 +207,17 @@ def build_unified_parser():
     #     (tên `flag` đã là alias của `submit` nên lệnh mới đặt `hoard`)
     hoard_parser = subparsers.add_parser('hoard', aliases=['flag-stash'], help='Lưu flag tìm được vào kho local (metadata.json) mà KHÔNG submit lên platform')
     hoard_parser.add_argument('target', nargs='?', help='Target challenge ID or Name')
-    hoard_parser.add_argument('flag_val', nargs='?', help='Flag string to hoard')
+    hoard_parser.add_argument('flag_val', nargs='?', help='Flag string to hoard (bỏ qua khi --list/--remove)')
     hoard_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory')
     hoard_parser.add_argument('--id', help='Target challenge ID')
     hoard_parser.add_argument('-n', '--name', help='Target challenge name')
     hoard_parser.add_argument('-f', '--flag', help='Flag string to hoard')
+    hoard_parser.add_argument('--list', action='store_true',
+                              help='Bảng mọi flag đang giữ (hoarded/found_unverified) chờ submit — sort theo điểm giảm dần')
+    hoard_parser.add_argument('--all', dest='show_all', action='store_true',
+                              help='Với --list: hiện flag đầy đủ (mặc định chỉ 4 ký tự đầu + ***)')
+    hoard_parser.add_argument('--remove', action='store_true',
+                              help='Gỡ flag khỏi kho cho challenge chỉ định (state về none, xoá value)')
 
     # 6. RANK / SCOREBOARD / LEADERBOARD
     rank_parser = subparsers.add_parser('rank', aliases=['scoreboard', 'leaderboard'], help='Display live scoreboard standings and update ranking docs')

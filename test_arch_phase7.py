@@ -11,10 +11,12 @@ Kiểm tra:
   instance --sync gọi InstanceService.sync_containers.
 """
 import ast
+import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from argparse import Namespace
 from unittest.mock import patch
@@ -886,6 +888,259 @@ class TestOpenCommand(unittest.TestCase):
         r = _run(["main.py", "open", "ghost", "-w", self.MISSING_WS])
         self.assertEqual(r.returncode, 1,
                          f"open: {r.stdout + r.stderr}")
+
+
+def _make_hoard_workspace(tmp_root):
+    """Workspace tối thiểu cho test hoard: 2 challenge có metadata.json."""
+    import pathlib
+
+    root = pathlib.Path(tmp_root)
+    for slug in ("baby_web", "crypto_hard"):
+        (root / "Web" / slug).mkdir(parents=True, exist_ok=True)
+    chals = [
+        {"id": 1, "name": "Baby Web", "category": "Web", "points": 100},
+        {"id": 2, "name": "Crypto Hard", "category": "Web", "points": 500},
+    ]
+    (root / "challenges.json").write_text(json.dumps({
+        "ctf_info": {"title": "HoardCTF", "url": "https://hoard.example.com",
+                     "platform": "ctfd"},
+        "challenges": chals,
+    }), encoding="utf-8")
+    slugs = {1: "baby_web", 2: "crypto_hard"}
+    for c in chals:
+        folder = root / "Web" / slugs[c["id"]]
+        (folder / "metadata.json").write_text(
+            json.dumps(c), encoding="utf-8")
+    return root
+
+
+class TestHoardListRemove(unittest.TestCase):
+    """Phase 7e — ``ctf hoard`` UI flow:
+
+    - ``--list``: bảng rich các flag đang giữ (state=hoarded/found_unverified)
+      đọc qua repo.read_status, sort điểm giảm dần; flag bị CHE mặc định
+      (4 ký tự đầu + ***) như history, ``--all`` full; footer tổng kết.
+    - ``<chal> --remove``: gỡ flag khỏi kho qua repo.update_status
+      (state về none, xoá value).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="p7_hoard_")
+        self.root = _make_hoard_workspace(self._tmp)
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _parser(self):
+        from ctf_downloader.cli import build_unified_parser
+
+        return build_unified_parser()
+
+    # ---- parse args ----
+    def test_parse_hoard_list_defaults_and_all(self):
+        ns = self._parser().parse_args(["hoard", "-w", self._tmp, "--list"])
+        self.assertTrue(ns.list)
+        self.assertFalse(ns.show_all)
+        self.assertFalse(ns.remove)
+        ns = self._parser().parse_args(
+            ["hoard", "-w", self._tmp, "--list", "--all"])
+        self.assertTrue(ns.show_all)
+
+    def test_parse_hoard_remove_flag(self):
+        ns = self._parser().parse_args(["hoard", "Crypto Hard",
+                                        "--remove", "-w", self._tmp])
+        self.assertTrue(ns.remove)
+        self.assertFalse(ns.list)
+        self.assertEqual(ns.target, "Crypto Hard")
+
+    # ---- --list: mock repo, assert render ----
+    def _patch_repo_rows(self, rows_by_name):
+        """Patch WorkspaceRepo để _collect_hoarded thấy đúng rows."""
+        from ctf_downloader.storage.workspace_repo import WorkspaceRepo
+
+        metas = {
+            "Baby Web": {"id": 1, "name": "Baby Web", "points": 100},
+            "Crypto Hard": {"id": 2, "name": "Crypto Hard", "points": 500},
+        }
+        paths = {
+            "Baby Web": self.root / "Web" / "baby_web" / "metadata.json",
+            "Crypto Hard": self.root / "Web" / "crypto_hard" / "metadata.json",
+        }
+        ordered = [paths[n] for n in ("Crypto Hard", "Baby Web")]
+
+        def fake_read_status(meta_path, meta=None):
+            name = next(n for n, p in paths.items() if p == meta_path)
+            return rows_by_name[name]
+
+        return (
+            patch.object(WorkspaceRepo, "iter_challenges",
+                         return_value=iter(ordered)),
+            patch.object(WorkspaceRepo, "read_metadata",
+                         side_effect=lambda p: metas[
+                             next(n for n, q in paths.items() if q == p)]),
+            patch.object(WorkspaceRepo, "read_status",
+                         side_effect=fake_read_status),
+        )
+
+    def test_handle_hoard_list_renders_sorted_redacted_with_footer(self):
+        import contextlib
+        import io
+
+        from ctf_downloader import cli_commands
+
+        rows = {
+            "Baby Web": {
+                "solve": "working", "notes": "đang thử ssti",
+                "updated_at": "2026-08-24T09:00:00Z",
+                "flag": {"value": "PTITCTF{web_secret}", "state": "hoarded"},
+            },
+            "Crypto Hard": {
+                "solve": "unsolved", "notes": "",
+                "updated_at": "2026-08-24T10:30:00Z",
+                "flag": {"value": "FLAG{x9y8}", "state": "found_unverified"},
+            },
+        }
+        p_iter, p_meta, p_st = self._patch_repo_rows(rows)
+        ns = Namespace(workspace=str(self.root), list=True, show_all=False)
+        with p_iter, p_meta, p_st:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                cli_commands.handle_hoard(ns)  # KHÔNG SystemExit
+        out = buf.getvalue()
+        # cả hai challenge hiện diện, sort điểm giảm dần (500 trước 100)
+        self.assertLess(out.index("Crypto Hard"), out.index("Baby Web"))
+        # redact mặc định giống history: 4 ký tự đầu + ***
+        self.assertIn("PTIT***", out)
+        self.assertIn("FLAG***", out)
+        self.assertNotIn("PTITCTF{web_secret}", out)
+        self.assertNotIn("FLAG{x9y8}", out)
+        # glyph PHOSPHOR theo STATUS_ICONS['flag']
+        self.assertIn("🏴", out)
+        self.assertIn("❓", out)
+        # note + footer tổng kết
+        self.assertIn("đang thử ssti", out)
+        self.assertIn("2 flags chờ submit", out)
+        self.assertIn("600 điểm đang giữ", out)
+
+    def test_handle_hoard_list_all_reveals_full_flags(self):
+        import contextlib
+        import io
+
+        from ctf_downloader import cli_commands
+
+        rows = {
+            "Baby Web": {
+                "solve": "unsolved", "notes": "", "updated_at": None,
+                "flag": {"value": "PTITCTF{web_secret}", "state": "hoarded"},
+            },
+            "Crypto Hard": {
+                "solve": "unsolved", "notes": "", "updated_at": None,
+                "flag": {"value": None, "state": "none"},
+            },
+        }
+        p_iter, p_meta, p_st = self._patch_repo_rows(rows)
+        ns = Namespace(workspace=str(self.root), list=True, show_all=True)
+        with p_iter, p_meta, p_st:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                cli_commands.handle_hoard(ns)
+        out = buf.getvalue()
+        self.assertIn("PTITCTF{web_secret}", out)
+        # state=none KHÔNG liệt kê dù --all
+        self.assertNotIn("Crypto Hard", out)
+
+    def test_handle_hoard_list_empty_is_graceful_no_exit(self):
+        import contextlib
+        import io
+
+        from ctf_downloader import cli_commands
+
+        ns = Namespace(workspace=self._tmp, list=True, show_all=False)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), \
+             contextlib.redirect_stderr(io.StringIO()):
+            cli_commands.handle_hoard(ns)  # kho trống -> EmptyState, không exit
+        out = buf.getvalue()
+        self.assertIn("KHO FLAG CHỜ SUBMIT", out.upper())
+        self.assertIn("Kho trống", out)
+
+    def test_handle_hoard_list_missing_workspace_exits_1(self):
+        import contextlib
+        import io
+
+        from ctf_downloader import cli_commands
+
+        ns = Namespace(workspace="/nonexistent_ws_p7_hoard", list=True,
+                       show_all=False)
+        buf_err = io.StringIO()
+        with contextlib.redirect_stderr(buf_err), \
+             contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as cm:
+                cli_commands.handle_hoard(ns)
+        self.assertEqual(cm.exception.code, 1)
+
+    # ---- --remove: cập nhật state thật trong workspace tạm ----
+    def test_handle_hoard_remove_updates_state_to_none(self):
+        import contextlib
+        import io
+
+        from ctf_downloader import cli_commands
+        from ctf_downloader.storage.workspace_repo import WorkspaceRepo
+
+        meta_path = self.root / "Web" / "crypto_hard" / "metadata.json"
+        repo = WorkspaceRepo(self.root)
+
+        def _hoard(st):
+            st["flag"]["value"] = "FLAG{to_be_removed}"
+            st["flag"]["state"] = "found_unverified"
+            return st
+
+        repo.update_status(meta_path, _hoard)
+
+        ns = Namespace(workspace=str(self.root), target="Crypto Hard",
+                       id=None, name=None, flag_val=None, flag=None,
+                       list=False, remove=True, show_all=False)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), \
+             contextlib.redirect_stderr(io.StringIO()):
+            cli_commands.handle_hoard(ns)
+        self.assertIn("Crypto Hard", buf.getvalue())
+
+        final = repo.read_status(meta_path)
+        self.assertEqual(final["flag"]["state"], "none")
+        self.assertIsNone(final["flag"]["value"])
+
+    def test_handle_hoard_remove_without_identifier_exits_2(self):
+        import contextlib
+        import io
+
+        from ctf_downloader import cli_commands
+
+        ns = Namespace(workspace=str(self.root), target=None, id=None,
+                       name=None, flag_val=None, flag=None, list=False,
+                       remove=True, show_all=False)
+        with contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as cm:
+                cli_commands.handle_hoard(ns)
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_handle_hoard_remove_unknown_challenge_exits_1(self):
+        import contextlib
+        import io
+
+        from ctf_downloader import cli_commands
+
+        ns = Namespace(workspace=str(self.root), target="ghost", id=None,
+                       name=None, flag_val=None, flag=None, list=False,
+                       remove=True, show_all=False)
+        with contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as cm:
+                cli_commands.handle_hoard(ns)
+        self.assertEqual(cm.exception.code, 1)
 
 
 if __name__ == "__main__":
