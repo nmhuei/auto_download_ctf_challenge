@@ -11,6 +11,7 @@ import time
 from typing import Optional, Union, Dict, Any, List, Tuple
 
 from ..utils.logger import Logger
+from ..ui.diagnostics import Diagnostic, render as render_diagnostic
 from ..services.session_factory import create_session
 from ..utils.flag_format import extract_flag_format, validate_flag
 from ..platforms.detector import PlatformDetector
@@ -23,6 +24,83 @@ NO_FORMAT_MESSAGE = (
     "Chưa xác định được flag format cho giải này. "
     "Hãy nhập bằng --flag-format hoặc nhập tay khi được hỏi."
 )
+
+# Hint dùng chung cho mọi vấn đề xác thực / kết nối nền tảng (spec §4.6).
+_DOCTOR_HINTS = (
+    "chạy 'ctf doctor -u <url>' để kiểm tra cookie/token và kết nối nền tảng",
+)
+
+
+# ----------------------------------------------------------------------
+# Diagnostic builders (ui/diagnostics.py) — lỗi nghiệp vụ submit.
+# Các builder là hàm thuần để test assert trực tiếp trên hints.
+# ----------------------------------------------------------------------
+
+def diag_no_format() -> Diagnostic:
+    """Gate 1 chặn submit vì chưa xác định được flag format."""
+    return Diagnostic(
+        "warning",
+        NO_FORMAT_MESSAGE,
+        hints=(
+            "dùng --flag-format '<regex>' (vd: --flag-format '^PTITCTF\\{.+\\}$')",
+            "hoặc chạy lại trong terminal tương tác và nhập tay khi được hỏi "
+            "(regex sẽ được lưu vào challenges.json)",
+            "xem thể lệ/trang chủ giải để biết định dạng flag",
+        ),
+    )
+
+
+def diag_format_mismatch(fmt: str, source: str) -> Diagnostic:
+    """Flag không khớp định dạng của giải."""
+    return Diagnostic(
+        "error",
+        f"Flag không khớp định dạng của giải ({fmt}; nguồn: {source or 'unknown'}).",
+        hints=(
+            "kiểm tra lại flag đã copy đủ và đúng chữ hoa/thường chưa",
+            f"nếu định dạng giải khác, truyền đè bằng --flag-format '<regex>' "
+            f"(đang dùng: {fmt})",
+            "chạy 'ctf doctor -u <url>' nếu nghi ngờ lấy phải rules của giải khác",
+        ),
+    )
+
+
+def diag_blacklisted(prev_cid: Any) -> Diagnostic:
+    """Blacklist chặn submit flag đã sai trước đó."""
+    return Diagnostic(
+        "warning",
+        f"🚫 Blacklisted: flag này đã submit SAI trước đó (challenge {prev_cid}).",
+        hints=(
+            "flag này đã sai — dùng --force để vẫn submit nếu chắc chắn đúng",
+            "kiểm tra kỹ flag (copy trọn vẹn, không thừa/thiếu ký tự) hoặc tìm flag khác",
+        ),
+    )
+
+
+def diag_auth_warning(exc: Exception) -> Diagnostic:
+    """Authenticate thất bại nhưng pipeline vẫn tiếp tục (submit có thể vẫn chạy)."""
+    return Diagnostic(
+        "warning",
+        "Xác thực với nền tảng thất bại — tiếp tục submit với phiên hiện tại",
+        cause=f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__,
+        hints=(
+            *_DOCTOR_HINTS,
+            "kiểm tra cookie/token còn hạn và đúng tài khoản đăng nhập",
+        ),
+    )
+
+
+def diag_detect_failure(exc: Exception) -> Diagnostic:
+    """Không phát hiện được nền tảng CTF từ URL."""
+    return Diagnostic(
+        "error",
+        "Không phát hiện được nền tảng CTF từ URL",
+        cause=f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__,
+        hints=(
+            "kiểm tra URL giải (đúng domain, có https://)",
+            *_DOCTOR_HINTS,
+            "nếu workspace thiếu challenges.json, chạy 'ctf pull -u <url>' trước",
+        ),
+    )
 
 # Throttle: khoảng cách tối thiểu giữa 2 lần submit trong cùng process (giây).
 # Nguồn chân lý duy nhất là PLATFORMS[key].throttle (registry); giá trị fallback
@@ -63,7 +141,13 @@ class SubmitService:
             token=token,
             timeout=timeout
         )
-        self.platform = PlatformDetector.detect_platform(self.url, self.session)
+        try:
+            self.platform = PlatformDetector.detect_platform(self.url, self.session)
+        except Exception as exc:
+            # Lỗi phát hiện nền tảng: render Diagnostic rồi lan raise như cũ
+            # (caller giữ nguyên hành vi pipeline / exit code).
+            render_diagnostic(diag_detect_failure(exc))
+            raise
         self.challenges_cache: Dict[str, Any] = {}
         self._load_challenges()
 
@@ -309,11 +393,11 @@ class SubmitService:
         # ---- Gate 1: flag format ----
         fmt, fmt_source = self.resolve_flag_format()
         if not fmt:
-            Logger.warning(NO_FORMAT_MESSAGE)
+            render_diagnostic(diag_no_format())
             return False, NO_FORMAT_MESSAGE
         if not validate_flag(flag, fmt):
+            render_diagnostic(diag_format_mismatch(fmt, fmt_source))
             msg = f"Flag không khớp định dạng của giải ({fmt}; nguồn: {fmt_source or 'unknown'})."
-            Logger.error(msg)
             return False, msg
 
         # ---- Gate 2: blacklist / chống submit trùng ----
@@ -326,7 +410,7 @@ class SubmitService:
                     Logger.info("Bỏ qua: flag này đã submit ĐÚNG cho chính challenge này trước đó (already solved).")
                     return False, "⏭️ Already solved: flag này đã đúng cho challenge này."
             elif prev_result == "incorrect" and not force:
-                Logger.warning(f"Flag này đã submit SAI trước đó (challenge {prev_cid}). Dùng --force để vẫn submit.")
+                render_diagnostic(diag_blacklisted(prev_cid))
                 return False, f"🚫 Blacklisted: flag này đã submit SAI trước đó (challenge {prev_cid})."
 
         Logger.info(f"Submitting flag for [bold cyan]{name}[/bold cyan] (ID: {cid})...")
@@ -336,7 +420,7 @@ class SubmitService:
         try:
             self.platform.authenticate()
         except Exception as e:
-            Logger.warning(f"Authenticate warning: {e}")
+            render_diagnostic(diag_auth_warning(e))
 
         self._throttle()
 

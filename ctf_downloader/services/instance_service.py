@@ -15,6 +15,41 @@ from ..services.platform_resolver import PlatformResolver
 from ..storage.constants import TARGET_CONNECTION_FMT
 from ..storage.workspace_repo import WorkspaceRepo
 from ..utils.logger import Logger
+from ..ui.diagnostics import Diagnostic, render as render_diagnostic
+
+# Hint dùng chung cho mọi vấn đề kết nối / xác thực nền tảng (spec §4.6).
+_DOCTOR_HINTS = (
+    "chạy 'ctf doctor -u <url>' để kiểm tra cookie/token và kết nối nền tảng",
+)
+
+
+def diag_detect_failure(exc: Exception) -> Diagnostic:
+    """Không dựng được platform adapter cho workspace."""
+    return Diagnostic(
+        "error",
+        "Không khởi tạo được adapter nền tảng cho workspace này",
+        cause=f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__,
+        hints=(
+            "kiểm tra challenges.json có ctf_info.url / platform_url hợp lệ",
+            *_DOCTOR_HINTS,
+            "nếu workspace trống, chạy 'ctf pull -u <url>' để tải lại",
+        ),
+    )
+
+
+def diag_start_instance_fail(challenge_id: Any, name: str, msg: str) -> Diagnostic:
+    """Không tạo được container instance cho challenge."""
+    return Diagnostic(
+        "error",
+        f"Không tạo được container instance cho {name} (ID: {challenge_id})",
+        cause=msg or None,
+        hints=(
+            *_DOCTOR_HINTS,
+            "kiểm tra quota/giới hạn container trên nền tảng "
+            "(có thể đã hết slot hoặc hết thời gian)",
+            "chạy 'ctf instance status <id>' xem trạng thái hiện tại rồi thử start lại",
+        ),
+    )
 
 
 class InstanceService:
@@ -33,11 +68,17 @@ class InstanceService:
         return data
 
     def _init_platform(self):
-        session, platform, _info = PlatformResolver.for_workspace(
-            self.repo,
-            cookie=self.cookie,
-            token=self.token,
-        )
+        try:
+            session, platform, _info = PlatformResolver.for_workspace(
+                self.repo,
+                cookie=self.cookie,
+                token=self.token,
+            )
+        except Exception as exc:
+            # Lỗi phát hiện nền tảng: render Diagnostic rồi lan raise như cũ
+            # (caller giữ nguyên hành vi pipeline / exit code).
+            render_diagnostic(diag_detect_failure(exc))
+            raise
         return platform
 
     def find_challenge(self, challenge_id: Optional[Any] = None, challenge_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -98,7 +139,7 @@ class InstanceService:
             return True, info
         else:
             msg = info.get('message', 'Unknown error')
-            Logger.error(f'Failed to start container: {msg}')
+            render_diagnostic(diag_start_instance_fail(challenge_id, name, msg))
             return False, info
 
     def stop_instance(self, challenge_id: Any) -> Tuple[bool, str]:
