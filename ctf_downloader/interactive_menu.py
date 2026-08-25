@@ -457,7 +457,13 @@ class CTFInteractiveConsole:
         if ch == '0' or not ch:
             return
 
-        if ch.isdigit() and 1 <= int(ch) <= len(containers):
+        if ch.isdigit() and not ch.isdecimal():
+            # C13-MENU1: '²'/'①' trông như số nhưng int() không parse được —
+            # từ chối sạch thay vì nổ ValueError ngoài mọi try.
+            Logger.warning(f'Chọn bằng số thập phân hoặc nhập ID: {ch}')
+            return
+
+        if ch.isdecimal() and 1 <= int(ch) <= len(containers):
             target_chall = containers[int(ch) - 1]
             cid = target_chall.get('id')
         else:

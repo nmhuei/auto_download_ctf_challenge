@@ -584,6 +584,11 @@ class InstanceKeepAlive:
                 tracker.restart_phase = None
                 tracker.tcp_fail_count = 0
                 tracker.health_checks = 0
+                # C13-K1/K2: container MỚI → bộ đếm renew của cuộc sống cũ
+                # phải reset cùng lúc (attempts: ngưỡng GIVE_UP 4 lần fail;
+                # count: whale cấp lại đủ WHALE_MAX_RENEWS lượt phía server).
+                tracker.renew_attempts = 0
+                tracker.renew_count = 0
                 fresh_remaining = self._remaining_seconds(status,
                                                           tracker.platform_kind)
                 if fresh_remaining:
