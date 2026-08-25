@@ -1070,7 +1070,46 @@ class WatchService:
             if old is not None and n > int(old or 0):
                 lines.append(f"💡 Challenge {getattr(c, 'name', cid)} có hint mới!")
         self.state["_hints"] = new_hints
+
+        # Solve attribution (spec challenge-status-model §4): watch tick gọi
+        # fetch_solve_attribution qua CÙNG đường pull đang dùng
+        # (PullService.sync_solve_attribution — chỉ-nâng + stamp synced_at),
+        # để trạng thái by_team/by_other của team-mate cập nhật khi đang
+        # `ctf watch` mà không cần pull lại. Tần suất = cadence task
+        # ``challenges`` (120s mặc định, burst 25s khi có bài mới, backoff/
+        # 429 do _run_round lo) — không lập task riêng gây spam API; ngoài
+        # window (ENDED) bỏ qua.
+        if window_active:
+            synced = self._sync_solve_attribution()
+            if synced:
+                lines.append(f"🩸 Solve attribution đồng bộ: "
+                             f"{synced} challenge(s) đổi trạng thái.")
         return lines
+
+    def _sync_solve_attribution(self) -> Optional[int]:
+        """Đồng bộ solve attribution bằng ĐÚNG helper pull đang dùng.
+
+        Never-raise: platform không hỗ trợ ``fetch_solve_attribution`` → None
+        (im lặng); mọi lỗi (mạng/repo) → log warning tiếng Việt và trả None —
+        tick challenges (count/hint) vẫn tính là thành công, không backoff.
+        """
+        if not callable(getattr(self.platform, "fetch_solve_attribution", None)):
+            return None
+        from .pull_service import PullService
+        try:
+            updated = PullService.sync_solve_attribution(
+                self.platform, self.workspace_path,
+                on_error=lambda msg: Logger.warning(
+                    f"⚠️ Đồng bộ solve attribution lỗi: {msg} — bỏ qua, "
+                    f"chờ kỳ poll kế tiếp."))
+        except Exception as exc:
+            Logger.warning(f"⚠️ Đồng bộ solve attribution lỗi: {exc} — "
+                           f"bỏ qua, chờ kỳ poll kế tiếp.")
+            return None
+        try:
+            return int(updated or 0)
+        except (TypeError, ValueError):
+            return 0
 
     # ------------------------------------------------------------------ #
     # Task: keep-alive ♻️ (spec §9)

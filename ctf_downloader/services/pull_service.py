@@ -9,7 +9,7 @@ copy cookies/headers từ master đúng 1 lần và tái sử dụng trong suố
 """
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from rich.progress import (Progress, ProgressColumn, BarColumn, TextColumn,
@@ -365,10 +365,16 @@ class PullService:
     # Sync solve attribution (spec challenge-status-model §4)
     # ------------------------------------------------------------------ #
     @staticmethod
-    def sync_solve_attribution(platform: Any, output_dir: str) -> int:
+    def sync_solve_attribution(platform: Any, output_dir: str,
+                               on_error: Optional[Callable[[str], None]] = None
+                               ) -> int:
         """Hỏi platform ``fetch_solve_attribution`` cho mọi challenge local và
         nâng trạng thái solve theo nguyên tắc chỉ-nâng. Trả về số challenge
-        được cập nhật. Platform không hỗ trợ → 0."""
+        được cập nhật. Platform không hỗ trợ → 0.
+
+        ``on_error``: callback tùy chọn nhận mô tả lỗi khi fetch raise —
+        caller (vd. watch tick) dùng để log cảnh báo; mặc định None giữ
+        hành vi cũ im-lặng-và-0."""
         from ..storage.workspace_repo import WorkspaceRepo
 
         repo = WorkspaceRepo(output_dir)
@@ -386,7 +392,12 @@ class PullService:
 
         try:
             attr_map = fetcher([m.get("id") for _p, m in metas]) or {}
-        except Exception:
+        except Exception as exc:
+            if on_error is not None:
+                try:
+                    on_error(f"fetch_solve_attribution: {exc}")
+                except Exception:
+                    pass
             return 0
         if not isinstance(attr_map, dict):
             return 0

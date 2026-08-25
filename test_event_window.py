@@ -1545,5 +1545,89 @@ class TestRenderPanelBtop(TempWorkspaceCase):
         self.assertIn("🔴 LIVE", narrow)
 
 
+# ----------------------------------------------------------------------
+# Spec-gap §4 (challenge-status-model): tick watch đồng bộ solve attribution
+# qua CÙNG đường pull (PullService.sync_solve_attribution)
+# ----------------------------------------------------------------------
+
+class AttributedWatchPlatform(FakeWatchPlatform):
+    """FakeWatchPlatform + fetch_solve_attribution dữ liệu server giả."""
+
+    def __init__(self, attr=None, fail=False):
+        super().__init__()
+        self.attr = dict(attr or {})
+        self.fail = fail
+        self.attr_calls = []
+
+    def fetch_solve_attribution(self, challenge_ids):
+        self.attr_calls.append(list(challenge_ids))
+        if self.fail:
+            raise RuntimeError("server 500")
+        return dict(self.attr)
+
+
+class TestAttributionWatchTick(TempWorkspaceCase):
+    def _svc(self, platform):
+        svc = WatchService(str(self.ws), once=True, use_live_ui=False)
+        svc.platform = platform
+        svc.state = svc.state_store.load()
+        svc.scheduler.register("challenges", 120)
+        return svc
+
+    def _meta_path(self):
+        for p in self.repo.iter_challenges():
+            return p
+        return None
+
+    def test_one_tick_fetches_attribution_and_raises_by_team(self):
+        # Key = ĐÚNG kiểu id truyền vào (hợp đồng platform: trả nguyên `orig`)
+        platform = AttributedWatchPlatform({1: {"by_me": False,
+                                                "by_team": True}})
+        svc = self._svc(platform)
+        lines = svc._tick_challenges()
+        # 1 tick → đúng 1 lần gọi, với đúng danh sách id local
+        self.assertEqual(len(platform.attr_calls), 1)
+        self.assertIn(1, platform.attr_calls[0])
+        # by_team cập nhật qua CÙNG helper pull (update_status + synced_at)
+        st = self.repo.read_status(self._meta_path())
+        self.assertEqual(st["solve"], "solved_by_team")
+        self.assertTrue(st.get("synced_at"))
+        self.assertTrue(any("attribution" in ln.lower() for ln in lines))
+
+    def test_never_downgrades_local_higher_state(self):
+        meta = self._meta_path()
+        self.repo.update_status(
+            meta, lambda st: {**st, "solve": "solved_by_me"})
+        platform = AttributedWatchPlatform({1: {"by_me": False,
+                                                "by_team": True}})
+        svc = self._svc(platform)
+        svc._tick_challenges()
+        st = self.repo.read_status(meta)
+        self.assertEqual(st["solve"], "solved_by_me")   # nguyên tắc chỉ-nâng
+        self.assertTrue(st.get("synced_at"))             # nhưng vẫn stamp
+
+    def test_fetch_raise_never_crashes_and_logs_warning(self):
+        import ctf_downloader.services.watch_service as wsm
+        platform = AttributedWatchPlatform(fail=True)
+        svc = self._svc(platform)
+        with patch.object(wsm.Logger, "warning") as mwarn:
+            lines = svc._tick_challenges()   # never-raise: không crash
+        self.assertEqual(len(platform.attr_calls), 1)
+        mwarn.assert_called()                # warning tiếng Việt đã log
+        self.assertIsInstance(lines, list)
+
+    def test_platform_without_support_skips_silently(self):
+        platform = FakeWatchPlatform()       # không có fetch_solve_attribution
+        svc = self._svc(platform)
+        lines = svc._tick_challenges()
+        self.assertFalse(any("attribution" in ln.lower() for ln in lines))
+
+    def test_not_window_active_no_extra_call(self):
+        platform = AttributedWatchPlatform({"1": {"by_team": True}})
+        svc = self._svc(platform)
+        svc._tick_challenges(window_active=False)   # giải đã kết thúc
+        self.assertEqual(platform.attr_calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()
