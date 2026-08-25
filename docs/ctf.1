@@ -169,7 +169,7 @@ thời điểm mở giải (bắt buộc nếu challenges.json thiếu event_win
 .B \-\-retry-wrong
 cho phép thử lại target sai (tối đa 3 lần/target),
 .B \-\-poll
-chu kỳ poll khi chờ giờ G, giây (mặc định 10).
+chu kỳ poll khi chờ giờ G hoặc backoff sau lỗi, giây (mặc định 10).
 .TP
 .B register " (reg)"
 Tự tạo ĐÚNG 1 tài khoản trên platform (GZCTF/CTFd) + lưu auth map.
@@ -205,7 +205,8 @@ commit + push archive,
 .B \-\-out
 thư mục lưu (mặc định <base-dir>/_archives),
 .B \-y
-bỏ qua confirm.
+bỏ qua confirm archive (bắt buộc khi non\-interactive; xoá workspace
+gốc vẫn cần xác nhận riêng).
 .TP
 .B export-pack
 Đóng gói writeup các challenge đã solve thành pack markdown + zip.
@@ -213,9 +214,14 @@ bỏ qua confirm.
 chọn thư mục lưu pack zip.
 .TP
 .B history " (log)"
-Xem lịch sử submit flag của workspace (submit_history.json), flag bị che mặc định.
+Xem lịch sử submit flag của workspace (submit_history.json), flag bị che
+mặc định (4 ký tự đầu + ***), cột Thời gian hiển thị dạng datetime UTC.
+.BR \-\-tail " (" \-\-limit ") " \fIN\fR
+chỉ in N entry MỚI NHẤT (mặc định 100); N <= 0 hoặc
 .B \-\-all
-hiện flag đầy đủ.
+in toàn bộ —
+.B \-\-all
+đồng thời hiện flag đầy đủ.
 .TP
 .B serve " (web)"
 Dashboard web cục bộ cho workspace (bind 127.0.0.1), render trực tiếp từ

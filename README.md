@@ -53,7 +53,7 @@ Credentials được lưu trong **auth map** tại `~/.config/ctf_toolkit/config
 | `tag` | Gắn label cho challenge | `ctf tag 12 hard todo` |
 | `sync` | Đồng bộ metadata động (points/solves) | `ctf sync --verify` |
 | `export-pack` | Đóng gói writeup các bài solved | `ctf export-pack --out ./packs` |
-| `history` | Lịch sử submit flag | `ctf history --all` |
+| `history` | Lịch sử submit flag (mặc định 100 entry mới nhất) | `ctf history --tail 20` · `ctf history --all` |
 | `sniper` | Preload flag, nộp ngay giờ G | `ctf sniper --start-at "2026-09-01T08:00:00+07:00"` |
 | `serve` | Dashboard web local (POST submit qua gate CLI) | `ctf serve --port 8689` |
 | `open` | Mở thư mục challenge trong file manager | `ctf open 12` |
