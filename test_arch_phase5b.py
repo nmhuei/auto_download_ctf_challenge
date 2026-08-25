@@ -323,6 +323,178 @@ class TestRankServicePath(unittest.TestCase):
         self.assertIn("ConnectionError", errs[0].cause)
         self.assertTrue(any("kết nối mạng" in h for d in errs for h in d.hints))
 
+class TestRankScoreboardPhosphor(unittest.TestCase):
+    """Render PHOSPHOR của bảng xếp hạng (design-system spec §4):
+
+    ``_render_scoreboard`` là hàm thuần từ dữ liệu scoreboard → không
+    mạng/platform; smoke render chạy qua Console có load_theme (mock).
+    """
+
+    DATA = {
+        "title": "RCTF Live", "my_team": "team_x", "my_user": None,
+        "my_rank": 3, "my_score": 1500, "total_teams": 25,
+        "standings": [
+            {"pos": 1, "name": "top_guys", "score": 3000},
+            {"pos": 2, "name": "runner_up", "score": 2800},
+            {"pos": 3, "name": "team_x", "score": 1500},
+            {"pos": 4, "name": "mid_table", "score": 900},
+        ],
+    }
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="arch5b_rank_ui_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    # ---- helpers ------------------------------------------------------- #
+
+    def _panel(self, data=None, top_n=10):
+        return RankService._render_scoreboard(
+            dict(self.DATA) if data is None else data, top_n=top_n)
+
+    def _table(self, panel):
+        from rich.table import Table
+        body = panel.renderable
+        tables = [r for r in body.renderables if isinstance(r, Table)]
+        self.assertTrue(tables)
+        return tables[0]
+
+    def _cells(self, table, col_idx):
+        return list(table.columns[col_idx]._cells)
+
+    @staticmethod
+    def _plain(cell):
+        return cell.plain if hasattr(cell, "plain") else str(cell)
+
+    def _render_smoke(self, panel):
+        """Smoke: render qua console PHOSPHOR thật (không network)."""
+        import io
+        from rich.console import Console
+        from ctf_downloader.ui.theme import load_theme
+
+        out = io.StringIO()
+        con = Console(file=out, width=110, theme=load_theme(None),
+                      force_terminal=False, no_color=True)
+        con.print(panel)
+        return out.getvalue()
+
+    # ---- panel chrome --------------------------------------------------- #
+
+    def test_panel_rounded_accent_deep_with_faint_upper_heading(self):
+        from rich import box as rich_box
+        from rich.text import Text
+
+        panel = self._panel()
+        self.assertIs(panel.box, rich_box.ROUNDED)
+        self.assertEqual(panel.border_style, "accent.deep")
+        self.assertIsInstance(panel.title, Text)
+        self.assertIn("BẢNG XẾP HẠNG · RCTF LIVE", panel.title.plain)
+        self.assertEqual(panel.title.style, "fg.faint")
+
+    def test_table_boxless_and_column_layout(self):
+        table = self._table(self._panel())
+        self.assertIsNone(table.box)          # bảng phẳng trong panel
+        headers = [c.header for c in table.columns]
+        self.assertEqual(headers, ["#", "TEAM / USER", "SCORE", "GAP"])
+        self.assertEqual(table.columns[2].justify, "right")   # SCORE
+        self.assertEqual(table.columns[3].justify, "right")   # GAP
+        self.assertEqual(table.header_style, "fg.faint")
+
+    # ---- hàng & glyph ---------------------------------------------------- #
+
+    def test_top3_diamond_glyph_no_medal_emoji(self):
+        table = self._table(self._panel())
+        pos_cells = [self._plain(c) for c in self._cells(table, 0)]
+        self.assertEqual(pos_cells, ["◆ 1", "◆ 2", "◆ 3", "4"])
+
+        out = self._render_smoke(self._panel())
+        for emoji in ("🥇", "🥈", "🥉", "🏆", "👉"):
+            self.assertNotIn(emoji, out)
+        self.assertIn("◆ 1", out)
+
+    def test_my_row_chip_subtle_and_bold_name_others_plain(self):
+        from ctf_downloader.ui.theme import ACCENT_DEEP, FG_BASE
+
+        panel = self._panel()
+        table = self._table(panel)
+        rows = table.rows
+        self.assertEqual(rows[2].style, f"on {ACCENT_DEEP}")     # team_x
+        for i in (0, 1, 3):
+            self.assertIsNone(rows[i].style)
+
+        name_cells = self._cells(table, 1)
+        self.assertEqual(name_cells[2].style, f"bold {FG_BASE}")
+        self.assertEqual(name_cells[2].plain, "team_x")
+        for i in (0, 1, 3):
+            self.assertEqual(name_cells[i].style, "fg.base")
+
+    # ---- footer tóm tắt --------------------------------------------------- #
+
+    def test_footer_rank_and_gap_muted(self):
+        from rich.text import Text
+
+        panel = self._panel()
+        foot = [r for r in panel.renderable.renderables
+                if isinstance(r, Text)]
+        self.assertEqual(len(foot), 1)
+        self.assertEqual(foot[0].plain, "rank 3/25 · gap 1500 pts")
+        self.assertEqual(foot[0].style, "fg.muted")
+
+    def test_footer_omitted_without_rank_info(self):
+        from rich.console import Group
+        from rich.text import Text
+
+        data = dict(self.DATA, my_rank=None, my_score=None,
+                    my_team=None, total_teams=0)
+        panel = self._panel(data)
+        if isinstance(panel.renderable, Group):
+            texts = [r for r in panel.renderable.renderables
+                     if isinstance(r, Text)]
+            self.assertEqual(texts, [])       # chỉ còn bảng trong group
+        else:
+            self.assertNotIsInstance(panel.renderable, Text)  # bảng trần
+
+    def test_empty_standings_renders_placeholder_note(self):
+        panel = self._panel({"title": "Empty CTF", "standings": []})
+        from rich.table import Table
+        from rich.text import Text
+
+        note = panel.renderable               # body là Text, không Group
+        self.assertIsInstance(note, Text)
+        self.assertEqual(note.plain, "chưa có dữ liệu")
+        self.assertEqual(note.style, "fg.faint")
+        self.assertNotIsInstance(note, Table)
+
+    # ---- smoke + wiring ---------------------------------------------------- #
+
+    def test_smoke_render_resolves_all_tokens(self):
+        out = self._render_smoke(self._panel(top_n=4))
+        self.assertIn("BẢNG XẾP HẠNG · RCTF LIVE", out)
+        self.assertIn("top_guys", out)
+        self.assertIn("rank 3/25 · gap 1500 pts", out)
+
+    def test_display_and_update_prints_scoreboard_panel_mocked(self):
+        import ctf_downloader.services.rank_service as rs
+
+        plat = MagicMock()
+        plat.authenticate.return_value = True
+        plat.fetch_scoreboard.return_value = dict(self.DATA)
+        with patch.object(rs, "create_session", return_value=MagicMock()), \
+             patch.object(rs.PlatformDetector, "detect_platform",
+                          return_value=plat):
+            svc = RankService(workspace_path=self._tmp,
+                              url="https://r.test")
+        svc.fetch_ranking = MagicMock(return_value=dict(self.DATA))
+
+        with patch.object(rs, "_rank_console") as con:
+            returned = svc.display_and_update(top_n=5, update_docs=False)
+
+        self.assertEqual(returned["my_team"], "team_x")   # data đi nguyên
+        self.assertEqual(con.print.call_count, 1)
+        panel = con.print.call_args.args[0]
+        self.assertEqual(panel.border_style, "accent.deep")
+
 
 
 if __name__ == "__main__":

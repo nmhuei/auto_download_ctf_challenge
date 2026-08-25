@@ -4,8 +4,10 @@ chỉ là facade mỏng delegate về đây.
 """
 import datetime
 import os
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
+from rich import box
+from rich.console import Console, Group
 from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
@@ -15,7 +17,18 @@ from ..services.session_factory import create_session
 from ..storage.constants import LIVE_RANK_PREFIX
 from ..storage.workspace_repo import WorkspaceRepo
 from ..ui.diagnostics import Diagnostic, render as render_diagnostic
-from ..utils.logger import Logger, console
+from ..ui.theme import ACCENT_DEEP, FG_BASE, load_theme
+from ..utils.logger import Logger
+
+#: Console riêng với theme PHOSPHOR FIELD KIT (spec §3) — các token
+#: ``fg.base`` / ``accent.deep`` … chỉ resolve trên console có load_theme().
+_rank_console = Console(theme=load_theme(None))
+
+#: Glyph vị trí top-3 thay huy chương emoji (spec §6: không emoji).
+_TOP3_GLYPH = "◆"
+
+#: Chuỗi ``pos`` thuộc top-3 (platform có thể trả "1" lẫn "1st").
+_POS_TOP3 = ("1", "1st", "2", "2nd", "3", "3rd")
 
 #: Hint dùng chung cho vấn đề xác thực khi lấy scoreboard.
 _COOKIE_HINTS = (
@@ -111,77 +124,99 @@ class RankService:
 
     def display_and_update(self, top_n: int = 15, update_docs: bool = True) -> Dict[str, Any]:
         data = self.fetch_ranking()
+
+        _rank_console.print(self._render_scoreboard(data, top_n=top_n))
+
+        if not data.get("standings"):
+            Logger.warning("No standings data available on the platform scoreboard.")
+            return data
+
+        if update_docs and self.workspace_path and os.path.exists(self.workspace_path):
+            self._save_ranking_docs(data)
+
+        return data
+
+    @staticmethod
+    def _render_scoreboard(data: Dict[str, Any], top_n: int = 15) -> Panel:
+        """Render scoreboard PHOSPHOR FIELD KIT thành một :class:`Panel`:
+
+        - Panel rounded viền ``accent.deep``, heading UPPERCASE faint
+          ``BẢNG XẾP HẠNG · <giải>``.
+        - Bảng Top-N ``box=None``: vị trí accent amber (top-3 thêm glyph
+          ``◆`` thay huy chương emoji), tên ``fg.base`` — bold khi là team
+          mình, điểm right-align, gap muted; hàng mình nền chip subtle
+          ``on accent.deep``.
+        - Footer tóm tắt ``rank X/Y · gap N pts`` muted.
+        """
         title = data.get("title") or "CTF Competition"
         my_team = data.get("my_team")
         my_user = data.get("my_user")
         my_rank = data.get("my_rank")
         my_score = data.get("my_score")
-        total_teams = data.get("total_teams") or len(data.get("standings", []))
         standings = data.get("standings", [])
+        total_teams = data.get("total_teams") or len(standings)
 
-        # Display Terminal Panel
-        header_text = Text()
-        header_text.append(f"🏆 {title}\n", style="bold yellow")
-        if my_team:
-            header_text.append("Team: ", style="bold white")
-            header_text.append(f"{my_team}  ", style="bold cyan")
-        if my_user:
-            header_text.append("User: ", style="bold white")
-            header_text.append(f"{my_user}  ", style="bold green")
-        if my_rank:
-            header_text.append("Rank: ", style="bold white")
-            header_text.append(f"#{my_rank} ", style="bold magenta")
-            if total_teams:
-                header_text.append(f"/ {total_teams} teams  ", style="dim")
-        if my_score is not None:
-            header_text.append("Score: ", style="bold white")
-            header_text.append(f"{my_score} pts", style="bold yellow")
-
-        console.print(Panel(header_text, border_style="cyan", title="[bold]LIVE SCOREBOARD[/bold]"))
+        heading = Text(f" BẢNG XẾP HẠNG · {title} ".upper(), style="fg.faint")
 
         if not standings:
-            Logger.warning("No standings data available on the platform scoreboard.")
-            return data
+            body: Any = Text("chưa có dữ liệu", style="fg.faint")
+        else:
+            table = Table(box=None, show_header=True,
+                          header_style="fg.faint", padding=(0, 2))
+            table.add_column("#", justify="right", style="accent",
+                             no_wrap=True)
+            table.add_column("TEAM / USER", justify="left", min_width=25,
+                             no_wrap=True)
+            table.add_column("SCORE", justify="right", style="fg.base",
+                             no_wrap=True)
+            table.add_column("GAP", justify="right", style="fg.muted",
+                             no_wrap=True)
 
-        # Leaderboard Table
-        table = Table(title=f"Top {min(top_n, len(standings))} Leaderboard Standings", show_header=True, header_style="bold blue")
-        table.add_column("Rank", justify="center", style="bold", width=8)
-        table.add_column("Team / User", justify="left", style="white", min_width=25)
-        table.add_column("Points", justify="right", style="bold yellow", width=12)
-        table.add_column("Gap to #1", justify="right", style="dim", width=12)
+            top_score = standings[0].get("score") or 0
+            for idx, s in enumerate(standings[:top_n], 1):
+                pos = s.get("pos") or idx
+                name = s.get("name") or "Unknown"
+                score = s.get("score") or 0
 
-        top_score = standings[0].get("score", 0) if standings else 0
+                gap_pts = top_score - score
+                gap_str = "-" if gap_pts == 0 else f"-{gap_pts} pts"
 
-        for idx, s in enumerate(standings[:top_n], 1):
-            pos = s.get("pos") or idx
-            name = s.get("name") or "Unknown"
-            score = s.get("score") or 0
+                is_me = ((my_team and name == my_team)
+                         or (my_user and name == my_user))
+                pos_str = (f"{_TOP3_GLYPH} {pos}" if str(pos) in _POS_TOP3
+                           else str(pos))
+                name_cell = Text(
+                    str(name),
+                    style=f"bold {FG_BASE}" if is_me else "fg.base")
 
-            if str(pos) in ["1", "1st"]:
-                rank_str = "🥇 #1"
-            elif str(pos) in ["2", "2nd"]:
-                rank_str = "🥈 #2"
-            elif str(pos) in ["3", "3rd"]:
-                rank_str = "🥉 #3"
-            else:
-                rank_str = f"#{pos}"
-
-            gap_pts = top_score - score
-            gap_str = "-" if gap_pts == 0 else f"-{gap_pts} pts"
-
-            is_me = (my_team and name == my_team) or (my_user and name == my_user)
-            if is_me:
                 table.add_row(
-                    f"[bold cyan]👉 {rank_str}[/bold cyan]",
-                    f"[bold cyan]{name} (You)[/bold cyan]",
-                    f"[bold yellow]{score}[/bold yellow]",
-                    f"[bold cyan]{gap_str}[/bold cyan]",
-                    style="on grey23"
+                    pos_str,
+                    name_cell,
+                    str(score),
+                    gap_str,
+                    style=f"on {ACCENT_DEEP}" if is_me else None,
                 )
-            else:
-                table.add_row(rank_str, name, str(score), gap_str)
 
-        console.print(table)
+            footer_parts = []
+            if my_rank:
+                rank_str = (f"rank {my_rank}/{total_teams}" if total_teams
+                            else f"rank {my_rank}")
+                footer_parts.append(rank_str)
+            if my_score is not None:
+                gap_pts = max(0, top_score - my_score)
+                footer_parts.append(f"gap {gap_pts} pts")
+            body = (Group(table, Text(" · ".join(footer_parts),
+                                      style="fg.muted"))
+                    if footer_parts else table)
+
+        return Panel(
+            body,
+            box=box.ROUNDED,
+            border_style="accent.deep",
+            title=heading,
+            expand=False,
+            padding=(0, 1),
+        )
 
         if update_docs and self.workspace_path and os.path.exists(self.workspace_path):
             self._save_ranking_docs(data)
