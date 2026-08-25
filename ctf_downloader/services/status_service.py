@@ -1079,7 +1079,7 @@ class StatusService:
         from ..utils.logger import Logger
 
         base_dir = os.path.abspath(os.path.expanduser(base_dir))
-        Logger.info(f'Scanning all CTF workspaces in [info]{base_dir}[/]', markup=True)
+        Logger.info(f'Scanning all CTF workspaces in [info]{escape(base_dir)}[/]', markup=True)
 
         if not os.path.exists(base_dir):
             Logger.warning(f'Directory {base_dir} does not exist.')
