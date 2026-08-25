@@ -68,6 +68,8 @@ GRACE_DEFAULT = 300                  # wall > end+grace → final sync rồi exi
 # ``status_service._METER_RAMP_3STOP`` — mỗi ô một màu, không nội suy.
 MIN_PANEL_WIDTH = 40                 # dưới ngưỡng này ép width tối thiểu
 DEGRADE_WIDTH = 80                   # width < 80 → bỏ mini-scoreboard
+FEED_MAX_LINES = 200                 # trần feed 📢 — _refresh_live wire làm
+                                     # feed sống lại, phải bound tránh phình
 
 #: Console riêng cho panel (mẫu như status_service): mang theme PHOSPHOR
 #: để các style token ``accent.deep`` / ``fg.faint`` / ``solved`` … resolve
@@ -819,7 +821,12 @@ class WatchService:
                     self._final_sync()
                 break   # exit 0 (hoặc 130 nếu signal đến giữa final/idle)
             self._clock_skew_tick()
-            self._run_round(auto_cfg)
+            lines = self._run_round(auto_cfg)
+            # Wire _refresh_live (deferred c11): đây là nguồn DUY NHẤT ghi
+            # feed 📢 và rebuild panel rich (Live giữ nguyên object Panel
+            # dựng 1 lần trong _open_live) — không gọi thì panel đóng băng
+            # và chế độ non-Live mất toàn bộ dòng sự kiện của round.
+            self._refresh_live(lines)
             if self.once:
                 break
             self._sleep_until_next(guard)
@@ -898,7 +905,11 @@ class WatchService:
         timeout = self.scheduler.next_timeout()
         if guard is not None and guard.state() == WindowGuard.BEFORE:
             to_start = guard.seconds_to_start() or 0
-            timeout = min(timeout, max(0.05, to_start))   # đếm ngược từng nhịp
+            # Sàn nhịp BEFORE 1s: đếm ngược chỉ tới giây (fmt_countdown) và
+            # Live render ≤2fps — deadline task overdue chưa được postpone
+            # khi pause từng đẩy vòng lặp spin 50ms (đốt CPU + checkpoint
+            # đĩa liên tục). Vẫn thức đúng lúc window mở (trễ ≤1s).
+            timeout = max(1.0, min(timeout, max(0.05, to_start)))
         deadline = time.monotonic() + timeout
         while not self._stop and time.monotonic() < deadline:
             time.sleep(min(0.5, max(0.05, deadline - time.monotonic())))
@@ -1341,6 +1352,8 @@ class WatchService:
         for ln in lines:
             self._feed.append(ln)
             Logger.info(ln) if self._live is None else None
+        if len(self._feed) > FEED_MAX_LINES:
+            del self._feed[:-FEED_MAX_LINES]   # bound — panel chỉ đọc đuôi
         if self._live is not None and self._render_panel:
             snap = self._panel_snapshot()
             if snap == getattr(self, "_last_panel_snap", None):

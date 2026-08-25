@@ -4,6 +4,7 @@ import threading
 import requests
 from typing import Optional, Callable
 from urllib.parse import urlparse, urljoin
+from weakref import WeakValueDictionary
 from ..utils.logger import Logger
 from ..utils.sanitize import sanitize_filename, extract_filename_from_headers, extract_filename_from_url
 from .registry import register_downloader
@@ -21,8 +22,17 @@ _MAX_PROBE_REDIRECTS = 10
 # mất dữ liệu im lặng. Khóa giữ TRỌN VÒNG ĐỜI một lần tải (kể cả retry/
 # resume tới khi rename xong) nên mọi thao tác .part/rename trên cùng đích
 # được tuần tự hoá.
+#
+# C11-deferred: WeakValueDictionary thay dict thường — entry tự xoá khi
+# thread CUỐI bỏ tham chiếu (tải xong, `tlock` local trong download_file bị
+# thu hồi). An toàn đa luồng: mỗi thread nắm strong ref cục bộ từ lúc get
+# dưới guard đến khi release trong `finally` nên lock sống đủ lâu cho mọi
+# người đang giữ/chờ; khi không còn ai giữ, lock mới cho cùng đích tương
+# đương lock cũ (không ai còn trong section). Guard vẫn bắt buộc để nguyên
+# tử hoá get-or-create (hai thread cùng thấy None sẽ tạo hai lock khác
+# nhau nếu không khoá).
 _TARGET_LOCKS_GUARD = threading.Lock()
-_TARGET_LOCKS = {}
+_TARGET_LOCKS: "WeakValueDictionary" = WeakValueDictionary()
 
 
 class DownloadFailed(Exception):
