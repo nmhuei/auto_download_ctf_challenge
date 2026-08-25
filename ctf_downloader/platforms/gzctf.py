@@ -5,6 +5,7 @@ import time
 import urllib.parse
 import requests
 from typing import List, Dict, Any, Optional, Tuple
+from rich.markup import escape
 from .base import (BasePlatform, Challenge, CTFInfo, EventTimes,
                    PlatformRegisterUnsupported, SolveAttribution, epoch_ms,
                    normalize_epoch_to_utc, safe_get_json)
@@ -311,7 +312,7 @@ class GZCTFPlatform(BasePlatform):
             if resp.status_code == 200:
                 user_data = resp.json()
                 self.ctf_info.user_name = user_data.get("userName") or user_data.get("realName")
-                Logger.success(f"Đã xác thực GZCTF với User: [bold cyan]{self.ctf_info.user_name}[/bold cyan] ({user_data.get('email')})", markup=True)
+                Logger.success(f"Đã xác thực GZCTF với User: [bold cyan]{escape(str(self.ctf_info.user_name))}[/bold cyan] ({escape(str(user_data.get('email')))})", markup=True)
                 profile_ok = True
         except Exception:
             pass
@@ -325,7 +326,7 @@ class GZCTFPlatform(BasePlatform):
                     self.ctf_info.title = game_data.get("title", f"Game {self.game_id}")
                     self.ctf_info.team_name = game_data.get("teamName")
                     if self.ctf_info.team_name:
-                        Logger.info(f"Team: [bold magenta]{self.ctf_info.team_name}[/bold magenta] | Competition: [bold yellow]{self.ctf_info.title}[/bold yellow]", markup=True)
+                        Logger.info(f"Team: [bold magenta]{escape(str(self.ctf_info.team_name))}[/bold magenta] | Competition: [bold yellow]{escape(str(self.ctf_info.title))}[/bold yellow]", markup=True)
                     return True
             except Exception as e:
                 Logger.warning(f"Không lấy được thông tin game {self.game_id}: {e}")
@@ -664,14 +665,16 @@ class GZCTFPlatform(BasePlatform):
             f"(sau 1 lần retry).")
         return None
 
-    def _attribution_from_details(self, cache: dict) -> None:
+    def _attribution_from_details(self, cache: dict) -> bool:
         """Fallback khi scoreboard 400/anonymized (trước giờ mở): /details chỉ
-        báo own-team solve qua field ``solvedByMe``/``isSolved`` nếu có."""
+        báo own-team solve qua field ``solvedByMe``/``isSolved`` nếu có.
+        Trả về False CHỈ khi request văng exception (lỗi mạng — payload từ
+        chối rõ ràng như 4xx/5xx vẫn là True vì server trả lời được)."""
         try:
             resp = self.session.get(
                 f"{self.origin}/api/game/{self.game_id}/details", timeout=15)
             if resp.status_code != 200:
-                return
+                return True
             raw = ((resp.json() or {}).get("challenges")) or {}
             for challs in raw.values():
                 for item in challs or []:
@@ -682,13 +685,18 @@ class GZCTFPlatform(BasePlatform):
                     if not solved:
                         continue
                     cache[str(cid)] = SolveAttribution(by_me=False, by_team=True)
+            return True
         except Exception:
-            pass
+            return False
 
-    def _fetch_all_attribution(self, cache: dict) -> None:
+    def _fetch_all_attribution(self, cache: dict) -> bool:
+        """Populate ``cache`` từ scoreboard (+details fallback). Trả về
+        ``net_clean``: False CHỈ khi có request văng exception mạng — caller
+        (R-L1) chỉ swap cache khi không mất dữ liệu oan do mạng đứt."""
         if not self.game_id:
-            return
+            return True
         items = []
+        net_clean = True
         try:
             sb = self.session.get(
                 f"{self.origin}/api/game/{self.game_id}/scoreboard", timeout=10)
@@ -697,6 +705,7 @@ class GZCTFPlatform(BasePlatform):
                 items = data.get("items", []) if isinstance(data, dict) else data
         except Exception:
             items = []
+            net_clean = False
 
         profile = self.ctf_info.user_name
         my_item = None
@@ -731,8 +740,8 @@ class GZCTFPlatform(BasePlatform):
                     my_item = None
 
         if my_item is None:
-            self._attribution_from_details(cache)
-            return
+            net_clean = self._attribution_from_details(cache) and net_clean
+            return net_clean
 
         my_sols = my_item.get("solvedChallenges")
         if not isinstance(my_sols, list):
@@ -762,12 +771,20 @@ class GZCTFPlatform(BasePlatform):
         ts = getattr(self, "_solve_attr_ts", None)
         cache = getattr(self, "_solve_attr_cache", None)
         if cache is None or ts is None or (now - ts) >= self.SOLVE_ATTR_TTL:
-            cache = self._solve_attr_cache = {}
-            self._solve_attr_ts = now
+            # R-L1: fetch vào dict local — chỉ SWAP cache + stamp ts khi fetch
+            # KHÔNG văng exception mạng (payload dị/degraded vẫn tính thành
+            # công nếu có dữ liệu hoặc server trả lời được). Fail giữ nguyên
+            # data cũ + ts cũ → tick sau retry ngay thay vì chờ đủ TTL.
+            fresh: Dict[str, SolveAttribution] = {}
             try:
-                self._fetch_all_attribution(cache)
+                net_clean = self._fetch_all_attribution(fresh)
             except Exception:
-                pass  # hợp đồng base.py: KHÔNG BAO GIỜ raise — trả phần đã có
+                net_clean = False   # hợp đồng base.py: KHÔNG BAO GIỜ raise
+            if net_clean or fresh:
+                cache = self._solve_attr_cache = fresh
+                self._solve_attr_ts = now
+            elif cache is None:
+                cache = {}   # chưa từng fetch thành công: trả rỗng
         return {orig: cache[k] for k, orig in wanted.items() if k in cache}
 
     def fetch_scoreboard(self) -> Dict[str, Any]:

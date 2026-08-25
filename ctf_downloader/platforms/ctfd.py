@@ -5,6 +5,7 @@ import urllib.parse
 import requests
 from typing import List, Dict, Any, Optional, Tuple
 from bs4 import BeautifulSoup
+from rich.markup import escape
 from .base import (BasePlatform, Challenge, CTFInfo, EventTimes,
                    PlatformRegisterUnsupported, SolveAttribution, epoch_ms,
                    normalize_epoch_to_utc, safe_get_json)
@@ -84,7 +85,8 @@ def ctfd_register(platform, *, username: str, email: str, password: str,
                 "message": f"Register thất bại (final={getattr(resp, 'url', '?')}): {detail}"}
 
     Logger.success(f"CTFd: register OK — đang đăng nhập với user "
-                   f"[bold cyan]{me_name or username}[/bold cyan].", markup=True)
+                   f"[bold cyan]{escape(me_name or username)}[/bold cyan].",
+                   markup=True)
     result: Dict[str, Any] = {"ok": True, "message": "Đã register",
                               "user_name": me_name or username}
 
@@ -203,7 +205,7 @@ class CTFdPlatform(BasePlatform):
                 if data.get("success") and data.get("data"):
                     user_data = data["data"]
                     self.ctf_info.user_name = user_data.get("name")
-                    Logger.success(f"Đã xác thực CTFd với User: [bold cyan]{self.ctf_info.user_name}[/bold cyan]", markup=True)
+                    Logger.success(f"Đã xác thực CTFd với User: [bold cyan]{escape(str(self.ctf_info.user_name))}[/bold cyan]", markup=True)
                     return True
         except Exception:
             pass
@@ -641,8 +643,12 @@ class CTFdPlatform(BasePlatform):
         ts = getattr(self, "_solve_attr_ts", None)
         cache = getattr(self, "_solve_attr_cache", None)
         if cache is None or ts is None or (now - ts) >= self.SOLVE_ATTR_TTL:
-            cache = self._solve_attr_cache = {}
-            self._solve_attr_ts = now
+            # R-L1: fetch vào dict local — chỉ SWAP cache + stamp ts SAU khi
+            # fetch thành công. Exception giữa chừng giữ nguyên data tốt của
+            # kỳ trước; ts cũ không bị đè nên lần tick sau retry ngay thay
+            # vì phải chờ đủ TTL nữa.
+            fresh: Dict[str, SolveAttribution] = {}
+            fetched_ok = False
             try:
                 me_id, me_name = None, self.ctf_info.user_name
                 r_me = self.session.get(f"{self.base_url}/api/v1/users/me", timeout=10)
@@ -685,20 +691,26 @@ class CTFdPlatform(BasePlatform):
                     else:
                         # Users mode: mọi solve của /users/me/solves là của mình
                         by_me = not teams_mode
-                    attr = cache.get(str(cid))
+                    attr = fresh.get(str(cid))
                     if attr is None:
                         attr = SolveAttribution(by_team=bool(teams_mode or by_me), by_me=by_me)
-                        cache[str(cid)] = attr
+                        fresh[str(cid)] = attr
                     elif by_me:
                         attr.by_me = True
                         attr.by_team = True
                     if uname and uname not in attr.solver_names:
                         attr.solver_names.append(uname)
-                    ts = epoch_ms(row.get("date"))
-                    if ts and (attr.solved_at is None or ts < attr.solved_at):
-                        attr.solved_at = ts
+                    row_ts = epoch_ms(row.get("date"))
+                    if row_ts and (attr.solved_at is None or row_ts < attr.solved_at):
+                        attr.solved_at = row_ts
+                fetched_ok = True
             except Exception:
                 pass
+            if fetched_ok:
+                cache = self._solve_attr_cache = fresh
+                self._solve_attr_ts = now
+            elif cache is None:
+                cache = {}   # chưa từng fetch thành công: trả rỗng, lần sau retry
         return {orig: cache[k] for k, orig in wanted.items() if k in cache}
 
     def fetch_scoreboard(self) -> Dict[str, Any]:

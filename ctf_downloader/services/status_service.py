@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from rich import box
 from rich.cells import cell_len
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -350,7 +351,7 @@ class StatusService:
         try:
             if remove:
                 repo.update_status(meta_path, _mut)
-                Logger.success(f"🗑️ Removed note from [bold cyan]{name}[/bold cyan].", markup=True)
+                Logger.success(f"🗑️ Removed note from [bold cyan]{escape(str(name))}[/bold cyan].", markup=True)
             else:
                 content = (text or "").strip()
                 if not content:
@@ -359,7 +360,7 @@ class StatusService:
                     Logger.error("Note is empty — nothing saved.")
                     return False
                 repo.update_status(meta_path, _mut)
-                Logger.success(f"📝 Note saved for [bold cyan]{name}[/bold cyan].", markup=True)
+                Logger.success(f"📝 Note saved for [bold cyan]{escape(str(name))}[/bold cyan].", markup=True)
             return True
         except Exception as e:
             Logger.warning(f"Không thể lưu note: {e}")
@@ -422,7 +423,7 @@ class StatusService:
             final = repo.update_status(meta_path, _mut)
             labels_str = ", ".join(final.get("labels") or []) or "(none)"
             Logger.success(
-                f"🏷️ {action} tag(s) for [bold cyan]{name}[/bold cyan]: {labels_str}", markup=True)
+                f"🏷️ {action} tag(s) for [bold cyan]{escape(str(name))}[/bold cyan]: {escape(labels_str)}", markup=True)
             return True, rejected
         except Exception as e:
             Logger.warning(f"Không thể cập nhật tags: {e}")

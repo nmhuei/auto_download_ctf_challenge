@@ -4,6 +4,7 @@ import urllib.parse
 import requests
 from typing import List, Dict, Any, Optional, Tuple
 from bs4 import BeautifulSoup
+from rich.markup import escape
 from .base import (BasePlatform, Challenge, CTFInfo, EventTimes,
                    SolveAttribution, epoch_ms, normalize_epoch_to_utc, safe_get_json)
 from ..utils.logger import Logger
@@ -110,7 +111,7 @@ class RCTFPlatform(BasePlatform):
                     user_name = data["data"].get("name")
                     self.ctf_info.user_name = user_name
                     self.ctf_info.team_name = user_name
-                    Logger.success(f"Đã xác thực rCTF với Team: [bold cyan]{user_name}[/bold cyan]", markup=True)
+                    Logger.success(f"Đã xác thực rCTF với Team: [bold cyan]{escape(str(user_name))}[/bold cyan]", markup=True)
                     return True
         except Exception:
             pass
@@ -263,8 +264,11 @@ class RCTFPlatform(BasePlatform):
         ts = getattr(self, "_solve_attr_ts", None)
         cache = getattr(self, "_solve_attr_cache", None)
         if cache is None or ts is None or (now - ts) >= self.SOLVE_ATTR_TTL:
-            cache = self._solve_attr_cache = {}
-            self._solve_attr_ts = now
+            # R-L1: fetch vào dict local — chỉ SWAP cache + stamp ts SAU khi
+            # fetch thành công. Exception giữa chừng giữ nguyên data tốt của
+            # kỳ trước; ts cũ không bị đè nên lần tick sau retry ngay.
+            fresh: Dict[str, SolveAttribution] = {}
+            fetched_ok = False
             try:
                 r_me = self.session.get(f"{self.base_url}/api/v1/users/me", timeout=15)
                 if r_me.status_code == 200:
@@ -276,51 +280,57 @@ class RCTFPlatform(BasePlatform):
                                             s.get("chaId", s.get("id"))))
                         if cid is None:
                             continue
-                        ts = epoch_ms(s.get("createdAt") or s.get("ts") or s.get("time"))
+                        s_ts = epoch_ms(s.get("createdAt") or s.get("ts") or s.get("time"))
                         names = [me_name] if me_name else []
-                        prev = cache.get(str(cid))
+                        prev = fresh.get(str(cid))
                         if prev is not None:
                             # Giữ mốc SỚM NHẤT giữa các lần solve ghi nhận được
-                            if prev.solved_at is not None and ts is not None:
-                                ts = min(prev.solved_at, ts)
-                            elif ts is None:
-                                ts = prev.solved_at
-                        cache[str(cid)] = SolveAttribution(
+                            if prev.solved_at is not None and s_ts is not None:
+                                s_ts = min(prev.solved_at, s_ts)
+                            elif s_ts is None:
+                                s_ts = prev.solved_at
+                        fresh[str(cid)] = SolveAttribution(
                             by_me=True, by_team=True,
-                            solver_names=names, solved_at=ts)
+                            solver_names=names, solved_at=s_ts)
 
-                # Public solves: solver_names đầy đủ + first-blood
-                for key, attr in list(cache.items()):
-                    if wanted and key not in wanted:
-                        continue
-                    try:
-                        rc = self.session.get(
-                            f"{self.base_url}/api/v1/challs/{key}/solves", timeout=10)
-                        if rc.status_code != 200:
+                    # Public solves: solver_names đầy đủ + first-blood
+                    for key, attr in list(fresh.items()):
+                        if wanted and key not in wanted:
                             continue
-                        rows = (rc.json() or {}).get("data") or []
-                    except Exception:
-                        continue
-                    names, all_ts = [], []
-                    for row in rows:
-                        nm = None
-                        if isinstance(row.get("user"), dict):
-                            nm = row["user"].get("name")
-                        nm = nm or row.get("userName") or row.get("name")
-                        if nm:
-                            names.append(nm)
-                        t = epoch_ms(row.get("ts") or row.get("time") or row.get("createdAt"))
-                        if t:
-                            all_ts.append(t)
-                    if names:
-                        attr.solver_names = names
-                    if all_ts:
-                        earliest = min(all_ts)
-                        attr.solved_at = attr.solved_at or earliest
-                        if attr.by_me and attr.solved_at == earliest:
-                            attr.first_blood = True
+                        try:
+                            rc = self.session.get(
+                                f"{self.base_url}/api/v1/challs/{key}/solves", timeout=10)
+                            if rc.status_code != 200:
+                                continue
+                            rows = (rc.json() or {}).get("data") or []
+                        except Exception:
+                            continue
+                        names, all_ts = [], []
+                        for row in rows:
+                            nm = None
+                            if isinstance(row.get("user"), dict):
+                                nm = row["user"].get("name")
+                            nm = nm or row.get("userName") or row.get("name")
+                            if nm:
+                                names.append(nm)
+                            t = epoch_ms(row.get("ts") or row.get("time") or row.get("createdAt"))
+                            if t:
+                                all_ts.append(t)
+                        if names:
+                            attr.solver_names = names
+                        if all_ts:
+                            earliest = min(all_ts)
+                            attr.solved_at = attr.solved_at or earliest
+                            if attr.by_me and attr.solved_at == earliest:
+                                attr.first_blood = True
+                fetched_ok = True
             except Exception:
                 pass
+            if fetched_ok:
+                cache = self._solve_attr_cache = fresh
+                self._solve_attr_ts = now
+            elif cache is None:
+                cache = {}   # chưa từng fetch thành công: trả rỗng, lần sau retry
         return {orig: cache[k] for k, orig in wanted.items() if k in cache}
 
     def fetch_scoreboard(self) -> Dict[str, Any]:

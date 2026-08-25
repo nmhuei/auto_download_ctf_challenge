@@ -12,6 +12,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from rich.markup import escape
 from rich.progress import (Progress, ProgressColumn, BarColumn, TextColumn,
                            TimeElapsedColumn, MofNCompleteColumn)
 from rich.text import Text
@@ -147,7 +148,7 @@ class PullService:
         config.validate()
         start_time = time.time()
         Logger.banner()
-        Logger.info(f"Target URL: [bold blue]{config.url}[/bold blue]", markup=True)
+        Logger.info(f"Target URL: [bold blue]{escape(config.url)}[/bold blue]", markup=True)
 
         # Session master: chỉ main thread dùng (detect platform + authenticate)
         master = session or create_session(
@@ -189,7 +190,7 @@ class PullService:
             base_ctf_dir = os.path.expanduser("~/Workspace/CTF")
             config.output_dir = os.path.abspath(os.path.join(base_ctf_dir, folder_name))
 
-        Logger.info(f"Output Directory: [bold yellow]{config.output_dir}[/bold yellow]", markup=True)
+        Logger.info(f"Output Directory: [bold yellow]{escape(config.output_dir)}[/bold yellow]", markup=True)
 
         # Filter categories if specified
         if config.categories:
@@ -283,8 +284,8 @@ class PullService:
             pass
 
         Logger.success(f"[bold green]✨ ALL DONE in {elapsed:.2f}s! ✨[/bold green]", markup=True)
-        Logger.info(f"📁 Workspace: [bold yellow]{config.output_dir}[/bold yellow]", markup=True)
-        Logger.info(f"📊 Summary: [bold cyan]{summary_file}[/bold cyan]", markup=True)
+        Logger.info(f"📁 Workspace: [bold yellow]{escape(config.output_dir)}[/bold yellow]", markup=True)
+        Logger.info(f"📊 Summary: [bold cyan]{escape(str(summary_file))}[/bold cyan]", markup=True)
         Logger.info(f"📦 Total files downloaded: [bold green]{total_files}[/bold green]", markup=True)
 
         # Event Window (spec event-window §4/§6): lần đầu pull thành công mà
@@ -477,7 +478,7 @@ class PullService:
         Logger.banner()
         mode_label = "--refresh-meta" if refresh_meta else "--update"
         Logger.info(f"Incremental pull ({mode_label}): "
-                    f"[bold blue]{config.url}[/bold blue]", markup=True)
+                    f"[bold blue]{escape(config.url)}[/bold blue]", markup=True)
 
         master = session or create_session(
             cookie=config.cookie,

@@ -31,6 +31,7 @@ code fence + bảng markdown căn cột chuẩn.
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import os
 import re
 import shutil
@@ -46,6 +47,7 @@ from ..ui.banner import banner_b
 from ..ui.console import err_console
 from ..ui.style import OK, WARN as WARN_GLYPH
 from ..ui.theme import INFO, SOLVED, WARN
+from ..utils.logger import Logger
 from ..utils.sanitize import sanitize_folder_name
 
 # Trục solve được tính là "đã giải bởi mình/team" — đủ điều kiện đưa vào pack.
@@ -258,10 +260,40 @@ class WriteupExporter:
         # (_2, _3) của lần trước phải biến mất khỏi pack dir (và zip mới
         # đóng sau đây), không thì README stale — có thể còn flag/ghi chú
         # cũ — còn nằm lại trong bản phân phối.
+        # R-L2: dir "của tool" được nhận diện qua manifest lần chạy trước
+        # (file ẩn đặt ở out_root — NGOÀI pack dir nên không lọt zip).
+        # Dir không có trong manifest là dir lạ (user drop tay) → GIỮ
+        # NGUYÊN + warning liệt kê thay vì rmtree (an toàn data > sạch zip);
+        # risk README stale đã được che bởi việc INDEX chỉ liệt kê entries
+        # hiện tại. Manifest thiếu/hỏng (pack cũ từ bản trước) coi như
+        # KHÔNG dir nào của tool → mọi dir đều được giữ.
         keep = set(subs)
+        manifest_path = out_root / f".{pack_dir.name}.writeup-manifest.json"
+        prev_tool_dirs = set()
+        try:
+            prev_tool_dirs = set(
+                (json.loads(manifest_path.read_text(encoding="utf-8"))
+                 .get("subdirs") or []))
+        except Exception:
+            prev_tool_dirs = set()
+        foreign_dirs = []
         for child in pack_dir.iterdir():
             if child.is_dir() and child.name not in keep:
-                shutil.rmtree(child, ignore_errors=True)
+                if child.name in prev_tool_dirs:
+                    shutil.rmtree(child, ignore_errors=True)
+                else:
+                    foreign_dirs.append(child.name)
+        if foreign_dirs:
+            Logger.warning(
+                f"Writeup pack '{pack_dir.name}': giữ lại {len(foreign_dirs)} "
+                f"thư mục lạ không phải do tool sinh ra (không xoá để bảo toàn "
+                f"dữ liệu): {', '.join(sorted(foreign_dirs))}")
+        try:
+            manifest_path.write_text(
+                json.dumps({"subdirs": sorted(keep)}, ensure_ascii=False),
+                encoding="utf-8")
+        except Exception:
+            pass
 
         index_lines.append("")
         index_lines.append("## Chi tiết từng bài")
