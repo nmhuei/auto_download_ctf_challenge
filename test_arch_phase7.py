@@ -142,6 +142,106 @@ class TestNoPromptInCliLayer(unittest.TestCase):
             path = os.path.join(ROOT, "ctf_downloader", mod)
             self.assertEqual([], self._prompt_calls(path), mod)
 
+    def test_cli_legacy_has_no_bare_input_calls(self):
+        # Deferred minor: cli_legacy nằm ngoài AST check ban đầu nên còn sót
+        # 7 input() ở menu manage — giờ phải đọc qua _prompt_line (readline).
+        # Lưu ý: Prompt.ask trong wizard submit vẫn hợp lệ (giữ nguyên văn),
+        # nên test này chỉ cấm input() chứ không cấm Prompt.ask.
+        path = os.path.join(ROOT, "ctf_downloader", "cli_legacy.py")
+        hits = [
+            f"input() at line {node.lineno}"
+            for node in ast.walk(ast.parse(open(path, encoding="utf-8").read()))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "input"
+        ]
+        self.assertEqual([], hits)
+
+
+class TestLegacyPromptLine(unittest.TestCase):
+    """Hành vi của _prompt_line phải tương đương input() cũ: in câu hỏi ra
+    stdout (không newline, flush) rồi đọc đúng một dòng; stdin đóng -> EOFError."""
+
+    def test_prints_question_then_returns_stripped_newline_only(self):
+        import contextlib
+
+        from ctf_downloader import cli_legacy
+
+        buf_out = io.StringIO()
+        with patch.object(sys, "stdin", io.StringIO("3\n")), \
+             contextlib.redirect_stdout(buf_out):
+            val = cli_legacy._prompt_line("Select option (0-5): ")
+        self.assertEqual(val, "3")
+        self.assertEqual(buf_out.getvalue(), "Select option (0-5): ")
+
+    def test_keeps_user_padding_caller_strips(self):
+        import contextlib
+
+        from ctf_downloader import cli_legacy
+
+        with patch.object(sys, "stdin", io.StringIO("  2  \n")), \
+             contextlib.redirect_stdout(io.StringIO()):
+            val = cli_legacy._prompt_line("Choice: ")
+        # chỉ bỏ \n như input(); caller (.strip()) tự xử lý phần còn lại
+        self.assertEqual(val, "  2  ")
+
+    def test_closed_stdin_raises_eoferror_like_input(self):
+        import contextlib
+
+        from ctf_downloader import cli_legacy
+
+        with patch.object(sys, "stdin", io.StringIO("")), \
+             contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(EOFError):
+                cli_legacy._prompt_line("? ")
+
+
+class TestLegacyReadsChallengesViaRepo(unittest.TestCase):
+    """challenges.json không được open() trực tiếp trong cli_legacy — cả
+    wizard submit lẫn đường --auto phải lấy URL nền tảng qua
+    WorkspaceRepo.read_challenges() (single-source-of-truth)."""
+
+    def test_submit_main_resolves_url_via_repo_spy(self):
+        from ctf_downloader import cli_legacy
+        from ctf_downloader.services.submit_service import SubmitService
+        from ctf_downloader.storage.workspace_repo import WorkspaceRepo
+
+        with patch.object(WorkspaceRepo, "read_challenges",
+                          return_value={"ctf_info":
+                                        {"url": "https://repo.example.com"}}
+                          ) as m_read, \
+             patch.object(SubmitService, "__init__",
+                          return_value=None) as m_init, \
+             patch.object(SubmitService, "auto_scan_and_submit"), \
+             patch.object(sys, "argv",
+                          ["submit.py", "-w", "somews", "--auto"]):
+            cli_legacy.legacy_submit_main()
+        m_read.assert_called_once_with()
+        _, kwargs = m_init.call_args
+        self.assertEqual(kwargs.get("url"), "https://repo.example.com")
+
+    def test_wizard_reads_default_url_via_repo_spy(self):
+        from rich.prompt import Prompt
+
+        from ctf_downloader import cli_legacy
+        from ctf_downloader.services.submit_service import SubmitService
+        from ctf_downloader.storage.workspace_repo import WorkspaceRepo
+
+        answers = iter(["wsX", "", "ck", "2"])  # ws / url / cookie / choice
+        with patch.object(WorkspaceRepo, "read_challenges",
+                          return_value={"ctf_info":
+                                        {"url": "https://wiz.example.com"}}
+                          ) as m_read, \
+             patch.object(Prompt, "ask",
+                          side_effect=lambda *a, **k: next(answers)), \
+             patch.object(SubmitService, "__init__",
+                          return_value=None) as m_init, \
+             patch.object(SubmitService, "auto_scan_and_submit"):
+            cli_legacy._submit_interactive_wizard()
+        m_read.assert_called_once_with()
+        _, kwargs = m_init.call_args
+        self.assertEqual(kwargs.get("workspace_dir"), "wsX")
+
 
 class TestCliCommandsDelegation(unittest.TestCase):
     def test_handle_workspaces_redirects_to_status_service(self):

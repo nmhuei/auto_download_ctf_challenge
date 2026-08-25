@@ -4,11 +4,12 @@
 Các script root giờ là shim ≤10 dòng gọi vào đây — help text & argv
 không đổi với user. Body được route về tầng services nơi đã có bản
 1:1 (SubmitService / RankService / InstanceService /
-StatusService.scan_all_workspaces); wizard interactive (có input/Prompt)
-nằm ở services hoặc giữ nguyên tại đây cho manage.
+StatusService.scan_all_workspaces); wizard submit giữ rich Prompt
+nguyên văn tại đây, menu manage đọc stdin qua ``_prompt_line``
+(sys.stdin.readline — rule Phase 7: tầng CLI không gọi input()).
+Đọc challenges.json đi qua WorkspaceRepo (single-source-of-truth).
 """
 import argparse
-import json
 import os
 import sys
 
@@ -19,6 +20,7 @@ from ctf_downloader.services.instance_service import InstanceService
 from ctf_downloader.services.rank_service import RankService
 from ctf_downloader.services.status_service import StatusService
 from ctf_downloader.services.submit_service import SubmitService
+from ctf_downloader.storage.workspace_repo import WorkspaceRepo
 from ctf_downloader.submitter import FlagSubmitter
 from ctf_downloader.utils.logger import Logger, console
 
@@ -74,15 +76,11 @@ def _submit_interactive_wizard(flag_format: str = None):
         default_workspace = "./PTIT_CTF_2026" if os.path.exists("./PTIT_CTF_2026") else os.path.expanduser("~/Workspace/CTF")
     workspace = Prompt.ask("[bold cyan]Workspace directory (or press enter to skip)[/bold cyan]", default=default_workspace).strip()
 
-    # Try reading URL from challenges.json if available
+    # Try reading URL from challenges.json if available (qua WorkspaceRepo —
+    # file thiếu/hỏng trả rỗng như khối try/except cũ)
     default_url = ""
-    if os.path.exists(os.path.join(workspace, "challenges.json")):
-        try:
-            with open(os.path.join(workspace, "challenges.json"), "r") as f:
-                data = json.load(f)
-                default_url = data.get("ctf_info", {}).get("url", "")
-        except Exception:
-            pass
+    ctf_info = WorkspaceRepo(workspace).read_challenges().get("ctf_info") or {}
+    default_url = ctf_info.get("url", "")
 
     url = Prompt.ask("[bold cyan]Enter CTF Platform URL[/bold cyan]", default=default_url or "https://jeo.infosecptit.org/games/6/challenges").strip()
     cookie = Prompt.ask("[bold cyan]Paste Cookie (or path to cookie file)[/bold cyan]").strip()
@@ -113,15 +111,12 @@ def legacy_submit_main():
         _submit_interactive_wizard(flag_format=args.flag_format)
         return
 
-    # Check url from workspace if not provided
+    # Check url from workspace if not provided (qua WorkspaceRepo)
     url = args.url
-    if not url and args.workspace and os.path.exists(os.path.join(args.workspace, "challenges.json")):
-        try:
-            with open(os.path.join(args.workspace, "challenges.json"), "r") as f:
-                data = json.load(f)
-                url = data.get("ctf_info", {}).get("url", "")
-        except Exception:
-            pass
+    if not url and args.workspace:
+        ctf_info = (WorkspaceRepo(args.workspace)
+                    .read_challenges().get("ctf_info") or {})
+        url = ctf_info.get("url", "")
 
     if not url:
         Logger.error("CTF URL is required. Use -u <URL> or -i for interactive mode.")
@@ -159,6 +154,19 @@ def legacy_submit_main():
 # legacy manage (nguyên văn manage.py)                                #
 # ------------------------------------------------------------------ #
 
+def _prompt_line(question: str) -> str:
+    """Tương đương ``input(question)`` nhưng dùng ``sys.stdin.readline`` để
+    tuân thủ rule Phase 7 (tầng CLI cấm gọi input()). In câu hỏi ra stdout
+    không newline + flush (giống input), chỉ bỏ ``\\n`` cuối — caller giữ
+    quyền .strip(). Stdin đóng -> EOFError như input cũ (tránh vòng lặp
+    menu vô hạn khi readline trả rỗng)."""
+    print(question, end="", flush=True)
+    line = sys.stdin.readline()
+    if line == "":
+        raise EOFError
+    return line.rstrip("\n")
+
+
 def _manage_interactive_mode(dash, workspace, cookie, token):
     challs = dash.local_challenges
     if not challs:
@@ -176,14 +184,14 @@ def _manage_interactive_mode(dash, workspace, cookie, token):
         print('  [5] Mark Challenge as Solved / Unsolved')
         print('  [0] Exit')
         print('='*75)
-        choice = input('Select option (0-5): ').strip()
+        choice = _prompt_line('Select option (0-5): ').strip()
 
         if choice == '0':
             break
         elif choice == '1':
             dash.render_tree()
         elif choice == '2':
-            q = input('Enter Challenge ID or Name: ').strip()
+            q = _prompt_line('Enter Challenge ID or Name: ').strip()
             target = next((c for c in challs if str(c.get('id')) == q or q.lower() in c.get('name', '').lower()), None)
             if not target:
                 Logger.error('Challenge not found.')
@@ -202,7 +210,7 @@ def _manage_interactive_mode(dash, workspace, cookie, token):
         elif choice == '3':
             try:
                 mgr = InstanceManager(workspace, cookie=cookie, token=token)
-                q = input('Enter Challenge ID or Name: ').strip()
+                q = _prompt_line('Enter Challenge ID or Name: ').strip()
                 target = mgr.find_challenge(challenge_id=q, challenge_name=q)
                 if not target:
                     Logger.error('Challenge not found.')
@@ -213,7 +221,7 @@ def _manage_interactive_mode(dash, workspace, cookie, token):
                 print('  [2] Check Container Status')
                 print('  [3] Extend Container Lifetime')
                 print('  [4] Stop / Destroy Container')
-                cact = input('Choice (1-4): ').strip()
+                cact = _prompt_line('Choice (1-4): ').strip()
                 if cact == '1':
                     mgr.start_instance(cid)
                 elif cact == '2':
@@ -226,8 +234,8 @@ def _manage_interactive_mode(dash, workspace, cookie, token):
             except Exception as e:
                 Logger.error(f'Instance error: {e}')
         elif choice == '4':
-            q = input('Enter Challenge ID or Name: ').strip()
-            flag_str = input('Enter Flag: ').strip()
+            q = _prompt_line('Enter Challenge ID or Name: ').strip()
+            flag_str = _prompt_line('Enter Flag: ').strip()
             if not flag_str:
                 Logger.warning('Empty flag.')
                 continue
@@ -237,7 +245,7 @@ def _manage_interactive_mode(dash, workspace, cookie, token):
             except Exception as e:
                 Logger.error(f'Submit error: {e}')
         elif choice == '5':
-            q = input('Enter Challenge ID or Name: ').strip()
+            q = _prompt_line('Enter Challenge ID or Name: ').strip()
             target = next((c for c in challs if str(c.get('id')) == q or q.lower() in c.get('name', '').lower()), None)
             if not target:
                 Logger.error('Challenge not found.')
