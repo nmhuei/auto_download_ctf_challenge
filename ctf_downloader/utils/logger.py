@@ -1,40 +1,41 @@
 import sys
 from rich.console import Console
-from rich.theme import Theme
 from rich.panel import Panel
 from rich.table import Table
 
-custom_theme = Theme({
-    "info": "cyan",
-    "warning": "yellow",
-    "error": "bold red",
-    "success": "bold green",
-    "highlight": "bold magenta",
-    "dim": "dim white",
-})
+# PHOSPHOR FIELD KIT: một accent amber duy nhất, semantic chỉ đi kèm glyph
+# (spec §3). Logger dùng chung theme nguồn sự thật của toàn CLI thay cho
+# custom_theme cyan/vàng/xanh legacy; highlight=False tắt ReprHighlighter
+# (rich không được tự do tô màu ngoài token).
+from ..ui.theme import load_theme
 
-console = Console(theme=custom_theme)
+console = Console(theme=load_theme(None), highlight=False)
 
 class Logger:
     @staticmethod
     def info(msg: str):
-        console.print(f"[bold cyan][*][/bold cyan] {msg}")
+        # [*] là chrome điều hướng → amber tắt đèn (ACCENT_DEEP), không cyan.
+        console.print(f"[accent.deep][*][/accent.deep] {msg}")
 
     @staticmethod
     def success(msg: str):
-        console.print(f"[bold green][+][/bold green] {msg}")
+        # [+] là chrome thuần → amber lead; green chỉ dành cho ngữ nghĩa
+        # solve/✔ theo spec §3. Tag lồng để từng tên token resolve qua theme.
+        console.print(f"[bold][accent][+][/][/] {msg}")
 
     @staticmethod
     def warning(msg: str):
-        console.print(f"[bold yellow][!][/bold yellow] {msg}")
+        # ! warn → warn amber #EAC54F (token spec, không vàng legacy).
+        console.print(f"[bold][warn][!][/][/] {msg}")
 
     @staticmethod
     def error(msg: str):
-        console.print(f"[bold red][-][/bold red] {msg}")
+        # ✗/- error → đỏ semantic token.
+        console.print(f"[bold][error][-][/][/] {msg}")
 
     @staticmethod
     def step(step_num: int, total_steps: int, msg: str):
-        console.print(f"[bold magenta][{step_num}/{total_steps}][/bold magenta] {msg}")
+        console.print(f"[bold][accent][{step_num}/{total_steps}][/][/] {msg}")
 
     @staticmethod
     def banner():
@@ -46,7 +47,7 @@ class Logger:
 
     @staticmethod
     def print_table(title: str, columns: list, rows: list):
-        table = Table(title=title, show_header=True, header_style="bold magenta")
+        table = Table(title=title, show_header=True, header_style="title")
         for col in columns:
             table.add_column(col)
         for row in rows:
