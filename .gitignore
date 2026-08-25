@@ -65,3 +65,9 @@ venv.bak/
 PTIT_CTF_2026/
 test_workspace/
 *.log
+
+# Tool-generated artifacts at repo root (ctf rank/pull/archive chạy ở cwd=root)
+/RANKING.md
+/SUMMARY.md
+/challenges.json
+/_archives/
