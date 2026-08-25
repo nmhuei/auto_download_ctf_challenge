@@ -251,10 +251,11 @@ def capture_render_ansi(report) -> str:
 
 class TestDoctorPhosphorRoles(unittest.TestCase):
     FG_MUTED_ANSI = "\x1b[38;2;138;149;140m"
-    ERROR_ANSI = "\x1b[38;2;255;92;87m"
+    # codex-r3 #1: error-red/solved-green hex mới (bỏ #FF5C57/#46C46B).
+    ERROR_ANSI = "\x1b[38;2;229;83;75m"      # ERROR  = #E5534B
     WARN_ANSI = "\x1b[38;2;234;197;79m"
     ACCENT_ANSI = "\x1b[38;2;255;176;0m"
-    SOLVED_ANSI = "\x1b[38;2;70;196;107m"
+    SOLVED_ANSI = "\x1b[38;2;92;200;120m"    # SOLVED = #5CC878
 
     def _partial_report(self):
         report = DoctorReport(url=URL)
@@ -313,6 +314,62 @@ class TestDoctorPhosphorRoles(unittest.TestCase):
         self.assertIn(self.SOLVED_ANSI + "✔", out)
         self.assertIn(self.ERROR_ANSI + "✗", out)
         self.assertIn("\x1b[38;2;138;149;140m container động", out)
+
+
+class TestDoctorChromeAndWrap(unittest.TestCase):
+    """codex-r3 #2/#3: FooterBar cuối surface + wrap continuation thụt đúng
+    cột nội dung (không về cột 1)."""
+
+    def test_footer_bar_is_last_line(self):
+        out = capture_render(self._partial())
+        lines = [ln for ln in out.splitlines() if ln.strip()]
+        self.assertIn("q thoát", lines[-1])
+        self.assertIn("di chuyển", lines[-1])
+        self.assertIn("?", lines[-1])
+
+    def _partial(self):
+        report = DoctorReport(url=URL)
+        report.add("A", True, "ok")
+        report.add("B", False, "nguyên nhân X",
+                   fix="chạy lệnh fix --flag-format")
+        return report
+
+    def test_wrap_continuation_indented_to_content_column(self):
+        # Detail dài hơn width → phải tự chia chunk với thụt đầu dòng,
+        # KHÔNG để rich soft-wrap đẩy continuation về cột 1.
+        report = DoctorReport(url=URL)
+        report.add("Event window", False,
+                   "Bắt đầu 2026-08-24 09:00 UTC — kết thúc "
+                   "2026-08-25 17:00 UTC → ĐANG DIỄN RA (LIVE) "
+                   + "còn lại nhiều nội dung nữa để ép xuống dòng ",
+                   fix="Kiểm tra kết nối rồi nhập tay lại tham số "
+                       + "bằng lệnh fix rất dài để tràn bề rộng khung ")
+        buf = io.StringIO()
+        report.render(console=Console(file=buf, width=80))
+        lines = buf.getvalue().splitlines()
+        # Có ít nhất 1 continuation nằm đúng cột sau nhãn ``╰─▶ `` (cột 10).
+        cont = [ln for ln in lines if ln.startswith(" " * 10)
+                and ln.strip()]
+        self.assertTrue(cont, f"không có continuation thụt cột nội dung:\n"
+                              f"{buf.getvalue()}")
+        # Mọi dòng không thuộc dạng dòng đầu khối đều phải được thụt lề.
+        allowed_prefixes = ("▐██", "CHECK", "KẾT QUẢ", "!", "✔", "✗", "↑↓")
+        for ln in lines:
+            if not ln.strip() or ln.startswith(allowed_prefixes):
+                continue
+            self.assertTrue(ln.startswith(" "),
+                            f"continuation về cột 1: {ln!r}")
+
+    def test_ok_detail_wrap_indents_to_label_column(self):
+        report = DoctorReport(url=URL)
+        report.add("Event window", True,
+                   "Chi tiết rất dài " + "w" * 200)
+        buf = io.StringIO()
+        report.render(console=Console(file=buf, width=80))
+        lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
+        conts = [ln for ln in lines if ln.startswith(" " * 6)]
+        self.assertTrue(conts,
+                        "detail của check ✔ phải wrap về cột nội dung 6")
 
 
 class TestDetectQuiet(unittest.TestCase):

@@ -679,6 +679,17 @@ class TestPhosphorHelpScreen(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.out)
 
+    def test_app_header_first_line(self):
+        # codex-r3 #2: help là lệnh thường duy nhất còn thiếu AppHeader —
+        # dòng ĐẦU output phải là `▐██ CTF·TOOLKIT │ help`; banner vẫn giữ.
+        first = self.out.splitlines()[0]
+        self.assertIn("▐██", first)
+        self.assertIn("CTF·TOOLKIT", first)
+        self.assertIn("help", first)
+        self.assertIn("│", first)
+        # Banner half-block vẫn có mặt sau header.
+        self.assertRegex(self.out, r"(?m)^█")
+
     def test_no_emoji_chrome(self):
         # Glyph rule: emoji chrome bị cấm (⚡📝🏷️👀🩺💾🔄📦📜🎯🌐).
         banned = "⚡📝🏷👀🩺💾🔄📦📜🎯🌐"

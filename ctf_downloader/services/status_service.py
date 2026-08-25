@@ -49,6 +49,16 @@ METER_RAMP_START = (0x6B, 0x43, 0x00)
 METER_RAMP_MID = (0xFF, 0xB0, 0x00)
 METER_RAMP_END = (0xFF, 0xE4, 0x9A)
 
+# Codex-r3 #1: meter chỉ được dùng ĐÚNG 3 mốc màu spec — mỗi ô nhận MỘT
+# trong ba màu trên theo vị trí cột (1/3 than hồng · 1/3 hổ phách · 1/3
+# vàng nhạt), KHÔNG nội suy thêm bước nào (gradient() cũ sinh các màu trung
+# gian như #885800/#FFD97B lệch spec). Index theo % vị trí ô 0-100 khớp
+# cách ``ui.widgets.meter`` tra màu.
+_METER_RAMP_3STOP: tuple = tuple(
+    METER_RAMP_START if y < 34 else METER_RAMP_MID if y < 67 else METER_RAMP_END
+    for y in range(101)
+)
+
 # Glyph ngữ nghĩa thay emoji (spec §4.3): state / draft / container / file.
 ROW_GLYPHS = {
     'solve': {
@@ -559,16 +569,16 @@ class StatusService:
 
     @classmethod
     def _meter_only(cls, rate: float, width: int) -> Text:
-        """Meter gradient thuần (không prefix/suffix) dạng ``rich.text.Text``.
+        """Meter amber thuần (không prefix/suffix) dạng ``rich.text.Text``.
 
-        - TTY đủ rộng → ``ui.widgets.meter`` per-cell gradient (xanh→vàng→đỏ).
+        - TTY đủ rộng → ``ui.widgets.meter`` per-cell với ramp 3 mốc spec
+          §3.3 (#6B4300/#FFB000/#FFE49A — codex-r3 #1, không nội suy thêm).
         - Terminal hẹp / non-TTY → bar plain ``'█' * n + '░'`` (vẫn Text để
           caller không bị rich parse markup nhầm dấu ``[``).
         """
         if cls._gradient_enabled():
-            from ..ui.widgets import gradient, meter
-            ramp = gradient(METER_RAMP_START, METER_RAMP_MID, METER_RAMP_END)
-            return meter(rate, width, ramp)
+            from ..ui.widgets import meter
+            return meter(rate, width, _METER_RAMP_3STOP)
         filled = int(width * rate // 100)
         return Text("█" * filled + "░" * max(0, width - filled))
 
@@ -654,7 +664,7 @@ class StatusService:
         baseline braille ``⣀`` faint thay vì chuỗi rỗng vô hình.
         Subtitle đáy panel: ``platform · user[ · team][ · window]``.
         """
-        from ..ui.widgets import braille_graph, gradient
+        from ..ui.widgets import braille_graph
         from ..ui.widgets import meter as _meter
 
         def lab(s: str) -> Text:
@@ -662,8 +672,7 @@ class StatusService:
 
         rate = stats['completion_rate']
         if cls._gradient_enabled():
-            grad = gradient(METER_RAMP_START, METER_RAMP_MID, METER_RAMP_END)
-            meter_c1 = _meter(rate, 22, grad)
+            meter_c1 = _meter(rate, 22, _METER_RAMP_3STOP)
         else:
             meter_c1 = cls._meter_only(rate, 22)
 

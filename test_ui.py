@@ -233,8 +233,10 @@ def test_theme_defaults_have_ctf_semantic_keys():
                 "accent", "accent.hi", "accent.deep",
                 "info", "solved", "firstblood", "error", "warn"):
         assert key in theme.styles
-    assert theme.styles["success"] == Style.parse("#46C46B")   # = solved
-    assert theme.styles["div_line"] == Style.parse("#7A5200")  # = accent.deep
+    # PHOSPHOR chuẩn hoá codex-r3 #1: success = solved-green semantic,
+    # div_line = accent.deep trùng mốc đầu meter (#6B4300).
+    assert theme.styles["success"] == Style.parse("#5CC878")   # = solved
+    assert theme.styles["div_line"] == Style.parse("#6B4300")  # = accent.deep
 
 
 def test_theme_toml_override(tmp_path):
@@ -248,8 +250,9 @@ def test_theme_toml_override(tmp_path):
     theme = load_theme(toml_file)
     assert theme.styles["solved"] == Style.parse("bold blue")
     assert theme.styles["firstblood"] == Style.parse("#ff004f")
-    # untouched defaults remain (PHOSPHOR info teal)
-    assert theme.styles["hint"] == Style.parse("#62C8CE")
+    # untouched defaults remain (info/path/literal → neutral fg.base,
+    # codex-r3 #1: đã bỏ cyan #62C8CE)
+    assert theme.styles["hint"] == Style.parse("#D8DFD9")
 
 
 def test_loaded_theme_applies_to_console(tmp_path):

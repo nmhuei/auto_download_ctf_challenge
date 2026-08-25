@@ -49,7 +49,7 @@ class _PhosphorHelpParser(argparse.ArgumentParser):
         from rich.console import Console, Group
         from rich.text import Text
 
-        from .ui.banner import TAGLINE, banner_b, tagline_text
+        from .ui.banner import TAGLINE, app_header, banner_b, tagline_text
         from .ui.theme import FG_BASE, FG_FAINT, FG_MUTED, INFO, load_theme
         from .ui.widgets import footer_bar
 
@@ -89,10 +89,13 @@ class _PhosphorHelpParser(argparse.ArgumentParser):
         footer = footer_bar([('↑↓', 'di chuyển'), ('?', 'help'),
                              ('q', 'thoát')], width=max(40, console.width))
 
-        # Nhịp theo spec §4.8: banner → 1 dòng trống → tagline → 1 → CÚ PHÁP
-        # → syntax → 1 → LỆNH → bảng lệnh → 1 → footer. banner_b() và dòng
-        # lệnh cuối đều đã tự kết thúc bằng '\n' (tự tạo 1 dòng trống).
+        # Nhịp theo spec §4.8: AppHeader (codex-r3 #2 — help là lệnh thường
+        # duy nhất còn thiếu) → 1 dòng trống → banner → 1 dòng trống (banner
+        # tự kết thúc bằng '\n') → tagline → 1 → CÚ PHÁP → syntax → 1 →
+        # LỆNH → bảng lệnh → footer.
         console.print(Group(
+            app_header('help', timestamp=_frame_timestamp()),
+            Text(),
             banner_b(),
             tagline_text(),
             Text(),

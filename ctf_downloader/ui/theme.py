@@ -21,21 +21,30 @@ from rich.theme import Theme
 
 from .style import PALETTE
 
-# PHOSPHOR FIELD KIT token set (spec §3). Dotted keys are resolved verbatim
-# by rich's theme stack before any color parsing, so they are safe in markup.
+# PHOSPHOR FIELD KIT token set (spec §3, chuẩn hoá codex-r3 #1). Dotted keys
+# are resolved verbatim by rich's theme stack before any color parsing, so
+# they are safe in markup.
+#
+# Palette kỷ luật: neutral fg.* + MỘT accent amber ``#FFB000`` family
+# (#6B4300 → #FFB000 → #FFE49A — trùng đúng 3 mốc meter §3.3). Semantic chỉ
+# còn 3 glyph vai trò: ✔ solved-green / ✗ error-red / ! warn. Cyan/green/red
+# trang trí và vàng ngoài token đã bị bỏ — path/literal/lệnh dùng neutral.
 FG_BASE = "#D8DFD9"       # nội dung chính
 FG_MUTED = "#8A958C"      # thông tin phụ
 FG_FAINT = "#4A534C"      # chrome: nhãn cột, đường nối, glyph trống
 ACCENT = "#FFB000"        # amber phosphor — giọng nói duy nhất
-ACCENT_HI = "#FFD75F"     # đỉnh nhấn amber (điểm vừa đạt)
-ACCENT_DEEP = "#7A5200"   # amber tắt đèn: khung panel, ── heading
-INFO = "#62C8CE"          # path/literal/lệnh — chỗ lạnh duy nhất
-SOLVED = "#46C46B"        # ✔
+ACCENT_HI = "#FFE49A"     # đỉnh nhấn amber — trùng mốc cuối meter §3.3
+ACCENT_DEEP = "#6B4300"   # amber tắt đèn — trùng mốc đầu meter §3.3
+INFO = FG_BASE            # path/literal/lệnh → neutral (đã bỏ cyan)
+SOLVED = "#5CC878"        # ✔ solved-green (semantic duy nhất cùng ✗/!)
 FIRSTBLOOD = "#FF2E63"    # ◆ + bold
-ERROR = "#FF5C57"         # ✗
+ERROR = "#E5534B"         # ✗ đỏ
 WARN = "#EAC54F"          # !
 
 DEFAULT_STYLES: dict[str, str] = {
+    # --- Legacy aliases (PALETTE) ĐẨY TRƯỚC để token spec ghi đè hết:
+    # trước đây "error" của PALETTE đè token hex (codex-r3 #1) ---
+    **PALETTE,  # dim / path / literal / hint / title nền chung
     # --- Token spec §3 ---
     "fg.base": FG_BASE,
     "fg.muted": FG_MUTED,
@@ -48,8 +57,6 @@ DEFAULT_STYLES: dict[str, str] = {
     "firstblood": FIRSTBLOOD,
     "error": ERROR,
     "warn": WARN,
-    # --- Legacy aliases (giữ tương thích caller cũ) trỏ vào token mới ---
-    **PALETTE,  # dim / path / literal / hint / title nền chung
     "success": SOLVED,
     "warning": WARN,
     "hint": INFO,

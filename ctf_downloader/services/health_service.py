@@ -13,7 +13,10 @@ render đủ, không chết cả report):
 
 DoctorReport.render() vẽ report PHOSPHOR không viền dọc: ✔ pass · check lỗi
 dạng diagnostic mini ``✗ tên → ╰─▶ nguyên nhân → ℹ lệnh fix`` + tổng kết
-X/Y checks pass (amber khi chưa pass đủ).
+X/Y checks pass (amber khi chưa pass đủ) + FooterBar cuối surface
+(codex-r3 #2 — doctor tự vẽ vì không chạy qua cli._run_framed). Wrap có
+chủ đích: continuation của mọi khối thụt đúng cột nội dung, không về cột 1
+(codex-r3 #3).
 """
 import datetime as _dt
 from dataclasses import dataclass, field
@@ -25,7 +28,7 @@ from ..platforms.base import EventTimes  # noqa: F401 — type hint
 from ..platforms.capabilities import PlatformInfo
 from ..platforms.registry import get_spec
 from ..ui.style import BRANCH, FAIL, OK, WARN as WARN_GLYPH
-from ..ui.theme import (ACCENT, ERROR, FG_FAINT, FG_MUTED, INFO,
+from ..ui.theme import (ACCENT, ERROR, FG_BASE, FG_FAINT, FG_MUTED, INFO,
                         SOLVED, WARN)
 from ..utils.flag_format import extract_flag_format
 from ..utils.logger import Logger, console as _default_console
@@ -39,6 +42,40 @@ _CAP_ITEMS = (
     ("scoreboard", "scoreboard"),
     ("rules_via_api", "rules qua API"),
 )
+
+#: FooterBar chuẩn cho lệnh thường (spec §4.7) — cùng bộ phím với cli.
+_FOOTER_BINDINGS = (("↑↓", "di chuyển"), ("?", "help"), ("q", "thoát"))
+
+#: Cột nội dung sau glyph kết quả: ``✔/✗`` + 5 spaces (layout bảng cũ).
+_LABEL_COL = 6
+
+
+def _wrap_words(text: str, first_width: int, rest_width: int) -> List[str]:
+    """Chia ``text`` thành các chunk greedy theo bề rộng cho trước.
+
+    Chunk đầu rộng ``first_width``, các chunk sau ``rest_width`` — caller
+    render chunk sau ở cột thụt của khối nên continuation KHÔNG BAO GIỜ
+    về cột 1 khi terminal hẹp (codex-r3 #3).
+    """
+    limit_first = max(20, int(first_width))
+    limit_rest = max(20, int(rest_width))
+    lines: List[str] = []
+    cur: List[str] = []
+    cur_len = 0
+    limit = limit_first
+    for word in str(text).split(" "):
+        if not word:
+            continue
+        extra = len(word) + (1 if cur else 0)
+        if cur and cur_len + extra > limit:
+            lines.append(" ".join(cur))
+            cur, cur_len, limit = [word], len(word), limit_rest
+        else:
+            cur.append(word)
+            cur_len += extra
+    if cur:
+        lines.append(" ".join(cur))
+    return lines or [""]
 
 
 @dataclass
@@ -82,25 +119,37 @@ class DoctorReport:
         return self.total > 0 and self.passed == self.total
 
     @staticmethod
-    def _fail_content(chk: DoctorCheck) -> Text:
+    def _fail_content(chk: DoctorCheck, width: int = 80) -> Text:
         """Diagnostic mini: tên → ``╰─▶`` nguyên nhân → ``ℹ`` lệnh fix.
 
         ``╰─▶`` là connector cấu trúc → muted (KHÔNG đỏ — đỏ chỉ dành cho
         glyph kết quả ``✗``, luật vai trò màu PHOSPHOR §3). Glyph kết quả
-        đứng cột đầu, continuation line thụt 6 cột như layout bảng cũ.
+        đứng cột đầu, continuation thụt đúng cột nội dung của khối (sau
+        ``╰─▶ `` / sau ``ℹ ``) — không bao giờ wrap về cột 1 (codex-r3 #3).
         """
+        branch_col = _LABEL_COL + len(BRANCH) + 1   # sau "╰─▶ "
+        fix_col = _LABEL_COL + 2                    # sau "ℹ "
         content = Text()
         content.append(FAIL, style=ERROR)
         content.append("     ")
         content.append(chk.name)
         if chk.detail:
-            content.append("\n      ")
+            content.append("\n" + " " * _LABEL_COL)
             content.append(BRANCH + " ", style=FG_MUTED)
-            content.append(chk.detail)
+            for i, chunk in enumerate(
+                    _wrap_words(chk.detail, width - branch_col,
+                                width - branch_col)):
+                if i:
+                    content.append("\n" + " " * branch_col)
+                content.append(chunk)
         if chk.fix:
-            content.append("\n      ")
+            content.append("\n" + " " * _LABEL_COL)
             content.append("ℹ ", style=INFO)
-            content.append(chk.fix)
+            for i, chunk in enumerate(
+                    _wrap_words(chk.fix, width - fix_col, width - fix_col)):
+                if i:
+                    content.append("\n" + " " * fix_col)
+                content.append(chunk)
         return content
 
     @staticmethod
@@ -119,6 +168,7 @@ class DoctorReport:
         from ..ui.banner import app_header
 
         out = console or _default_console
+        width = getattr(out, "width", None) or 80
 
         # AppHeader chuẩn như các lệnh khác (spec §4.1):
         # ▐██ CTF·TOOLKIT │ doctor · <url> ... timestamp mép phải.
@@ -130,9 +180,9 @@ class DoctorReport:
         # dài nhất; in trực tiếp thì không có padding thừa (codex-r2 P0c).
         for chk in self.checks:
             if chk.ok:
-                out.print(DoctorReport._ok_content(chk))
+                out.print(DoctorReport._ok_content(chk, width))
             else:
-                out.print(DoctorReport._fail_content(chk))
+                out.print(DoctorReport._fail_content(chk, width))
 
         out.print(Text("KẾT QUẢ", style=FG_FAINT))
         summary = f"Tổng kết: {self.passed}/{self.total} checks pass"
@@ -149,9 +199,25 @@ class DoctorReport:
             line.append(summary + " — xem lại các dòng ✗ phía trên.")
         out.print(line)
         out.print()
+        # FooterBar hoàn thiện chrome (codex-r3 #2): mọi lệnh thường kết thúc
+        # bằng thanh phím tắt — phím amber (hi_fg = accent), nhãn fg.base.
+        out.print(DoctorReport._footer_text())
 
     @staticmethod
-    def _ok_content(chk: DoctorCheck) -> Text:
+    def _footer_text() -> Text:
+        """FooterBar spec §4.7 dạng Text (token thuần — in được trên console
+        nào, kể cả logger console không theme). Cùng hình dạng với
+        ``ui.widgets.footer_bar``: ``↑↓ di chuyển · ? help · q thoát``."""
+        bar = Text()
+        for i, (key, label) in enumerate(_FOOTER_BINDINGS):
+            if i:
+                bar.append(" · ", style="dim")
+            bar.append(key, style=ACCENT)
+            bar.append(f" {label}", style=FG_BASE)
+        return bar
+
+    @staticmethod
+    def _ok_content(chk: DoctorCheck, width: int = 80) -> Text:
         line = Text(OK, style=SOLVED)
         line.append("     ")
         line.append(chk.name)
@@ -164,7 +230,16 @@ class DoctorReport:
                             style=SOLVED if ok_cap else ERROR)
                 line.append(f" {label}", style=FG_MUTED)
         elif chk.detail:
-            line.append(f" · {chk.detail}", style=FG_MUTED)
+            # Detail inline sau tên; khi tràn width, phần dôi ra xuống dòng
+            # riêng thụt đúng cột nội dung (codex-r3 #3 — không về cột 1).
+            sep = " · "
+            first_avail = width - _LABEL_COL - len(chk.name) - len(sep)
+            chunks = _wrap_words(chk.detail, first_avail, width - _LABEL_COL)
+            line.append(sep, style=FG_MUTED)
+            line.append(chunks[0], style=FG_MUTED)
+            for chunk in chunks[1:]:
+                line.append("\n" + " " * _LABEL_COL)
+                line.append(chunk, style=FG_MUTED)
         return line
 
 

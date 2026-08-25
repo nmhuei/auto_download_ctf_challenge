@@ -122,5 +122,30 @@ class TestFallbackPlain(MeterTestCase):
         self.assertIn("0.0%", buf.getvalue())
 
 
+class TestPhosphorMeterRamp(MeterTestCase):
+    """codex-r3 #1: meter chỉ dùng ĐÚNG 3 mốc màu spec §3.3 — không còn
+    các bước nội suy trung gian (#885800/#FFD97B cũ)."""
+
+    SPEC_HEXES = {"#6b4300", "#ffb000", "#ffe49a"}
+
+    def test_ramp_constant_is_exactly_three_spec_stops(self):
+        from ctf_downloader.services.status_service import _METER_RAMP_3STOP
+        self.assertEqual(set(_METER_RAMP_3STOP), {
+            (0x6B, 0x43, 0x00), (0xFF, 0xB0, 0x00), (0xFF, 0xE4, 0x9A)})
+        self.assertEqual(len(_METER_RAMP_3STOP), 101)
+
+    def test_rendered_meter_cells_use_only_spec_colors(self):
+        bar = StatusService._meter_only(100.0, 30)  # non-TTY → plain
+        self.assertNotIn("#", bar.plain)
+        with patch.object(status_service.sys, "stdout", FakeTTY()), \
+             patch.object(status_service.shutil, "get_terminal_size",
+                          return_value=os.terminal_size((100, 24))):
+            bar = StatusService._meter_only(73.0, 30)
+        filled_styles = {s.style for s in bar.spans
+                         if s.style and str(s.style).startswith("#")}
+        self.assertEqual(filled_styles, self.SPEC_HEXES,
+                         f"meter lộ màu ngoài 3 mốc: {filled_styles}")
+
+
 if __name__ == "__main__":
     unittest.main()
