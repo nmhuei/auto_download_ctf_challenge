@@ -25,10 +25,12 @@
 | # | Ràng buộc | Biện pháp kiểm chứng |
 |---|---|---|
 | R1 | 100 test hiện có phải xanh sau MỖI giai đoạn migrate | Chạy `pytest test_suite.py test_sp1_submit.py test_sp2_download.py test_sp3_recon.py -q` cuối mỗi phase |
-| R2 | Giữ nguyên văn chuỗi message mà test SP2 assert trong `downloaders/manager.py` khi thay if/elif bằng registry | Diff chuỗi trước/sau phải rỗng |
+| R2 | Chuỗi message user-facing trong `downloaders/manager.py` là **tiếng Việt** (i18n toàn bộ từ commit `99ce28d` + các batch sau); keyword kỹ thuật giữ nguyên văn. Khi thay if/elif bằng registry, message phải khớp test SP2 bản i18n hiện hành | Diff chuỗi trước/sau phải rỗng (so baseline i18n) |
 | R3 | Import path công khai hiện tại phải tiếp tục tồn tại: `ctf_downloader.{core,submitter,instance_manager,dashboard,ranking}`, `platforms.detector.PlatformDetector.detect_platform*`, dataclass ở `platforms.base` | File cũ thành facade mỏng re-export |
 | R4 | Cấm import ngược tầng (service→CLI, storage→service, extractor→downloader) | Review thủ công + quy ước ghi trong CLAUDE.md sau này |
-| R5 | Linux-only, Python 3.13, không thêm dependency mới | — |
+| R5 | Linux-only, Python 3.13; không thêm dependency ngoài rich/requests/bs4 hiện có trừ khi user duyệt (requirements.txt hiện `rich>=13`) | — |
+
+> **Cập nhật 2026-08-25 theo spec-audit:** R2 bỏ đóng băng message tiếng Anh — thực tế đã i18n tiếng Việt toàn bộ output user-facing; R5 nới mệnh đề dependency (chỉ rich/requests/bs4 hiện có, thêm mới phải qua user duyệt).
 
 ## 3. Kiến trúc mục tiêu
 
@@ -161,7 +163,9 @@ class WorkspaceRepo:
     def write_challenges(self, data: dict)     # atomic + flock
     def update_ctf_info(self, **fields)        # flag_format cache v.v.
     def resolve_platform_url(self) -> str|None # hợp nhất 4 bản _resolve_url (fallback đầy đủ nhất)
-    def find_challenge(self, q) -> dict|None   # hợp nhất 4 pattern lookup (exact id → exact name → partial; trả kèm nguồn khớp)
+    def find_challenge(self, q) -> dict|None   # hợp nhất 4 pattern lookup; trả dict|None, KHÔNG kèm nguồn khớp
+                                               # (Cập nhật 2026-08-25 theo spec-audit) tier: exact id → exact name → substring name;
+                                               # kết quả từ metadata.json gắn thêm `_local_path`
     # metadata.json
     def iter_challenges(self) -> Iterator[ChallengeFolder]   # os.walk duy nhất
     def read_metadata(self, path) / write_metadata(path, meta)
@@ -176,6 +180,7 @@ class WorkspaceRepo:
 - `constants.py` chứa mọi chuỗi literal chia sẻ: `SOLVED_DONE = "- [x] Solved"`, `SOLVED_TODO = "- [ ] Solved"`, `TARGET_CONNECTION_LINE = "- Target Connection: \`{info}\`"`, `SUMMARY_FILES_LINE = "- **Total Files Downloaded**:"`, biến template solve.py (`HOST`, `PORT`, `TARGET_URL`), placeholder flag — cả `workspace_builder` lẫn các service import từ đây.
 - Regex patch `solve.py` neo đầu dòng `^\s*(HOST|PORT|TARGET_URL)\s*=`, `count=1`.
 - Ghi file: `fileio.atomic_write_*` cho mọi JSON/md; `locked_json_update` cho challenges.json/metadata.json.
+- (Cập nhật 2026-08-25 theo spec-audit) Hiện trạng: `SummaryGenerator` vẫn tự ghi trực tiếp `SUMMARY.md`/`challenges.json` — vi phạm mục tiêu "một lớp duy nhất"; kiến trúc đích là mọi write qua WorkspaceRepo atomic. Đang xử lý — xem mục "Known deviations & follow-ups". [IN-PROGRESS]
 
 ### 3.5 Auth & session
 
@@ -214,7 +219,7 @@ Mỗi giai đoạn: implement → chạy 100 test → xanh mới sang giai đo�
 | 3 | `session_factory` + `auth_service`; `cli.get_auth_for_workspace` delegate | sp1/sp3 | services/auth*, cli.py |
 | 4 | `platforms/registry.py` + decorator 5 platform; detector → facade; xoá brute-force còn sót, fix `detect_and_init` qua `platform_resolver` | sp3 (16) | platforms/* |
 | 5 | Tách `services/*.py` từ core/submitter/instance_manager/ranking/dashboard; file cũ thành facade | sp1 (43) | services/*, 5 module |
-| 6 | `downloaders/registry.py` thay if/elif; cắt lazy-import mega khỏi link_extractor; **diff chuỗi message = rỗng** | sp2 (31) | downloaders/*, extractors/link_extractor.py |
+| 6 | `downloaders/registry.py` thay if/elif; cắt lazy-import mega khỏi link_extractor; **diff chuỗi message i18n VN = rỗng so baseline test** | sp2 (31) | downloaders/*, extractors/link_extractor.py |
 | 7 | Entrypoint shims + `cli_legacy.py`; đẩy `input()` khỏi cli_commands xuống services; gộp workspace-scan | test_suite smoke | cli*, script root |
 
 ## 6. Test strategy
@@ -228,7 +233,7 @@ Mỗi giai đoạn: implement → chạy 100 test → xanh mới sang giai đo�
 | Rủi ro | Biện pháp |
 |---|---|
 | Facade bị bypass, code mới import thẳng sâu vào internals | Quy tắc R4 + review; facade mỏng dễ grep vi phạm (`grep -rn "from ctf_downloader.submitter import _"` ) |
-| Refactor manager làm sai chuỗi message test SP2 assert | R2: diff literal trước/sau; nếu test vỡ coi là fail của phase |
+| Refactor manager làm sai chuỗi message test SP2 assert | R2: diff literal i18n VN trước/sau; nếu test vỡ coi là fail của phase |
 | `interactive_menu.py` (477 dòng) gọi internals cũ | Giữ đủ re-export; smoke menu ở Phase 7 |
 | Migration treo giữa chừng | Mỗi phase 1 commit độc lập; rollback = checkout tag/commit trước |
 
@@ -250,3 +255,13 @@ Mỗi giai đoạn: implement → chạy 100 test → xanh mới sang giai đo�
 - [ ] `grep` xác nhận: không còn `_resolve_url`/`scan_all_workspaces`/`get_auth_for_workspace` nhân bản ngoài services/storage.
 - [ ] Smoke offline pass trên workspace PTIT_CTF_2026 (layout cũ lẫn mới).
 - [ ] README cập nhật cây thư mục mới + hướng dẫn thêm platform.
+
+## 10. Known deviations & follow-ups
+
+> **Cập nhật 2026-08-25 theo spec-audit** — lệch thực tế so với spec, kèm trạng thái xử lý:
+
+| Mục | Trạng thái | Ghi chú |
+|---|---|---|
+| `SummaryGenerator` tự ghi `SUMMARY.md`/`challenges.json` (vi phạm mục tiêu 3) | [IN-PROGRESS] | Kiến trúc đích: mọi write state file qua WorkspaceRepo atomic; đang được fixer xử lý |
+| Test isolation phase 7 chưa đạt chuẩn theo audit | [KNOWN] | Đã ghi nhận; xem lại khi mở rộng test suite |
+| Prompt còn sót ×7 trong `cli_legacy.py` (Phase 7 hứa đẩy `input()` xuống services) | [DEFERRED-L] | Chưa chuyển hết; backlog mức thấp |

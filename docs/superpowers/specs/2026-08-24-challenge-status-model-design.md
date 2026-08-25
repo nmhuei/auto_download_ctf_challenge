@@ -76,19 +76,17 @@ Edge cases đã verify: GZCTF scoreboard anonymous, 400 trước giờ mở → 
 Trả `missing[]` tiếng Việt để render gợi ý ("Mục 'Reconnaissance' chưa có nội dung thực").
 Heuristic chỉ áp khi `writeup_auto=true`.
 
-## 6. Render — icon bắt buộc (design system)
+## 6. Render — thiết kế 2 tầng
 
-| Trục | Icon |
-|---|---|
-| solve | `·` unsolved · 🛠️ working · 🧑✅ by_me · 👥✅ by_team · 🌐✅ other |
-| flag | ∅ none · ❓ unverified · 🏴 hoarded · 🚩✔ correct · ⛔ wrong |
-| writeup | - none · 📄 skeleton · 📝 draft · 📚 complete |
-| container | 🐳▶ running · 🐳⏸ stopped |
-| Category | Web 🌐 Pwn 🖥️ Crypto 🔐 Reverse 🔬 Forensics 🔍 Misc 🎲 Blockchain ⛓️ |
+> **Cập nhật 2026-08-25 theo spec-audit:** triển khai thực tế tách 2 tầng render độc lập; bảng emoji gốc của spec này chỉ còn là tham chiếu cho tầng web.
 
-Dashboard tree: `[🛠️ ][🏴 ][📝][🐳▶] 17. flask-jail (400 pts)` + dòng note `"SSTI sandbox escape — đang bypass"` nếu có.
-Header thống kê: 📊 Progress · 💰 Points · 🏴 Hoarded · 📝 Drafts · 📦 Files · ⏱️ Window (🔴 LIVE / ⏳ countdown / ✅ ended).
-SUMMARY.md cùng bộ icon; mapping signal→icon→message nằm trong 1 dict duy nhất (`storage/constants.py` mở rộng).
+| Tầng | Nguồn icon | Ghi chú |
+|---|---|---|
+| Terminal (dashboard/tree/status) | `ROW_GLYPHS` phosphor — `services/status_service.py`: solve `·` unsolved · `◆` working · `✔` solved; badge `✎` draft · `⛁` container · `⎘` file | by_team/by_other gộp chung `✔` với by_me (cùng style `solved`) |
+| Web dashboard | `STATUS_ICONS` emoji riêng trong `storage/constants.py` (solve/flag/writeup/container + `CATEGORY_ICONS`) — giữ bộ emoji của bản thiết kế gốc | Tách biệt hoàn toàn với glyph terminal |
+
+- Tree terminal **không có badge trục flag** (flag state chỉ hiển thị ở view chi tiết/web).
+- Mapping signal→icon→message nằm trong 1 dict duy nhất (`storage/constants.py` mở rộng).
 
 ## 7. Luồng cập nhật tự động
 
@@ -97,7 +95,7 @@ SUMMARY.md cùng bộ icon; mapping signal→icon→message nằm trong 1 dict d
 | Submit verdict correct | flag→submitted_correct, solve nâng lên solved_by_me | submit_service sau verdict |
 | Verdict incorrect | flag→submitted_wrong (+value để biết flag nào chết) | submit_service |
 | ratelimited/unknown | KHÔNG đổi | submit_service |
-| Lệnh mới `ctf flag <chal> <FLAG>` | flag.value=x, state→hoarded | CLI mới |
+| Lệnh `ctf hoard <chal> <FLAG>` (Cập nhật 2026-08-25 theo spec-audit: `hoard` mới là lệnh stash local-first — `flag` chỉ là alias của `submit`) | flag.value=x, state→hoarded | CLI `ctf hoard` |
 | Sync/pull attribution từ server | solve→by_team/by_other/by_me | pull_service + watch tick |
 | User tick marker README | solve→solved_by_me (chỉ nâng) | repo.write_solved_state |
 | Start/stop container | container running/stopped | instance_service |
@@ -107,3 +105,12 @@ SUMMARY.md cùng bộ icon; mapping signal→icon→message nằm trong 1 dict d
 - Unit: normalize/migrate status; update_status mirror + lock (multi-process); assessor với 4 mẫu (template nguyên vẹn→SKELETON, điền đủ→COMPLETE, thiếu flag→DRAFT, viết tay không template); attribution parser từng platform (mock JSON shape thật đã verify).
 - Integration: submit correct → status chain đúng; dashboard render icon snapshot test.
 - Gate: full suite cũ xanh không sửa assertion; test mới `test_status_model.py`.
+
+## 9. Known deviations & follow-ups
+
+> **Cập nhật 2026-08-25 theo spec-audit** — lệch thực tế so với spec, kèm trạng thái xử lý:
+
+| Mục | Trạng thái | Ghi chú |
+|---|---|---|
+| Wiring attribution vào watch tick (luồng sync §4: pull/watch tick gọi `fetch_solve_attribution`) chưa hoàn chỉnh | [IN-PROGRESS] | Đang được fixer xử lý |
+| `solver_names` render thẳng ra output chưa escape markup | [DEFERRED-L] | Backlog mức thấp; escape trước khi render tên solver/team |

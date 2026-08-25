@@ -169,3 +169,11 @@ RESTART_BACKOFF --restarts<MAX_RESTARTS(3)--> RESTARTING | --≥3--> GIVE_UP (CR
 ```
 Tham số: POLL 30-60s (DUE_SOON/FAILED: 5-10s) · TCP probe period 15s × threshold 3 · RENEW_LEAD ≈60% cửa sổ · jitter 0-60s · EXT retry 2s→30s full-jitter · SAFETY_MARGIN 90s · BOOT_WAIT 20-30s · ESCALATION INFO/WARNING/ERROR/CRITICAL, ERROR repeat 300s, CRITICAL mute các cấp thấp hơn cùng instance.
 Per-platform nuance: GZCTF recreate giữ flag (FlagContext ghim DB) — DEAD→auto-restart OK; whale PATCH-renew tuyệt đối trước, POST chỉ khi row mất/chết thật và PHẢI qua R-A (đổi flag). Whale backoff ≥61s (request lỗi cũng reset đồng hồ).
+
+## 10. Known deviations & follow-ups
+
+> **Cập nhật 2026-08-25 theo spec-audit** — lệch thực tế so với spec, kèm trạng thái xử lý:
+
+| Mục | Trạng thái | Ghi chú |
+|---|---|---|
+| Wiring tick watch → sync attribution/status (challenge-status-model §4) vào scheduler của `ctf watch` chưa hoàn chỉnh | [IN-PROGRESS] | Đang được fixer xử lý |
