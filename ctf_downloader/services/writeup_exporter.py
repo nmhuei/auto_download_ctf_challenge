@@ -237,8 +237,10 @@ class WriteupExporter:
         index_lines.append("| # | Category | Challenge | Points | Flag | Solver |")
         index_lines.append("| ---: | :--- | :--- | ---: | :--- | :---: |")
         rows = []
+        subs = []
         for i, e in enumerate(entries, 1):
-            sub = self._entry_dirname(e)
+            sub = self._unique_entry_dirname(pack_dir, e)
+            subs.append(sub)
             self._export_entry(e, pack_dir / sub)
             rows.append(
                 f"| {i} | {_md_escape(e.category)} | {_md_escape(e.name)} "
@@ -250,8 +252,7 @@ class WriteupExporter:
         index_lines.append("")
         index_lines.append("## Chi tiết từng bài")
         index_lines.append("")
-        for i, e in enumerate(entries, 1):
-            sub = self._entry_dirname(e)
+        for i, (e, sub) in enumerate(zip(entries, subs), 1):
             index_lines.append(
                 f"{i}. **[{_md_escape(e.category)}] {_md_escape(e.name)}**"
                 f" — [{sub}/README.md]({sub}/README.md)")
@@ -292,6 +293,20 @@ class WriteupExporter:
         # [ ] ( ) thoát sanitize nhưng phá markdown link trong INDEX.md
         # (target ``(...)[...]`` vỡ parser) → thay bằng '_' cho an toàn.
         return re.sub(r"[\[\]()]", "_", raw)
+
+    def _unique_entry_dirname(self, pack_dir: Path, entry: WriteupEntry) -> str:
+        """``_entry_dirname`` + hậu tố ``_2``, ``_3``… nếu thư mục đích đã
+        tồn tại. Hai tên challenge khác nhau có thể sanitize về cùng dirname
+        (vd ``Pwn Me`` vs ``Pwn_Me`` → cùng ``Web_Pwn_Me``) — không hậu tố,
+        bài sau GHI ĐÈ README của bài trước một cách âm thầm; subdir mới cũng
+        áp dụng cho INDEX/zip nên mọi link luôn trỏ đúng thư mục."""
+        base = self._entry_dirname(entry)
+        candidate = base
+        n = 1
+        while (pack_dir / candidate).exists():
+            n += 1
+            candidate = f"{base}_{n}"
+        return candidate
 
     @staticmethod
     def _export_entry(entry: WriteupEntry, dest: Path) -> None:

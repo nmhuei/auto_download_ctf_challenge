@@ -191,6 +191,52 @@ class TestWriteupExporter(unittest.TestCase):
             self.assertIn(hint, msg)
         self.assertIn(str(SOLVED_EXPORT_VALUES), msg)
 
+    def test_build_pack_sanitized_name_collision_gets_suffix(self):
+        """BUG-HUNTER-C6-01: 'Pwn Me' và 'Pwn_Me' sanitize cùng dirname
+        ``Web_Pwn_Me`` — bài sau phải vào subdir hậu tố ``_2`` thay vì GHI
+        ĐÈ README của bài trước; INDEX + zip trỏ đúng subdir mới."""
+        ws = Path(self._tmp) / "Collide_CTF"
+        ws.mkdir()
+        (ws / "challenges.json").write_text("{}", encoding="utf-8")
+        markers = ("WRITEUP_AAA", "WRITEUP_BBB")
+        for i, (name, marker) in enumerate(
+                zip(("Pwn Me", "Pwn_Me"), markers), 1):
+            d = ws / "Web" / f"chal-{i}"      # thư mục local khác nhau…
+            (d / "writeup").mkdir(parents=True)
+            (d / "metadata.json").write_text(json.dumps({
+                "id": 100 + i, "name": name, "category": "Web",
+                "points": 100,
+                "status": {"schema_version": 2, "solve": "solved_by_me",
+                           "writeup": "complete"},
+            }, ensure_ascii=False), encoding="utf-8")
+            (d / "writeup" / "README.md").write_text(
+                f"# {marker}\nFlag: `FLAG{{m{i}aaaabbbb}}`\n", encoding="utf-8")
+
+        out_dir = Path(self._tmp) / "out_collide"
+        with contextlib.redirect_stderr(io.StringIO()):
+            pack_dir = WriteupExporter(ws).build_pack(out_dir=out_dir)
+
+        subs = sorted(d.name for d in pack_dir.iterdir() if d.is_dir())
+        # Hai entry -> hai subdir: bài trùng tên đầu tiên giữ nguyên, bài
+        # sau nhận hậu tố _2.
+        self.assertEqual(subs, ["Web_Pwn_Me", "Web_Pwn_Me_2"])
+        # Cả hai writeup còn nguyên vẹn — không ai đè ai.
+        texts = [p.read_text(encoding="utf-8")
+                 for p in pack_dir.glob("*/README.md")]
+        joined = "\n".join(texts)
+        for marker in markers:
+            self.assertIn(marker, joined)
+        self.assertNotEqual(texts[0], texts[1])
+        # INDEX link đúng subdir thật (cả hai đều tồn tại trên đĩa).
+        index = (pack_dir / "INDEX.md").read_text(encoding="utf-8")
+        for s in subs:
+            self.assertIn(f"[{s}/README.md]({s}/README.md)", index)
+        # Zip chứa README của cả hai subdir.
+        with zipfile.ZipFile(Path(str(pack_dir) + ".zip")) as zf:
+            names = zf.namelist()
+        for s in subs:
+            self.assertIn(f"{pack_dir.name}/{s}/README.md", names)
+
 
 if __name__ == "__main__":
     unittest.main()

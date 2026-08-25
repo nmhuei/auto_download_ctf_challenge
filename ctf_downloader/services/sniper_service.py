@@ -312,6 +312,10 @@ class SniperService:
                               ``MAX_ATTEMPTS_PER_TARGET`` lần/target).
         :return: summary dict {solved, failed, pending, started_at, aborted}.
         """
+        # Clamp phòng thủ: argparse không validate --poll; giá trị <= 0
+        # truyền thẳng vào time.sleep(min(poll, delta)) khi chờ giờ G sẽ nổ
+        # ValueError traceback. Service là lớp mỏng cuối cùng nên tự bảo vệ.
+        poll_interval = max(1.0, float(poll_interval))
         _warn(AUTOMATION_WARNING)
 
         targets = self.load_targets()

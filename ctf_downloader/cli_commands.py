@@ -944,12 +944,25 @@ def handle_history(args):
 
     show_all = bool(getattr(args, 'show_all', False))
     rows = []
+    # C6-02: entry thiếu challenge_id KHÔNG được đưa vào find_challenge —
+    # cid=None rơi xuống tier substring ("none" in name) và gán nhầm tên
+    # challenge nào đó chứa "none" cho một submit vô danh.
+    # PERF: find_challenge quét toàn bộ workspace metadata mỗi lần gọi —
+    # cache theo cid để history N entries chỉ scan tối đa (số cid distinct)
+    # lần thay vì N lần.
+    chall_cache = {}
     for e in entries:
         cid = e.get('challenge_id')
-        try:
-            chall = repo.find_challenge(cid)
-        except Exception:
+        if cid is None:
             chall = None
+        else:
+            key = str(cid)
+            if key not in chall_cache:
+                try:
+                    chall_cache[key] = repo.find_challenge(cid)
+                except Exception:
+                    chall_cache[key] = None
+            chall = chall_cache[key]
         name = (chall or {}).get('name') or str(cid if cid is not None else '?')
         icon = _HISTORY_RESULT_ICONS.get(e.get('result'), '❓')
         flag = str(e.get('flag', '') or '')
