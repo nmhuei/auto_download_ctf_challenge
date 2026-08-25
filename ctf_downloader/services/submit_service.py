@@ -68,7 +68,7 @@ def diag_blacklisted(prev_cid: Any) -> Diagnostic:
     """Blacklist chặn submit flag đã sai trước đó."""
     return Diagnostic(
         "warning",
-        f"🚫 Blacklisted: flag này đã submit SAI trước đó (challenge {prev_cid}).",
+        f"🚫 Bị blacklist: flag này đã submit SAI trước đó (challenge {prev_cid}).",
         hints=(
             "flag này đã sai — dùng --force để vẫn submit nếu chắc chắn đúng",
             "kiểm tra kỹ flag (copy trọn vẹn, không thừa/thiếu ký tự) hoặc tìm flag khác",
@@ -193,7 +193,7 @@ class SubmitService:
                 self.challenges_cache[str(c.id)] = {"id": c.id, "name": c.name, "category": c.category}
                 self.challenges_cache[c.name.lower().strip()] = {"id": c.id, "name": c.name, "category": c.category}
         except Exception as e:
-            Logger.warning(f"Could not load challenges list: {e}")
+            Logger.warning(f"Không tải được danh sách challenges: {e}")
 
     def resolve_challenge_id(self, identifier: Union[int, str]) -> Tuple[Optional[Any], str]:
         """
@@ -384,11 +384,11 @@ class SubmitService:
         """
         flag = flag.strip()
         if not flag:
-            return False, "Flag cannot be empty."
+            return False, "Flag không được để trống."
 
         cid, name = self.resolve_challenge_id(challenge_identifier)
         if cid is None:
-            return False, f"Could not resolve challenge: '{challenge_identifier}'"
+            return False, f"Không tìm thấy challenge khớp: '{challenge_identifier}'"
 
         # ---- Gate 1: flag format ----
         fmt, fmt_source = self.resolve_flag_format()
@@ -408,12 +408,12 @@ class SubmitService:
             if prev_result == "correct":
                 if str(prev_cid) == str(cid):
                     Logger.info("Bỏ qua: flag này đã submit ĐÚNG cho chính challenge này trước đó (already solved).")
-                    return False, "⏭️ Already solved: flag này đã đúng cho challenge này."
+                    return False, "⏭️ Đã solved: flag này đã đúng cho challenge này."
             elif prev_result == "incorrect" and not force:
                 render_diagnostic(diag_blacklisted(prev_cid))
-                return False, f"🚫 Blacklisted: flag này đã submit SAI trước đó (challenge {prev_cid})."
+                return False, f"🚫 Bị blacklist: flag này đã submit SAI trước đó (challenge {prev_cid})."
 
-        Logger.info(f"Submitting flag for [bold cyan]{name}[/bold cyan] (ID: {cid})...")
+        Logger.info(f"Đang submit flag cho [bold cyan]{name}[/bold cyan] (ID: {cid})...")
         Logger.info(f"Flag: [bold yellow]{flag}[/bold yellow]")
 
         # Authenticate if needed
@@ -447,13 +447,13 @@ class SubmitService:
         self._record_submit_result(flag, cid, verdict)
 
         if verdict == "correct":
-            Logger.success(f"Result: {message}")
+            Logger.success(f"Kết quả: {message}")
             if self.workspace_dir:
                 self._update_local_workspace(cid, name, flag)
         elif verdict == "incorrect":
-            Logger.error(f"Result: {message}")
+            Logger.error(f"Kết quả: {message}")
         else:
-            Logger.warning(f"Result: {message} (không rõ đúng/sai — chưa blacklist)")
+            Logger.warning(f"Kết quả: {message} (không rõ đúng/sai — chưa blacklist)")
 
         # Hook status đa chiều (spec §7): correct/incorrect đổi trục flag/solve;
         # ratelimited/unknown KHÔNG đổi.
@@ -505,11 +505,11 @@ class SubmitService:
         """
         flag_value = (flag_value or "").strip()
         if not flag_value:
-            return False, "Flag cannot be empty."
+            return False, "Flag không được để trống."
         cid, name = self.resolve_challenge_id(challenge_identifier)
         meta_path = self._find_meta_path(cid)
         if meta_path is None:
-            return False, f"Could not resolve challenge: '{challenge_identifier}'"
+            return False, f"Không tìm thấy challenge khớp: '{challenge_identifier}'"
         try:
             def _mut(st):
                 st["flag"]["value"] = flag_value
@@ -519,8 +519,8 @@ class SubmitService:
                 return st
 
             self.repo.update_status(meta_path, _mut)
-            Logger.success(f"🏴 Hoarded flag for [bold cyan]{name}[/bold cyan] (chưa submit).")
-            return True, "Flag hoarded."
+            Logger.success(f"🏴 Đã hoard flag cho [bold cyan]{name}[/bold cyan] (chưa submit).")
+            return True, "Đã lưu flag vào kho."
         except Exception as e:
             Logger.warning(f"Không thể hoard flag: {e}")
             return False, str(e)
@@ -555,9 +555,9 @@ class SubmitService:
         """
         Phân loại kết quả submit trong auto-scan để tổng kết thống kê.
         """
-        if "Already solved" in message:
+        if "Đã solved" in message:
             return "skipped_solved"
-        if "Blacklisted" in message:
+        if "blacklist" in message:
             return "skipped_blacklisted"
         if NO_FORMAT_MESSAGE in message or "không khớp định dạng" in message:
             return "skipped_by_format"
@@ -572,10 +572,10 @@ class SubmitService:
         được từ flag format của giải). Mỗi candidate phải qua gate format + blacklist.
         """
         if not self.workspace_dir or not os.path.exists(self.workspace_dir):
-            Logger.error("Workspace directory not found for auto-scan.")
+            Logger.error("Không tìm thấy thư mục workspace để auto-scan.")
             return []
 
-        Logger.info(f"Scanning workspace for unsubmitted flags: [bold cyan]{self.workspace_dir}[/bold cyan]")
+        Logger.info(f"Đang quét workspace tìm flag chưa nộp: [bold cyan]{self.workspace_dir}[/bold cyan]")
 
         stats = {
             "submitted_ok": 0,
@@ -643,12 +643,12 @@ class SubmitService:
                 })
 
         Logger.print_table(
-            title=f"Auto-scan Submit Summary ({len(results)} candidate(s))",
+            title=f"Tổng kết auto-scan submit ({len(results)} ứng viên)",
             columns=["Kết quả", "Số lượng"],
             rows=[[k, str(v)] for k, v in stats.items()]
         )
         Logger.success(
-            f"Auto-scan complete: {stats['submitted_ok']} submitted_ok, "
+            f"Auto-scan hoàn tất: {stats['submitted_ok']} submitted_ok, "
             f"{stats['skipped_by_format']} skipped_by_format, "
             f"{stats['skipped_blacklisted']} skipped_blacklisted, "
             f"{stats['skipped_solved']} skipped_solved, "
@@ -691,7 +691,7 @@ class SubmitService:
                         with open(r_candidate, "w", encoding="utf-8") as f:
                             f.write(r_text.replace("FLAG{...}", flag))
 
-                Logger.success(f"Updated local documentation for [bold cyan]{challenge_name}[/bold cyan] -> Solved ✅")
+                Logger.success(f"Đã cập nhật tài liệu local cho [bold cyan]{challenge_name}[/bold cyan] -> Solved ✅")
                 break
             except Exception:
                 pass
@@ -705,11 +705,11 @@ class SubmitService:
     ) -> Tuple[bool, str]:
         target = challenge_id if challenge_id is not None else challenge_name
         if not target:
-            Logger.error("Please specify a challenge ID or challenge Name.")
-            return False, "Missing challenge identifier"
+            Logger.error("Hãy chỉ định challenge ID hoặc tên challenge.")
+            return False, "Thiếu định danh challenge"
         if not flag_value:
-            Logger.error("Please specify the flag to submit.")
-            return False, "Missing flag value"
+            Logger.error("Hãy chỉ định flag cần submit.")
+            return False, "Thiếu giá trị flag"
         return self.submit(target, flag_value, force=force)
 
     def auto_submit_all(self, force: bool = False) -> List[Dict[str, Any]]:
@@ -722,18 +722,18 @@ class SubmitService:
                 challs.append(v)
 
         if not challs:
-            Logger.warning("No challenges loaded. Please enter challenge identifier manually.")
-            cid = input("Enter Challenge ID: ").strip()
+            Logger.warning("Chưa tải được challenge nào. Hãy nhập định danh challenge thủ công.")
+            cid = input("Nhập Challenge ID: ").strip()
         else:
-            print("\nSelect Challenge to submit flag:")
+            print("\nChọn challenge để submit flag:")
             for idx, c in enumerate(challs, 1):
                 print(f"  [{idx:>2}] {c.get('name')} (ID: {c.get('id')}, {c.get('category', 'Misc')})")
-            choice = input(f"Choice (1-{len(challs)}): ").strip()
+            choice = input(f"Chọn (1-{len(challs)}): ").strip()
             try:
                 cid = challs[int(choice) - 1].get("id")
             except Exception:
                 cid = choice
 
-        flag = input("Enter Flag: ").strip()
+        flag = input("Nhập Flag: ").strip()
         if flag:
             self.submit(cid, flag, force=force)

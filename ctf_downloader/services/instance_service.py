@@ -64,7 +64,7 @@ class InstanceService:
     def _load_challenges_data(self) -> Dict[str, Any]:
         data = self.repo.read_challenges()
         if not data:
-            Logger.warning('Could not load challenges.json')
+            Logger.warning('Không đọc được challenges.json')
         return data
 
     def _init_platform(self):
@@ -110,7 +110,7 @@ class InstanceService:
         chall = self.find_challenge(challenge_id=challenge_id)
         name = chall.get('name', f'Challenge {challenge_id}') if chall else f'ID {challenge_id}'
 
-        Logger.info(f'Launching container instance for [bold cyan]{name}[/bold cyan] (ID: {challenge_id})...')
+        Logger.info(f'Đang khởi động container instance cho [bold cyan]{name}[/bold cyan] (ID: {challenge_id})...')
         success, info = self.platform.start_instance(challenge_id)
 
         if success:
@@ -126,19 +126,19 @@ class InstanceService:
                     entry = st.get('entry')
                     time_left = st.get('time_left') or time_left
 
-            Logger.success(f'Container instance active for [bold cyan]{name}[/bold cyan]!')
+            Logger.success(f'Container instance của [bold cyan]{name}[/bold cyan] đã hoạt động!')
             if entry:
-                Logger.info(f'Entry Point: [bold green]{entry}[/bold green]')
+                Logger.info(f'Điểm kết nối (entry): [bold green]{entry}[/bold green]')
                 if ':' in str(entry) and not str(entry).startswith('http'):
                     h, p = str(entry).split(':')
-                    Logger.info(f'Netcat command: [bold yellow]nc {h} {p}[/bold yellow]')
+                    Logger.info(f'Lệnh netcat: [bold yellow]nc {h} {p}[/bold yellow]')
             if time_left:
-                Logger.info(f'Remaining Lifetime: [bold magenta]{time_left}[/bold magenta]')
+                Logger.info(f'Thời gian còn lại: [bold magenta]{time_left}[/bold magenta]')
 
             self._update_local_instance_info(challenge_id, entry, time_left, status='running')
             return True, info
         else:
-            msg = info.get('message', 'Unknown error')
+            msg = info.get('message', 'Lỗi không xác định')
             render_diagnostic(diag_start_instance_fail(challenge_id, name, msg))
             return False, info
 
@@ -146,28 +146,28 @@ class InstanceService:
         chall = self.find_challenge(challenge_id=challenge_id)
         name = chall.get('name', f'Challenge {challenge_id}') if chall else f'ID {challenge_id}'
 
-        Logger.info(f'Stopping container instance for [bold cyan]{name}[/bold cyan] (ID: {challenge_id})...')
+        Logger.info(f'Đang dừng container instance cho [bold cyan]{name}[/bold cyan] (ID: {challenge_id})...')
         success, msg = self.platform.stop_instance(challenge_id)
         if success:
-            Logger.success(f'Container stopped for {name}: {msg}')
+            Logger.success(f'Đã dừng container cho {name}: {msg}')
             self._update_local_instance_info(challenge_id, entry=None, time_left=0, status='stopped')
         else:
-            Logger.error(f'Failed to stop container: {msg}')
+            Logger.error(f'Dừng container thất bại: {msg}')
         return success, msg
 
     def extend_instance(self, challenge_id: Any) -> Tuple[bool, str]:
         chall = self.find_challenge(challenge_id=challenge_id)
         name = chall.get('name', f'Challenge {challenge_id}') if chall else f'ID {challenge_id}'
 
-        Logger.info(f'Extending container time for [bold cyan]{name}[/bold cyan] (ID: {challenge_id})...')
+        Logger.info(f'Đang gia hạn thời gian container cho [bold cyan]{name}[/bold cyan] (ID: {challenge_id})...')
         success, msg = self.platform.extend_instance(challenge_id)
         if success:
-            Logger.success(f'Container extended for {name}: {msg}')
+            Logger.success(f'Đã gia hạn container cho {name}: {msg}')
             st = self.platform.get_instance_status(challenge_id)
             if st.get('status') == 'running':
                 self._update_local_instance_info(challenge_id, st.get('entry'), st.get('time_left'), status='running')
         else:
-            Logger.error(f'Failed to extend container: {msg}')
+            Logger.error(f'Gia hạn container thất bại: {msg}')
         return success, msg
 
     def get_status(self, challenge_id: Any) -> Dict[str, Any]:
@@ -199,7 +199,7 @@ class InstanceService:
         Trả về số container đang chạy (active) sau khi sync.
         """
         containers = self.list_containers()
-        Logger.info(f'Scanning and syncing {len(containers)} container challenges...')
+        Logger.info(f'Đang quét và đồng bộ {len(containers)} challenge container...')
         active_count = 0
         for c in containers:
             cid = c.get('id')
@@ -208,7 +208,7 @@ class InstanceService:
             if st.get('status') == 'running' or st.get('entry'):
                 active_count += 1
                 Logger.success(f"[RUNNING] ID {cid} ({cname}): [bold green]{st.get('entry')}[/bold green]")
-        Logger.info(f'Sync complete! Found {active_count} active running container(s).')
+        Logger.info(f'Sync hoàn tất! Có {active_count} container đang chạy.')
         return active_count
 
     # ------------------------------------------------------------------
@@ -220,32 +220,32 @@ class InstanceService:
         """Menu interactive: chọn challenge -> chọn action -> thực thi."""
         containers = self.list_containers()
         if not containers:
-            Logger.warning('No container challenges detected. Enter challenge ID manually.')
-            chall_id = input('Enter Challenge ID: ').strip()
+            Logger.warning('Không phát hiện challenge container nào. Nhập tay challenge ID.')
+            chall_id = input('Nhập Challenge ID: ').strip()
         else:
-            print("\nSelect Challenge to manage:")
+            print("\nChọn challenge cần quản lý:")
             for idx, c in enumerate(containers, 1):
                 print(f'  [{idx}] {c.get("name")} (ID: {c.get("id")}, {c.get("category")})')
-            choice = input(f'Choice (1-{len(containers)}): ').strip()
+            choice = input(f'Chọn (1-{len(containers)}): ').strip()
             try:
                 selected = containers[int(choice) - 1]
                 chall_id = selected.get('id')
             except Exception:
-                Logger.error('Invalid choice.')
+                Logger.error('Lựa chọn không hợp lệ.')
                 return
 
-        print("\nAction:")
-        print('  [1] Start / Renew Container')
-        print('  [2] Check Container Status')
-        print('  [3] Extend Container Lifetime')
-        print('  [4] Stop / Destroy Container')
+        print("\nHành động:")
+        print('  [1] Khởi động / Gia hạn container')
+        print('  [2] Xem trạng thái container')
+        print('  [3] Gia hạn thời lượng container')
+        print('  [4] Dừng / Hủy container')
 
-        act = input('Choice (1-4): ').strip()
+        act = input('Chọn (1-4): ').strip()
         if act == '1':
             self.start_instance(chall_id)
         elif act == '2':
             st = self.get_status(chall_id)
-            Logger.info(f'Status: {st}')
+            Logger.info(f'Trạng thái: {st}')
         elif act == '3':
             self.extend_instance(chall_id)
         elif act == '4':
@@ -289,7 +289,7 @@ class InstanceService:
                     return m
 
                 self.repo.update_metadata(meta_path, _mut)
-                Logger.info(f'[bold green]✓[/bold green] Synced instance details into: [cyan]{os.path.relpath(meta_path, self.workspace_path)}[/cyan]')
+                Logger.info(f'[bold green]✓[/bold green] Đã đồng bộ thông tin instance vào: [cyan]{os.path.relpath(meta_path, self.workspace_path)}[/cyan]')
 
                 # Mirror trục container của status đa chiều (spec §7).
                 # Trạng thái khác running/stopped (vd 'unknown') -> KHÔNG đụng
@@ -304,7 +304,7 @@ class InstanceService:
 
                     self.repo.update_status(meta_path, _mut_container)
                 except Exception as e:
-                    Logger.warning(f'Could not mirror container status: {e}')
+                    Logger.warning(f'Không thể mirror trạng thái container: {e}')
 
                 root = meta_path.parent
 
@@ -360,7 +360,7 @@ class InstanceService:
                         pass
                 break
             except Exception as e:
-                Logger.warning(f'Could not update metadata: {e}')
+                Logger.warning(f'Không thể cập nhật metadata: {e}')
 
         # 2. Update top-level challenges.json if present
         def _mut(data: dict) -> dict:

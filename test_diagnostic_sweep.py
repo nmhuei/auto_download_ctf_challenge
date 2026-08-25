@@ -101,7 +101,7 @@ class TestBlacklistDiagnostic(TempWorkspaceCase):
             succ, msg = fs.submit(1, "TEST{bad}")
 
         self.assertFalse(succ)
-        self.assertIn("Blacklisted", msg)
+        self.assertIn("blacklist", msg)
         platform.submit_flag.assert_not_called()
         diag = _assert_diag_with_hints(self, rmock)
         joined = " ".join(diag.hints)

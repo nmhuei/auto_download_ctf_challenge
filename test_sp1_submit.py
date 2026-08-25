@@ -379,7 +379,7 @@ class TestBlacklist(TempWorkspaceCase):
              patch("ctf_downloader.submitter.time.sleep"):
             succ, msg = fs.submit(1, "TEST{bad}")
         self.assertFalse(succ)
-        self.assertIn("Blacklisted", msg)
+        self.assertIn("blacklist", msg)
         platform.submit_flag.assert_not_called()
 
         # force=True vượt blacklist và cập nhật lịch sử theo kết quả mới
@@ -403,7 +403,7 @@ class TestBlacklist(TempWorkspaceCase):
              patch("ctf_downloader.submitter.time.sleep"):
             succ, msg = fs.submit(1, "TEST{good}")
         self.assertFalse(succ)
-        self.assertIn("Already solved", msg)
+        self.assertIn("Đã solved", msg)
         platform.submit_flag.assert_not_called()
 
     def test_ratelimited_not_recorded(self):
