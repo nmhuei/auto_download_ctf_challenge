@@ -9,6 +9,7 @@ copy cookies/headers từ master đúng 1 lần và tái sử dụng trong suố
 """
 import os
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -776,11 +777,15 @@ class PullService:
         return changed[0]
 
     @staticmethod
-    def _mark_removed_from_server(repo: Any, meta_path: Any) -> None:
+    def _mark_removed_from_server(repo: Any, meta_path: Any,
+                                  reraise_oserror: bool = False) -> None:
         """Đánh dấu challenge biến mất khỏi API: ``status.removed_from_server``
         + mirror top-level (mirror là bản bền — normalize_status cắt field lạ
-        trong block status ở lần update_status kế tiếp). Không xoá gì."""
+        trong block status ở lần update_status kế tiếp). Không xoá gì.
 
+        ``reraise_oserror``: mặc định nuốt mọi lỗi (run_update giữ hành vi
+        cũ); sync_workspace truyền True để lỗi ghi (read-only) nổi lên được
+        đếm vào write_errors."""
         def _mut(meta: dict) -> dict:
             meta = dict(meta or {})
             meta["removed_from_server"] = True
@@ -791,6 +796,9 @@ class PullService:
 
         try:
             repo.update_metadata(meta_path, _mut)
+        except OSError:
+            if reraise_oserror:
+                raise
         except Exception:
             pass
 
@@ -842,7 +850,8 @@ class PullService:
             result = PullService.sync_workspace(repo, platform)
             # result: {"ok", "updated", "new", "new_on_server", "drift",
             #          "unsolved_locally_solved_remotely", "total_local",
-            #          "total_server"} — drift == unsolved_locally_solved_
+            #          "total_server", "removed_local", "corrupt_local",
+            #          "write_errors"} — drift == unsolved_locally_solved_
             #          remotely (danh sách chi tiết từng bài lệch solve).
 
         Kết quả được in dạng bảng: updated=N · new=X · drift=Y (+ chi tiết
@@ -861,14 +870,30 @@ class PullService:
                     "total_local": 0, "total_server": 0}
 
         local_index: Dict[str, tuple] = {}
+        corrupt_local: List[Dict[str, Any]] = []
         for meta_path in repo.iter_challenges():
             m = repo.read_metadata(meta_path)
+            if not m:
+                # C15-4: phân biệt metadata HỎNG (JSON không parse được / sai
+                # kiểu) với file trống thật sự — file hỏng được cảnh báo riêng
+                # (``corrupt_local``) thay vì biến mất im lặng rồi bị quảng
+                # bá "mới trên server" mà user không hay biết file đang hỏng.
+                try:
+                    raw = Path(meta_path).read_text(encoding="utf-8-sig")
+                except OSError:
+                    raw = ""
+                if raw.strip():
+                    corrupt_local.append({"path": str(meta_path)})
+                continue
             cid = m.get("id")
             if cid is not None:
                 local_index.setdefault(str(cid), (meta_path, m))
 
         now_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         new_on_server: List[Dict[str, Any]] = []
+        removed_local: List[Dict[str, Any]] = []
+        write_errors: List[str] = []
+        server_ids = {str(c.id) for c in challenges}
         updated = 0
 
         for chall in challenges:
@@ -879,15 +904,44 @@ class PullService:
                                       "category": chall.category})
                 continue
             meta_path, _snapshot = entry
-            if PullService._merge_dynamic_metadata(repo, meta_path, chall):
-                updated += 1
-            # Stamp synced_at — field DUY NHẤT của block status bị đụng tới;
-            # solve/flag/notes/labels/writeup giữ nguyên.
             try:
-                repo.update_status(
-                    meta_path, lambda st: {**st, "synced_at": now_str})
+                changed = PullService._merge_dynamic_metadata(
+                    repo, meta_path, chall)
+            except OSError as exc:
+                # C15-1: workspace read-only / đĩa đầy phải lộ tín hiệu lỗi
+                # (write_errors) — nuốt chửng làm user tưởng sync thành công.
+                write_errors.append(f"merge {meta_path}: {exc}")
+                continue
+            except Exception:
+                changed = False
+            if changed:
+                updated += 1
+            # Stamp synced_at CHỈ khi dữ liệu thực sự đổi hoặc challenge chưa
+            # từng được stamp (C15-2): sync noop liên tiếp KHÔNG ghi lại file
+            # — không ô nhiễm synced_at/updated_at, giữ idempotence.
+            try:
+                if changed or not repo.read_status(meta_path).get("synced_at"):
+                    repo.update_status(
+                        meta_path, lambda st: {**st, "synced_at": now_str})
+            except OSError as exc:
+                write_errors.append(f"sync-stamp {meta_path}: {exc}")
             except Exception:
                 pass
+
+        # C15-3: đối xứng với --update — challenge local bị xoá khỏi giải
+        # phải được đánh dấu removed_from_server + liệt kê ra result, không
+        # bỏ mặc chỉ còn lệch số total_local vs total_server cho user trừ nhẩm.
+        for cid, (mp, m) in local_index.items():
+            if cid in server_ids:
+                continue
+            try:
+                PullService._mark_removed_from_server(repo, mp,
+                                                      reraise_oserror=True)
+            except OSError as exc:
+                write_errors.append(f"mark-removed {mp}: {exc}")
+            removed_local.append({"id": m.get("id"), "name": m.get("name"),
+                                  "category": m.get("category"),
+                                  "path": str(mp)})
 
         verdict = PullService.verify(repo, platform)
         drift = verdict["unsolved_locally_solved_remotely"]
@@ -897,6 +951,9 @@ class PullService:
             "updated": updated,
             "new": len(new_on_server),
             "new_on_server": new_on_server,
+            "removed_local": removed_local,
+            "corrupt_local": corrupt_local,
+            "write_errors": write_errors,
             "drift": drift,
             "unsolved_locally_solved_remotely": drift,
             "total_local": len(local_index),
@@ -907,10 +964,27 @@ class PullService:
         Logger.print_table("Workspace Sync", ["Metric", "Count"],
                            [["updated", str(updated)],
                             ["new", str(len(new_on_server))],
+                            ["removed", str(len(removed_local))],
                             ["drift", str(len(drift))]])
         if new_on_server:
             Logger.info("🆕 Challenge mới trên server (chạy --update để tải): "
                         + ", ".join(str(c["name"]) for c in new_on_server))
+        if removed_local:
+            Logger.warning("➖ Challenge local không còn trên server (đã mark "
+                           "removed_from_server, KHÔNG xoá file): "
+                           + ", ".join(f"{c.get('name')} (id={c.get('id')})"
+                                       for c in removed_local))
+        if corrupt_local:
+            Logger.warning(
+                "⚠️ metadata.json hỏng (không đọc được JSON) tại: "
+                + ", ".join(c["path"] for c in corrupt_local)
+                + " — chạy '--update' để dựng lại hoặc khôi phục thủ công.")
+        if write_errors:
+            Logger.warning(
+                f"⚠️ Sync ghi THẤT BẠI trên {len(write_errors)} thao tác "
+                f"(workspace read-only / đĩa đầy?) — dữ liệu local CHƯA được "
+                f"cập nhật: " + "; ".join(write_errors[:5])
+                + ("…" if len(write_errors) > 5 else ""))
         if drift:
             d_rows = [[f"{d.get('name')} ({d.get('category')})",
                        "me" if d["by_me"] else "team",
@@ -1025,7 +1099,18 @@ class PullService:
             return meta
 
         try:
+            # C15-2 (idempotence): update_metadata luôn ghi đè file kể cả khi
+            # mutator không đổi gì — tính trước kết quả trên dữ liệu hiện có,
+            # giống hệt thì bỏ qua hoàn toàn (không đụng mtime/inode).
+            current = repo.read_metadata(meta_path)
+            if _mut(dict(current or {})) == current:
+                return False
             repo.update_metadata(meta_path, _mut)
+        except OSError:
+            # C15-1: lỗi ghi đĩa (read-only/permission/ENOSPC) phải nổi lên
+            # caller để sync đếm write_errors — nuốt chửng ở đây làm mất tín
+            # hiệu thất bại (workspace read-only vẫn "ok sạch").
+            raise
         except Exception:
             return False
         return changed[0]

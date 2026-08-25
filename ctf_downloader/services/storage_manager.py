@@ -33,6 +33,7 @@ import re as _re
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,6 +42,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from rich.markup import escape
 
 from ..platforms.base import normalize_epoch_to_utc
+from ..storage.fileio import locked_path
 from ..storage.workspace_repo import WorkspaceRepo
 from ..ui.theme import ERROR as _ERROR_COLOR
 from ..ui.theme import FG_FAINT as _FAINT_COLOR
@@ -384,36 +386,75 @@ class StorageManager:
             if out_dir is not None
             else src.parent / _ARCHIVE_DIR_NAME
         )
-        dest.mkdir(parents=True, exist_ok=True)
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            # C15-5: ``_archives`` tồn tại dưới dạng FILE (hoặc đường dẫn
+            # không tạo được) phải ra khỏi hàm theo đúng hợp đồng dịch vụ —
+            # StorageError — thay vì FileExistsError/OSError thô.
+            raise StorageError(
+                f"Không thể chuẩn bị thư mục lưu trữ '{dest}': {exc}"
+            ) from exc
 
         stamp = _dt.datetime.now(_TIMEZONE).strftime("%Y%m%d")
         archive_path = dest / f"{src.name}_{stamp}.tar.gz"
         patterns = list(strip_patterns or [])
 
         original_bytes = 0
+        # C15-6: hai process archive SONG SONG cùng workspace không được
+        # truncate lẫn nhau trên cùng tên cuối ``<name>_<stamp>.tar.gz``.
+        # Giải pháp 2 lớp, cùng giao thức khóa với storage.fileio:
+        #   1. flock trên lockfile ``<archive>.lock`` (locked_path) để các
+        #      process xếp hàng — người sau nhìn thấy workspace SAU khi
+        #      người trước xong, không còn stream ăn nhau im lặng;
+        #   2. ghi vào tmp UNIQUE trong dest rồi os.replace — người xem
+        #      archive bao giờ cũng thấy một bản nguyên vẹn.
+        # Khác protocol fileio: lockfile được dọn CẢ KHI THẤT BẠI (unlink
+        # trong lúc còn giữ khóa) vì _archives phải sạch hoàn toàn khi
+        # archive lỗi (regression f8f94ea: không để lại rác).
         try:
-            with tarfile.open(archive_path, "w:gz") as tf:
-                for root, dirnames, filenames in os.walk(src):
-                    dirnames[:] = sorted(
-                        d for d in dirnames if d not in DEFAULT_EXCLUDE_DIRS
-                        and not StorageManager._dir_excluded(root, d, src, patterns)
-                    )
-                    for fname in sorted(filenames):
-                        fpath = Path(root) / fname
-                        rel = fpath.relative_to(src).as_posix()
-                        if StorageManager._file_excluded(rel, patterns):
-                            continue
-                        try:
-                            size = fpath.stat().st_size
-                        except OSError:
-                            continue
-                        original_bytes += size
-                        tf.add(fpath, arcname=rel, recursive=False)
+            with locked_path(archive_path):
+                fd, tmp_name = tempfile.mkstemp(
+                    dir=str(dest), prefix=archive_path.name + ".",
+                    suffix=".tar.gz.tmp",
+                )
+                os.close(fd)
+                tmp_path = Path(tmp_name)
+                try:
+                    with tarfile.open(tmp_path, "w:gz") as tf:
+                        for root, dirnames, filenames in os.walk(src):
+                            dirnames[:] = sorted(
+                                d for d in dirnames
+                                if d not in DEFAULT_EXCLUDE_DIRS
+                                and not StorageManager._dir_excluded(
+                                    root, d, src, patterns)
+                            )
+                            for fname in sorted(filenames):
+                                fpath = Path(root) / fname
+                                rel = fpath.relative_to(src).as_posix()
+                                if StorageManager._file_excluded(rel, patterns):
+                                    continue
+                                try:
+                                    size = fpath.stat().st_size
+                                except OSError:
+                                    continue
+                                original_bytes += size
+                                tf.add(fpath, arcname=rel, recursive=False)
+                    os.replace(tmp_path, archive_path)
+                except BaseException:
+                    # ENOSPC/lỗi giữa chừng: dọn tmp để không để lại rác.
+                    try:
+                        tmp_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    raise
         except OSError as exc:
-            # ENOSPC/đĩa đầy giữa chừng: dọn archive nửa chừng để không để
-            # lại file rác trong _archives/, rồi báo lỗi có chủ đích.
+            # ENOSPC/đĩa đầy giữa chừng hoặc khóa/ghi thất bại: locked_path
+            # giữ lại lockfile khi caller raise — dọn nốt để _archives sạch
+            # hoàn toàn (tmp đã được dọn ở khối trong), rồi báo lỗi có chủ đích.
             try:
-                archive_path.unlink(missing_ok=True)
+                archive_path.with_name(archive_path.name + ".lock").unlink(
+                    missing_ok=True)
             except OSError:
                 pass
             raise StorageError(

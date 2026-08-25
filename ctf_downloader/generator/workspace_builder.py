@@ -5,6 +5,7 @@ from ..platforms.base import Challenge
 from ..extractors.link_extractor import ExtractedLink, ConnectionInfo
 from ..extractors.text_parser import TextParser
 from ..storage.constants import FLAG_PLACEHOLDER, TARGET_CONNECTION_FMT, DEFAULT_CATEGORY
+from ..storage.fileio import locked_write_text
 from ..utils.sanitize import sanitize_folder_name
 from ..utils.logger import Logger
 
@@ -188,8 +189,12 @@ class WorkspaceBuilder:
                 f"-> fallback default=str."
             )
             payload = json.dumps(meta_data, indent=2, ensure_ascii=False, default=str)
-        with open(meta_path, "w", encoding="utf-8") as f:
-            f.write(payload)
+        # XCHECK hunter-c15: metadata.json là state file — ghi THẲNG open('w')
+        # ở đây race lost-update với sync/update_status vốn ghi dưới flock
+        # ``metadata.json.lock`` (redownload giữa lúc sync đang chạy). Chuyển
+        # qua locked_write_text: cùng khóa + atomic replace, GIỮ NGUYÊN format
+        # payload (json.dumps indent=2, ensure_ascii=False, không newline cuối).
+        locked_write_text(meta_path, payload)
 
         # 3. Generate solver/solve.py if requested and doesn't exist
         solver_solve_path = os.path.join(solver_sub_dir, "solve.py")

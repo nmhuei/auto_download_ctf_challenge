@@ -58,6 +58,7 @@ WIRE CLI SAU (cli.py đang bận — chưa wire, gọi trực tiếp như sau)::
     )
 """
 import json
+import math
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -140,7 +141,8 @@ class SniperService:
         """
         path = path if path is not None else self.repo.root / SNIPER_FILENAME
         try:
-            text = open(path, "r", encoding="utf-8").read()
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()   # C15-9: context manager — không rò fd
         except FileNotFoundError:
             _warn(
                 f"Không tìm thấy {SNIPER_FILENAME} trong workspace — tạo file "
@@ -183,11 +185,32 @@ class SniperService:
             except (TypeError, ValueError):
                 _warn(f"{SNIPER_FILENAME}: entry '#{idx}' delay_seconds sai kiểu → 0.")
                 delay = 0.0
+            if not math.isfinite(delay):
+                # C15-8: json.loads stdlib nhận sẵn Infinity/NaN — Infinity
+                # xuyên qua max(0.0, inf) khiến target KHÔNG BAO GIỜ due,
+                # run() polling vô hạn. Ép về 0 an toàn (NaN đã tự về 0 do
+                # max, nhưng chặn lại một chỗ cho tường minh).
+                _warn(f"{SNIPER_FILENAME}: entry '#{idx}' delay_seconds không "
+                      f"hữu hạn ({raw.get('delay_seconds')}) → 0.")
+                delay = 0.0
             targets.append({
                 "challenge": challenge,
                 "flag": flag,
                 "delay_seconds": delay,
             })
+
+        # C15-7: dedup theo (challenge, flag) GIỮ THỨ TỰ khai báo — target
+        # trùng bị bắn 2 phát là lãng phí request/rủi ro rate-limit, phát 1
+        # sai thì blacklist ăn ngay phát 2.
+        seen: set = set()
+        unique_targets: List[Dict[str, Any]] = []
+        for t in targets:
+            key = (str(t["challenge"]), t["flag"])
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_targets.append(t)
+        targets = unique_targets
 
         # Sort ổn định theo delay_seconds (thứ tự khai báo giữ nguyên khi bằng nhau)
         targets.sort(key=lambda t: t["delay_seconds"])
