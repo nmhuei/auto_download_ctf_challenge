@@ -834,30 +834,19 @@ def handle_export_pack(args):
     """``ctf export-pack`` — đóng gói writeup các bài đã solve thành pack
     markdown + zip (P2-3). Handler mỏng quanh WriteupExporter."""
     from .services.writeup_exporter import WriteupExporter
-    from rich.markup import escape
 
     try:
         exporter = WriteupExporter(args.workspace)
-        entries = exporter.collect()
-    except Exception as e:
-        Logger.error(f'Export thất bại: {e}')
-        sys.exit(1)
-
-    # escape(): cảnh báo chứa tên challenge/category dạng [tag] không được
-    # rich nuốt mất như markup.
-    for w in exporter.validate(entries):
-        console.print(escape(w), style='yellow')
-
-    try:
         pack_dir = exporter.build_pack(args.out or '.')
     except ValueError as e:
-        # Không có bài nào đạt điều kiện export — service đã hướng dẫn chi tiết.
+        # Không có bài nào đạt điều kiện export — message đã hướng dẫn chi tiết.
         Logger.error(str(e))
         sys.exit(1)
     except Exception as e:
         Logger.error(f'Export thất bại: {e}')
         sys.exit(1)
-    Logger.success(f'📦 Đã export writeup pack: {pack_dir}.zip')
+    # Cảnh báo validate + dòng tổng kết do service tự in qua err_console
+    # (PHOSPHOR stderr) — handler KHÔNG in lại để tránh trùng output.
 
 
 # Icon kết quả submit cho `ctf history` (result strings của SubmitService).

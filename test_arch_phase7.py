@@ -493,7 +493,7 @@ class TestNewServiceCommands(unittest.TestCase):
         self.assertEqual(cm.exception.code, 1)
         m_sync.assert_not_called()
 
-    def test_handle_export_pack_warns_then_builds_zip_path(self):
+    def test_handle_export_pack_delegates_prints_to_service(self):
         import contextlib
         import io
         from pathlib import Path
@@ -503,30 +503,23 @@ class TestNewServiceCommands(unittest.TestCase):
 
         pack = Path("/tmp/out/ws_writeup_20260824")
         ns = Namespace(workspace="ws", out="/tmp/out")
-        with patch.object(WriteupExporter, "collect",
-                          return_value=[object()]), \
-             patch.object(WriteupExporter, "validate",
-                          return_value=["⚠️ [web] chall: thiếu flag"]) as m_val, \
-             patch.object(WriteupExporter, "build_pack",
+        with patch.object(WriteupExporter, "build_pack",
                           return_value=pack) as m_pack:
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf), \
                  contextlib.redirect_stderr(io.StringIO()):
                 cli_commands.handle_export_pack(ns)
-        m_val.assert_called_once()
+        # Hợp đồng mới: service tự in cảnh báo validate + tổng kết qua
+        # err_console (PHOSPHOR stderr) — handler KHÔNG in lại gì ra stdout.
         m_pack.assert_called_once_with("/tmp/out")
-        out = buf.getvalue()
-        self.assertIn("⚠️ [web] chall: thiếu flag", out)
-        self.assertIn(str(pack) + ".zip", out)
+        self.assertEqual(buf.getvalue(), "")
 
     def test_handle_export_pack_no_entries_exits_1(self):
         from ctf_downloader import cli_commands
         from ctf_downloader.services.writeup_exporter import WriteupExporter
 
         ns = Namespace(workspace="ws", out=None)
-        with patch.object(WriteupExporter, "collect", return_value=[]), \
-             patch.object(WriteupExporter, "validate", return_value=[]), \
-             patch.object(WriteupExporter, "build_pack",
+        with patch.object(WriteupExporter, "build_pack",
                           side_effect=ValueError("trống")):
             with self.assertRaises(SystemExit) as cm:
                 cli_commands.handle_export_pack(ns)
