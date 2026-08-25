@@ -233,8 +233,8 @@ class RankService:
         total_teams = data.get("total_teams") or len(data.get("standings", []))
         standings = data.get("standings", [])
 
-        # 1. Write RANKING.md
-        ranking_md_path = os.path.join(self.workspace_path, "RANKING.md")
+        # 1. Write RANKING.md — qua WorkspaceRepo (atomic + flock), KHÔNG
+        #    open() thô (spec-audit: mọi writer state đi qua storage layer).
         lines = [
             f"# 🏆 Live Ranking & Scoreboard: {title}\n",
             f"- **Last Updated**: `{now_str}`",
@@ -258,8 +258,8 @@ class RankService:
                 lines.append(f"| #{pos} | {name} | {score} |")
 
         lines.append("")
-        with open(ranking_md_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+        self.repo.write_ranking_md("\n".join(lines))
+        ranking_md_path = str(self.repo.ranking_md_path)
 
         Logger.info(f"Đã cập nhật bảng xếp hạng live: [bold cyan]{os.path.relpath(ranking_md_path, self.workspace_path)}[/bold cyan]")
 

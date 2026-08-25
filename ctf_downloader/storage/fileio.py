@@ -48,6 +48,70 @@ def atomic_write_json(path: PathLike, obj) -> None:
     atomic_write_text(path, json.dumps(obj, indent=2, ensure_ascii=False))
 
 
+def locked_write_text(path: PathLike, text: str) -> None:
+    """Ghi text nguyên tử dưới khóa độc quyền fcntl.flock(LOCK_EX).
+
+    Cùng giao thức khóa với locked_update_json (dành cho state JSON):
+    - Khóa trên LOCKFILE RIÊNG ``<name>.lock`` — không khóa đích, vì
+      os.replace thay thế inode của file nên flock trên đích mất tác dụng
+      sau lần replace đầu tiên.
+    - Re-validate inode lockfile sau khi grant (chống vùng găng trên inode
+      mồ côi khi holder trước vừa unlink).
+    - Ghi qua tmp UNIQUE trong cùng thư mục + fsync rồi os.replace.
+    - Ghi THÀNH CÔNG: unlink lockfile TRƯỚC khi unlock. THẤT BẠT: giữ lại
+      lockfile và dọn tmp.
+    - Symlink: resolve sang ĐÍCH THẬT trước khi tính lock path và ghi
+      (nhất quán atomic_write_text / locked_update_json).
+    """
+    p = Path(path)
+    if p.is_symlink():
+        p = p.resolve()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = p.with_name(p.name + ".lock")
+
+    while True:
+        lock_f = open(lock_path, "w")
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+        try:
+            try:
+                st_path = os.stat(lock_path)
+                st_mine = os.fstat(lock_f.fileno())
+                live = (st_path.st_dev == st_mine.st_dev
+                        and st_path.st_ino == st_mine.st_ino)
+            except FileNotFoundError:
+                live = False
+            if not live:
+                continue
+
+            fd, tmp_name = tempfile.mkstemp(
+                dir=str(p.parent), prefix=p.name + ".", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as tf:
+                    tf.write(text)
+                    tf.flush()
+                    os.fsync(tf.fileno())
+                os.replace(tmp_name, p)
+            except BaseException:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+                raise
+
+            # Ghi thành công: dọn lockfile TRONG LÚC CÒN GIỮ KHÓA (unlink
+            # trước unlock) — process chờ sẽ thấy re-validate thất bại và
+            # tự mở lại lockfile hiện hành (nhất quán locked_update_json).
+            try:
+                os.unlink(lock_path)
+            except OSError:
+                pass
+            return
+        finally:
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+            lock_f.close()
+
+
 def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, None]]) -> dict:
     """
     Đọc-mutate-ghi JSON dưới khóa độc quyền fcntl.flock(LOCK_EX).

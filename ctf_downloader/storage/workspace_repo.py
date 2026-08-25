@@ -34,7 +34,12 @@ from .constants import (
     SUMMARY_FILES_LINE_PREFIX,
     WRITEUP_STATES,
 )
-from .fileio import atomic_write_json, atomic_write_text, locked_update_json
+from .fileio import (
+    atomic_write_json,
+    atomic_write_text,
+    locked_update_json,
+    locked_write_text,
+)
 
 PathLike = Union[str, Path]
 
@@ -456,3 +461,17 @@ class WorkspaceRepo:
         except OSError:
             return False
         return True
+
+    # ------------------------------------------------------------------
+    # RANKING.md (dump scoreboard live của RankService)
+    # ------------------------------------------------------------------
+
+    @property
+    def ranking_md_path(self) -> Path:
+        return self.root / "RANKING.md"
+
+    def write_ranking_md(self, content: str) -> None:
+        """Ghi RANKING.md nguyên tử dưới flock (locked_write_text) — đường
+        ghi DUY NHẤT cho bảng xếp hạng live. Services KHÔNG được open() thô
+        (spec-audit: writer state phải đi qua storage layer)."""
+        locked_write_text(self.ranking_md_path, content)
