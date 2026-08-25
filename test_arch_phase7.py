@@ -792,5 +792,90 @@ class TestShellCompletions(unittest.TestCase):
                 self.assertIn(flag, body, f"{fname} thiếu flag '{flag}'")
 
 
+class TestOpenCommand(unittest.TestCase):
+    """Phase 7d — ``ctf open <challenge> [-w WS]``: mở thư mục challenge qua
+    xdg-open (không shell=True, check=True). Parse args + mock subprocess
+    assert đúng path + resolve fail -> exit 1."""
+
+    MISSING_WS = "/nonexistent_ws_phase7"
+
+    def _parser(self):
+        from ctf_downloader.cli import build_unified_parser
+
+        return build_unified_parser()
+
+    # ---- parse args ----
+    def test_parse_open_defaults(self):
+        ns = self._parser().parse_args(["open", "baby-web"])
+        self.assertEqual(ns.target, "baby-web")
+        self.assertEqual(ns.workspace, ".")
+
+    def test_parse_open_custom_workspace(self):
+        ns = self._parser().parse_args(["open", "baby-web", "-w", "wsA"])
+        self.assertEqual(ns.target, "baby-web")
+        self.assertEqual(ns.workspace, "wsA")
+
+    # ---- handler: mock resolve + subprocess assert đúng path ----
+    def test_handle_open_runs_xdg_open_on_challenge_dir(self):
+        import contextlib
+        import io
+        from pathlib import Path
+
+        from ctf_downloader import cli_commands
+
+        ns = Namespace(workspace="wsA", target="baby-web")
+        meta_path = Path("/ws/wsA/challs/baby-web/metadata.json")
+        with patch.object(cli_commands.StatusService, "resolve_challenge",
+                          return_value=(meta_path, {"id": 1, "name": "Baby Web"})
+                          ) as m_resolve, \
+             patch.object(cli_commands.subprocess, "run") as m_run:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                cli_commands.handle_open(ns)
+        m_resolve.assert_called_once()
+        self.assertEqual(m_resolve.call_args.args[1], "baby-web")
+        m_run.assert_called_once_with(
+            ["xdg-open", "/ws/wsA/challs/baby-web"], check=True, shell=False)
+        self.assertIn("/ws/wsA/challs/baby-web", buf.getvalue())
+
+    def test_handle_open_missing_xdg_open_hints_and_exits_1(self):
+        from ctf_downloader import cli_commands
+
+        ns = Namespace(workspace="wsA", target="x")
+        with patch.object(cli_commands.StatusService, "resolve_challenge",
+                          return_value=("/ws/x/metadata.json",
+                                        {"id": 2, "name": "X"})), \
+             patch.object(cli_commands.subprocess, "run",
+                          side_effect=FileNotFoundError("xdg-open")):
+            with self.assertRaises(SystemExit) as cm:
+                cli_commands.handle_open(ns)
+        self.assertEqual(cm.exception.code, 1)
+
+    # ---- resolve fail / thiếu workspace -> exit 1 ----
+    def test_handle_open_resolve_fail_exits_1(self):
+        import contextlib
+        import io
+
+        from ctf_downloader import cli_commands
+        from ctf_downloader.services.status_service import ChallengeNotFoundError
+
+        ns = Namespace(workspace=self.MISSING_WS, target="ghost")
+        with patch.object(cli_commands.StatusService, "resolve_challenge",
+                          side_effect=ChallengeNotFoundError(
+                              "Challenge not found: 'ghost'")):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as cm:
+                    cli_commands.handle_open(ns)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("Challenge not found", buf.getvalue())
+
+    def test_open_missing_workspace_exit_1_end_to_end(self):
+        r = _run(["main.py", "open", "ghost", "-w", self.MISSING_WS])
+        self.assertEqual(r.returncode, 1,
+                         f"open: {r.stdout + r.stderr}")
+
+
 if __name__ == "__main__":
     unittest.main()

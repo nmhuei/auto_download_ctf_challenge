@@ -12,6 +12,7 @@ from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test c
     handle_history,
     handle_instance,
     handle_note,
+    handle_open,
     handle_pull,
     handle_rank,
     handle_register,
@@ -72,6 +73,7 @@ class _PhosphorHelpParser(argparse.ArgumentParser):
             ('export-pack', 'Đóng gói writeup đã solve thành pack zip'),
             ('history', 'Lịch sử submit flag của workspace'),
             ('serve', 'Dashboard web read-only cho workspace'),
+            ('open', 'Mở thư mục challenge trong file manager'),
             ('menu', 'Console interactive đầy đủ'),
         ]
 
@@ -308,6 +310,12 @@ def build_unified_parser():
     serve_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
     serve_parser.add_argument('--port', type=int, default=8689, help='Port HTTP (default: 8689)')
 
+    # 16. OPEN — mở thư mục challenge trong file manager
+    open_parser = subparsers.add_parser('open',
+                                        help='Mở thư mục challenge trong file manager/terminal (xdg-open)')
+    open_parser.add_argument('target', help='Challenge ID hoặc Name')
+    open_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory')
+
     return parser
 
 
@@ -413,6 +421,8 @@ def main():
         handle_sniper(args)
     elif cmd in ['serve', 'web']:
         handle_serve(args)
+    elif cmd == 'open':
+        handle_open(args)
     elif cmd in ['menu', 'ui', 'console']:
         launch_interactive_menu(workspace_path=args.workspace, cookie=args.cookie, token=args.token)
     else:

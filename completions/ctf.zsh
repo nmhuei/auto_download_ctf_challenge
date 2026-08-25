@@ -36,6 +36,7 @@ _ctf() {
                 'sync:Đồng bộ metadata workspace ↔ platform'
                 'export-pack:Đóng gói writeup đã solve thành pack zip'
                 'history:Lịch sử submit flag của workspace'
+                'open:Mở thư mục challenge trong file manager/terminal'
                 'sniper:Nộp flag tự động đúng giờ G'
                 'serve:Dashboard web read-only cho workspace'
             )
@@ -220,6 +221,11 @@ _ctf() {
                         '--start-at[thời điểm mở giải ISO-8601/epoch]:time:' \
                         '--retry-wrong[cho phép thử lại target sai]' \
                         '--poll[chu kỳ poll khi chờ giờ G (giây)]:seconds:'
+                    ;;
+                open)
+                    _arguments \
+                        ':target:(challenge id/name)' \
+                        '(-w --workspace)'{-w,--workspace}'[CTF workspace directory]:dir:_directories'
                     ;;
                 serve|web)
                     _arguments \

@@ -6,6 +6,7 @@ Quy tắc kiến trúc Phase 7: file này KHÔNG chứa ``input()`` / ``Prompt.a
 hoặc ở interactive_menu.
 """
 import os
+import subprocess
 import sys
 import textwrap
 from typing import Optional
@@ -108,6 +109,46 @@ def handle_tag(args):
         repo, args.target, list(getattr(args, 'tags', None) or []),
         remove=bool(getattr(args, 'remove', False)))
     if not ok:
+        sys.exit(1)
+
+
+def handle_open(args):
+    """``ctf open <challenge> [-w WS]`` — mở thư mục challenge trong file
+    manager/terminal (xdg-open trên Linux).
+
+    Resolve theo cùng tier với ``WorkspaceRepo.find_challenge`` qua
+    ``StatusService.resolve_challenge`` (exact id -> exact name -> substring;
+    ambiguous -> liệt kê candidate, không partial-match âm thầm).
+    ``xdg-open`` chạy không shell=True, check=True; thiếu binary ->
+    hint cài xdg-utils."""
+    from pathlib import Path
+
+    from .services.status_service import (
+        AmbiguousChallengeError,
+        ChallengeNotFoundError,
+    )
+
+    repo = WorkspaceRepo(args.workspace)
+    try:
+        meta_path, _meta = StatusService.resolve_challenge(repo, args.target)
+    except ChallengeNotFoundError as e:
+        Logger.error(str(e))
+        sys.exit(1)
+    except AmbiguousChallengeError as e:
+        Logger.error(str(e))
+        StatusService._print_matches(e.matches)
+        sys.exit(1)
+
+    chall_dir = str(Path(meta_path).parent)
+    Logger.info(f"Đang mở thư mục challenge: {chall_dir}")
+    try:
+        subprocess.run(["xdg-open", chall_dir], check=True, shell=False)
+    except FileNotFoundError:
+        Logger.error("Không tìm thấy lệnh 'xdg-open' — hãy cài gói xdg-utils "
+                     "(vd: sudo apt install xdg-utils).")
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        Logger.error(f"xdg-open thất bại (exit {e.returncode}): {chall_dir}")
         sys.exit(1)
 
 
