@@ -83,9 +83,9 @@ class MegaDownloader:
         if len(new_files) == 1:
             saved_path = os.path.join(dest_dir, new_files[0])
             Logger.info(f"megatools: đã tải '{new_files[0]}'.")
-            return saved_path, "Downloaded via megatools"
+            return saved_path, "Đã tải qua megatools"
         if len(new_files) > 1:
-            return dest_dir, f"Downloaded {len(new_files)} files via megatools"
+            return dest_dir, f"Đã tải {len(new_files)} files qua megatools"
 
         # Tool báo thành công nhưng không phát hiện file mới (có thể ghi đè file cũ)
-        return dest_dir, "Downloaded via megatools"
+        return dest_dir, "Đã tải qua megatools"

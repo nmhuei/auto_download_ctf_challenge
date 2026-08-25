@@ -94,7 +94,7 @@ class RCTFPlatform(BasePlatform):
                     user_name = data["data"].get("name")
                     self.ctf_info.user_name = user_name
                     self.ctf_info.team_name = user_name
-                    Logger.success(f"Authenticated to rCTF as Team: [bold cyan]{user_name}[/bold cyan]")
+                    Logger.success(f"Đã xác thực rCTF với Team: [bold cyan]{user_name}[/bold cyan]")
                     return True
         except Exception:
             pass
@@ -105,12 +105,12 @@ class RCTFPlatform(BasePlatform):
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get("kind") == "goodChallenges":
-                    Logger.info("Public access to rCTF challenges confirmed.")
+                    Logger.info("Đã xác nhận truy cập public vào challenges rCTF.")
                     return True
         except Exception:
             pass
 
-        Logger.error("Failed to authenticate to rCTF platform.")
+        Logger.error("Xác thực thất bại trên nền tảng rCTF.")
         return False
 
 
@@ -122,16 +122,16 @@ class RCTFPlatform(BasePlatform):
         try:
             resp = self.session.get(f"{self.base_url}/api/v1/challs", timeout=20)
             if resp.status_code != 200:
-                Logger.error(f"Failed to fetch challenges from rCTF (HTTP {resp.status_code})")
+                Logger.error(f"Không tải được challenges từ rCTF (HTTP {resp.status_code})")
                 return []
 
             json_data = resp.json()
             if json_data.get("kind") != "goodChallenges":
-                Logger.error(f"rCTF API error: {json_data.get('message')}")
+                Logger.error(f"Lỗi API rCTF: {json_data.get('message')}")
                 return []
 
             raw_challs = json_data.get("data", [])
-            Logger.info(f"Found {len(raw_challs)} challenges on rCTF.")
+            Logger.info(f"Tìm thấy {len(raw_challs)} challenges trên rCTF.")
 
             challenges = []
             for item in raw_challs:
@@ -168,7 +168,7 @@ class RCTFPlatform(BasePlatform):
             return challenges
 
         except Exception as e:
-            Logger.error(f"Error fetching rCTF challenges: {str(e)}")
+            Logger.error(f"Lỗi khi tải challenges rCTF: {str(e)}")
             return []
 
     def get_full_file_url(self, file_path: str) -> str:
@@ -208,29 +208,29 @@ class RCTFPlatform(BasePlatform):
                 return True, "🎉 Correct flag! Challenge solved!"
             elif kind == "alreadySolved":
                 self.last_verdict = "correct"
-                return True, "✅ You have already solved this challenge!"
+                return True, "✅ Bạn đã giải challenge này trước đó rồi!"
             elif kind == "badFlag":
                 self.last_verdict = "incorrect"
-                return False, f"❌ Incorrect flag ({message or 'Bad Flag'})."
+                return False, f"❌ Flag không đúng ({message or 'Bad Flag'})."
             elif kind == "badRateLimit" or resp.status_code == 429:
                 self.last_verdict = "ratelimited"
-                return False, f"⏳ Rate limited! {message or 'Please wait before submitting again.'}"
+                return False, f"⏳ Rate limited! {message or 'Vui lòng chờ rồi submit lại.'}"
             elif kind == "badChallenge":
                 self.last_verdict = "unknown"
-                return False, f"⚠️ Challenge not found or unavailable ({message})."
+                return False, f"⚠️ Không tìm thấy challenge hoặc không khả dụng ({message})."
             elif kind == "badToken":
                 self.last_verdict = "unknown"
-                return False, "🚫 Authentication expired or invalid token."
+                return False, "🚫 Phiên xác thực hết hạn hoặc token không hợp lệ."
             else:
                 if resp.status_code == 200:
                     self.last_verdict = "correct"
-                    return True, f"✅ Submission received: {message or kind}"
+                    return True, f"✅ Đã nhận submission: {message or kind}"
                 self.last_verdict = "unknown"
-                return False, f"Server returned HTTP {resp.status_code}: {message or kind or resp.text[:100]}"
+                return False, f"Máy chủ trả HTTP {resp.status_code}: {message or kind or resp.text[:100]}"
 
         except Exception as e:
             self.last_verdict = "unknown"
-            return False, f"Exception during submission: {str(e)}"
+            return False, f"Ngoại lệ khi submit flag: {str(e)}"
 
     # ------------------------------------------------------------------
     # Solve attribution (spec §4) — 1 account = 1 team: by_team ≡ by_me
@@ -366,7 +366,7 @@ class RCTFPlatform(BasePlatform):
                 })
             result["standings"] = standings
         except Exception as e:
-            Logger.warning(f"Failed to fetch leaderboard from rCTF: {e}")
+            Logger.warning(f"Không tải được leaderboard từ rCTF: {e}")
 
         return result
 

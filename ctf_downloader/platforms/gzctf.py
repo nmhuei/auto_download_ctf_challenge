@@ -212,7 +212,7 @@ def gzctf_register(platform, *, username: str, email: str, password: str,
                 "message": f"Register thất bại (HTTP {resp.status_code}): {detail}"}
 
     Logger.success("GZCTF: register OK (HTTP 200) — tiến hành login lấy token.")
-    result: Dict[str, Any] = {"ok": True, "message": "Registered"}
+    result: Dict[str, Any] = {"ok": True, "message": "Đã register"}
 
     if verify_email_hook is not None:
         verified = verify_email_hook(sess)
@@ -295,7 +295,7 @@ class GZCTFPlatform(BasePlatform):
             if resp.status_code == 200:
                 user_data = resp.json()
                 self.ctf_info.user_name = user_data.get("userName") or user_data.get("realName")
-                Logger.success(f"Authenticated to GZCTF as User: [bold cyan]{self.ctf_info.user_name}[/bold cyan] ({user_data.get('email')})")
+                Logger.success(f"Đã xác thực GZCTF với User: [bold cyan]{self.ctf_info.user_name}[/bold cyan] ({user_data.get('email')})")
                 profile_ok = True
         except Exception:
             pass
@@ -312,13 +312,13 @@ class GZCTFPlatform(BasePlatform):
                         Logger.info(f"Team: [bold magenta]{self.ctf_info.team_name}[/bold magenta] | Competition: [bold yellow]{self.ctf_info.title}[/bold yellow]")
                     return True
             except Exception as e:
-                Logger.warning(f"Could not fetch game {self.game_id} info: {e}")
+                Logger.warning(f"Không lấy được thông tin game {self.game_id}: {e}")
 
         if profile_ok:
             Logger.warning("Không xác định được game_id từ URL (vd: https://host/games/<id>/challenges). Một số tính năng sẽ bị giới hạn.")
             return True
 
-        Logger.error("Failed to authenticate to GZCTF platform. Please verify GZCTF_Token cookie.")
+        Logger.error("Xác thực thất bại trên nền tảng GZCTF. Hãy kiểm tra lại cookie GZCTF_Token.")
         return False
 
     def register(self, *, username: str, email: str, password: str,
@@ -342,7 +342,7 @@ class GZCTFPlatform(BasePlatform):
                 if content and str(content).strip():
                     return str(content)
         except Exception as e:
-            Logger.warning(f"Could not fetch rules from game {self.game_id}: {e}")
+            Logger.warning(f"Không lấy được rules từ game {self.game_id}: {e}")
         return None
 
     def fetch_challenges(self) -> List[Challenge]:
@@ -356,17 +356,17 @@ class GZCTFPlatform(BasePlatform):
         try:
             resp = self.session.get(details_url, timeout=20)
             if resp.status_code != 200:
-                Logger.error(f"Failed to fetch challenges from {details_url} (HTTP {resp.status_code})")
+                Logger.error(f"Không tải được challenges từ {details_url} (HTTP {resp.status_code})")
                 return []
 
             data = resp.json()
             raw_categories = data.get("challenges", {})
             if not raw_categories:
-                Logger.warning("No challenges returned in game details.")
+                Logger.warning("Chi tiết game không trả về challenge nào.")
                 return []
 
             total_count = sum(len(challs) for challs in raw_categories.values())
-            Logger.info(f"Found {total_count} challenges across {len(raw_categories)} categories on GZCTF. Fetching details...")
+            Logger.info(f"Tìm thấy {total_count} challenges trong {len(raw_categories)} categories trên GZCTF. Đang tải chi tiết...")
 
             # Fetch solved challenge IDs from scoreboard for current user/team
             solved_chall_ids = set()
@@ -438,7 +438,7 @@ class GZCTFPlatform(BasePlatform):
                                     files_list.append((full_asset_url, filename))
 
                         except Exception as e:
-                            Logger.warning(f"Error parsing detail for {title}: {e}")
+                            Logger.warning(f"Lỗi parse chi tiết cho {title}: {e}")
 
                     # Determine if it's a dynamic container
                     is_container = chall_type == "DynamicContainer" or (single_data.get("type") == "DynamicContainer")
@@ -480,7 +480,7 @@ class GZCTFPlatform(BasePlatform):
             return detailed_challenges
 
         except Exception as e:
-            Logger.error(f"Error fetching GZCTF challenges: {str(e)}")
+            Logger.error(f"Lỗi khi tải challenges GZCTF: {str(e)}")
             return []
 
     def get_full_file_url(self, file_path: str) -> str:
@@ -523,10 +523,10 @@ class GZCTFPlatform(BasePlatform):
 
                     if "accepted" in status_low:
                         self.last_verdict = "correct"
-                        return True, f"🎉 CORRECT FLAG! Challenge solved (Submission ID: {sub_id})!"
+                        return True, f"🎉 FLAG CHÍNH XÁC! Đã giải xong challenge (Submission ID: {sub_id})!"
                     if "wronganswer" in status_low or "wrong_answer" in status_low or "wrong answer" in status_low:
                         self.last_verdict = "incorrect"
-                        return False, f"❌ Incorrect flag (Submission ID: {sub_id})."
+                        return False, f"❌ Flag không đúng (Submission ID: {sub_id})."
 
                     time.sleep(self.SUBMISSION_POLL_INTERVAL)
 
@@ -539,20 +539,20 @@ class GZCTFPlatform(BasePlatform):
             elif resp.status_code == 400:
                 err_text = resp.text.strip().strip('"') or "Invalid Flag"
                 self.last_verdict = "incorrect"
-                return False, f"❌ Incorrect flag ({err_text})."
+                return False, f"❌ Flag không đúng ({err_text})."
             elif resp.status_code == 403:
                 self.last_verdict = "unknown"
-                return False, "🚫 Access denied / Competition not active."
+                return False, "🚫 Bị từ chối truy cập / giải chưa hoạt động."
             elif resp.status_code == 429:
                 self.last_verdict = "ratelimited"
-                return False, "⏳ Rate limited. Please wait before submitting again."
+                return False, "⏳ Rate limited. Vui lòng chờ rồi submit lại."
             else:
                 self.last_verdict = "unknown"
-                return False, f"Server returned HTTP {resp.status_code}: {resp.text[:100]}"
+                return False, f"Máy chủ trả HTTP {resp.status_code}: {resp.text[:100]}"
 
         except Exception as e:
             self.last_verdict = "unknown"
-            return False, f"Exception during submission: {str(e)}"
+            return False, f"Ngoại lệ khi submit flag: {str(e)}"
 
     def start_instance(self, challenge_id: Any) -> Tuple[bool, Dict[str, Any]]:
         """
@@ -587,8 +587,8 @@ class GZCTFPlatform(BasePlatform):
         try:
             resp = self.session.delete(url, timeout=15)
             if resp.status_code in [200, 204]:
-                return True, "Container stopped successfully."
-            return False, f"Failed to stop container (HTTP {resp.status_code}): {resp.text}"
+                return True, "Đã dừng container."
+            return False, f"Dừng container thất bại (HTTP {resp.status_code}): {resp.text}"
         except Exception as e:
             return False, str(e)
 
@@ -600,8 +600,8 @@ class GZCTFPlatform(BasePlatform):
         try:
             resp = self.session.post(url, timeout=15)
             if resp.status_code == 200:
-                return True, "Container lifetime extended successfully."
-            return False, f"Failed to extend container (HTTP {resp.status_code}): {resp.text}"
+                return True, "Đã gia hạn thời gian sống của container."
+            return False, f"Gia hạn container thất bại (HTTP {resp.status_code}): {resp.text}"
         except Exception as e:
             return False, str(e)
 
@@ -792,7 +792,7 @@ class GZCTFPlatform(BasePlatform):
                     })
                 result["standings"] = standings
         except Exception as e:
-            Logger.warning(f"Failed to fetch scoreboard from GZCTF: {e}")
+            Logger.warning(f"Không tải được scoreboard từ GZCTF: {e}")
 
         return result
 

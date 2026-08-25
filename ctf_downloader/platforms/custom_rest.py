@@ -54,7 +54,7 @@ class CustomRESTPlatform(BasePlatform):
                     user_data = data["data"]["user"]
                     username = user_data.get("username") or user_data.get("name") or user_data.get("email")
                     self.ctf_info.user_name = username
-                    Logger.success(f"Authenticated as User: [bold cyan]{username}[/bold cyan]")
+                    Logger.success(f"Đã xác thực User: [bold cyan]{username}[/bold cyan]")
                     return True
         except Exception:
             pass
@@ -65,12 +65,12 @@ class CustomRESTPlatform(BasePlatform):
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get("success") and "challenges" in data.get("data", {}):
-                    Logger.info("Public challenge access confirmed on REST platform.")
+                    Logger.info("Đã xác nhận truy cập public vào challenges trên nền tảng REST.")
                     return True
         except Exception:
             pass
 
-        Logger.error("Failed to authenticate to REST CTF platform.")
+        Logger.error("Xác thực thất bại trên nền tảng REST CTF.")
         return False
 
     def fetch_challenges(self) -> List[Challenge]:
@@ -80,16 +80,16 @@ class CustomRESTPlatform(BasePlatform):
         try:
             resp = self.session.get(f"{self.base_url}/api/challenges", timeout=15)
             if resp.status_code != 200:
-                Logger.error(f"Failed to fetch challenges from /api/challenges (HTTP {resp.status_code})")
+                Logger.error(f"Không tải được challenges từ /api/challenges (HTTP {resp.status_code})")
                 return []
 
             json_data = resp.json()
             if not json_data.get("success"):
-                Logger.error(f"API error: {json_data.get('error') or json_data.get('message')}")
+                Logger.error(f"Lỗi API: {json_data.get('error') or json_data.get('message')}")
                 return []
 
             raw_challs = json_data.get("data", {}).get("challenges", [])
-            Logger.info(f"Found {len(raw_challs)} challenges on platform. Fetching details...")
+            Logger.info(f"Tìm thấy {len(raw_challs)} challenges trên nền tảng. Đang tải chi tiết...")
 
             detailed_challenges = []
             for item in raw_challs:
@@ -153,7 +153,7 @@ class CustomRESTPlatform(BasePlatform):
             return detailed_challenges
 
         except Exception as e:
-            Logger.error(f"Error fetching REST CTF challenges: {str(e)}")
+            Logger.error(f"Lỗi khi tải challenges REST CTF: {str(e)}")
             return []
 
     def get_full_file_url(self, file_path: str) -> str:
@@ -173,15 +173,15 @@ class CustomRESTPlatform(BasePlatform):
             data = resp.json() if "json" in resp.headers.get("content-type", "") else {}
 
             if resp.status_code == 200 and data.get("success"):
-                return True, "🎉 Correct flag! Challenge solved!"
+                return True, "🎉 Flag chính xác! Đã giải xong challenge!"
             elif resp.status_code == 400:
-                msg = data.get("message") or data.get("error") or "Incorrect flag."
+                msg = data.get("message") or data.get("error") or "Flag không đúng."
                 return False, f"❌ {msg}"
             elif resp.status_code == 403:
-                msg = data.get("message") or data.get("error") or "Team membership required or forbidden."
+                msg = data.get("message") or data.get("error") or "Yêu cầu là thành viên team hoặc bị từ chối quyền."
                 return False, f"🚫 {msg}"
             else:
-                return False, f"Server returned HTTP {resp.status_code}: {data.get('message') or resp.text[:100]}"
+                return False, f"Máy chủ trả HTTP {resp.status_code}: {data.get('message') or resp.text[:100]}"
 
         except Exception as e:
-            return False, f"Exception during submission: {str(e)}"
+            return False, f"Ngoại lệ khi submit flag: {str(e)}"

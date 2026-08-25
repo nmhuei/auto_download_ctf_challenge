@@ -47,7 +47,7 @@ class GenericHTMLPlatform(BasePlatform):
                 continue
 
         if not page_html:
-            Logger.error("Could not find challenges on the provided URL.")
+            Logger.error("Không tìm thấy challenges trên URL đã cung cấp.")
             return []
 
         soup = BeautifulSoup(page_html, "html.parser")
@@ -105,5 +105,5 @@ class GenericHTMLPlatform(BasePlatform):
         return urllib.parse.urljoin(self.base_url, file_path)
 
     def submit_flag(self, challenge_id: Any, flag: str) -> Tuple[bool, str]:
-        return False, "Automated flag submission not supported for generic HTML scraper platforms."
+        return False, "Submit flag tự động không được hỗ trợ cho platform generic HTML scraper."
 

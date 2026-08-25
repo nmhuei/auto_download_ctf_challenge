@@ -207,19 +207,19 @@ class BaseCTFPlatform(ABC):
         Spawns/starts a dynamic container instance for the challenge.
         Returns (success, info_dict e.g. {'entry': 'host:port', 'time_left': 1800, 'message': '...'}).
         """
-        return False, {"message": f"Instance management is not supported for {self.ctf_info.platform_type}"}
+        return False, {"message": f"Quản lý instance không được hỗ trợ cho {self.ctf_info.platform_type}"}
 
     def stop_instance(self, challenge_id: Any) -> Tuple[bool, str]:
         """
         Destroys/stops an active container instance.
         """
-        return False, f"Instance management is not supported for {self.ctf_info.platform_type}"
+        return False, f"Quản lý instance không được hỗ trợ cho {self.ctf_info.platform_type}"
 
     def extend_instance(self, challenge_id: Any) -> Tuple[bool, str]:
         """
         Extends the lifetime of an active container instance.
         """
-        return False, f"Instance management is not supported for {self.ctf_info.platform_type}"
+        return False, f"Quản lý instance không được hỗ trợ cho {self.ctf_info.platform_type}"
 
     def get_instance_status(self, challenge_id: Any) -> Dict[str, Any]:
         """

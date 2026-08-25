@@ -84,7 +84,7 @@ def ctfd_register(platform, *, username: str, email: str, password: str,
 
     Logger.success(f"CTFd: register OK — đang đăng nhập với user "
                    f"[bold cyan]{me_name or username}[/bold cyan].")
-    result: Dict[str, Any] = {"ok": True, "message": "Registered",
+    result: Dict[str, Any] = {"ok": True, "message": "Đã register",
                               "user_name": me_name or username}
 
     if verify_email_hook is not None:
@@ -181,7 +181,7 @@ class CTFdPlatform(BasePlatform):
                     self.ctf_info.title = title_tag.text.strip().replace(" - CTFd", "").replace("Challenges", "").strip(" -|:")
 
         except Exception as e:
-            Logger.warning(f"Could not extract CTFd nonce: {e}")
+            Logger.warning(f"Không extract được nonce CTFd: {e}")
 
     def authenticate(self) -> bool:
         """
@@ -197,7 +197,7 @@ class CTFdPlatform(BasePlatform):
                 if data.get("success") and data.get("data"):
                     user_data = data["data"]
                     self.ctf_info.user_name = user_data.get("name")
-                    Logger.success(f"Authenticated as User: [bold cyan]{self.ctf_info.user_name}[/bold cyan]")
+                    Logger.success(f"Đã xác thực CTFd với User: [bold cyan]{self.ctf_info.user_name}[/bold cyan]")
                     return True
         except Exception:
             pass
@@ -208,12 +208,12 @@ class CTFdPlatform(BasePlatform):
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get("success"):
-                    Logger.info("Public access to CTFd challenges confirmed.")
+                    Logger.info("Đã xác nhận truy cập public vào challenges CTFd.")
                     return True
         except Exception:
             pass
 
-        Logger.error("Failed to authenticate to CTFd platform. Please check your Cookie or Token.")
+        Logger.error("Xác thực thất bại trên nền tảng CTFd. Hãy kiểm tra lại Cookie hoặc Token.")
         return False
 
     def register(self, *, username: str, email: str, password: str,
@@ -231,24 +231,24 @@ class CTFdPlatform(BasePlatform):
         try:
             resp = self.session.get(challenges_url, timeout=20)
             if resp.status_code != 200:
-                Logger.error(f"Failed to fetch challenges from {challenges_url} (HTTP {resp.status_code})")
+                Logger.error(f"Không tải được challenges từ {challenges_url} (HTTP {resp.status_code})")
                 return []
 
             content_type = resp.headers.get("content-type", "")
             if "json" not in content_type:
                 if "/login" in resp.url or "login" in resp.text.lower():
-                    Logger.error("CTFd requires login. Please provide a valid session cookie (-c) or API token (-t).")
+                    Logger.error("CTFd yêu cầu đăng nhập. Hãy cung cấp session cookie hợp lệ (-c) hoặc API token (-t).")
                 else:
-                    Logger.error(f"Unexpected response format from CTFd (Content-Type: {content_type}).")
+                    Logger.error(f"CTFd trả về định dạng phản hồi không mong muốn (Content-Type: {content_type}).")
                 return []
 
             json_data = resp.json()
             if not json_data.get("success"):
-                Logger.error(f"CTFd API returned unsuccessful response: {json_data.get('errors')}")
+                Logger.error(f"CTFd API trả về response không thành công: {json_data.get('errors')}")
                 return []
 
             raw_challs = json_data.get("data", [])
-            Logger.info(f"Found {len(raw_challs)} challenges on CTFd. Fetching challenge details...")
+            Logger.info(f"Tìm thấy {len(raw_challs)} challenges trên CTFd. Đang tải chi tiết từng challenge...")
 
             detailed_challenges = []
 
@@ -314,7 +314,7 @@ class CTFdPlatform(BasePlatform):
                                     hints_list.append({"content": hint})
 
                     except Exception as e:
-                        Logger.warning(f"Error parsing details for {name}: {e}")
+                        Logger.warning(f"Lỗi parse chi tiết cho {name}: {e}")
 
                 # Check if it has dynamic container / whale / instancer
                 is_container = False
@@ -355,7 +355,7 @@ class CTFdPlatform(BasePlatform):
             return detailed_challenges
 
         except Exception as e:
-            Logger.error(f"Error fetching CTFd challenges: {str(e)}")
+            Logger.error(f"Lỗi khi tải challenges CTFd: {str(e)}")
             return []
 
     def fetch_rules(self) -> Optional[str]:
@@ -381,7 +381,7 @@ class CTFdPlatform(BasePlatform):
                 continue
             if len(html.strip()) < 50 or self._looks_like_404(html):
                 continue
-            Logger.info(f"Fetched potential rules page: [bold cyan]/{slug}[/bold cyan]")
+            Logger.info(f"Đã tải trang rules tiềm năng: [bold cyan]/{slug}[/bold cyan]")
             return html
         return None
 
@@ -430,12 +430,12 @@ class CTFdPlatform(BasePlatform):
         try:
             resp = self.session.post(url, json=payload, timeout=15)
             if resp.status_code != 200:
-                return False, f"Server returned HTTP {resp.status_code}"
+                return False, f"Máy chủ trả HTTP {resp.status_code}"
 
             data = resp.json()
             if not data.get("success"):
                 errors = data.get("errors", {})
-                return False, f"Submission error: {errors}"
+                return False, f"Lỗi submit: {errors}"
 
             sub_data = data.get("data", {})
             status = sub_data.get("status", "")
@@ -443,26 +443,26 @@ class CTFdPlatform(BasePlatform):
 
             if status == "correct":
                 self.last_verdict = "correct"
-                return True, "🎉 Correct flag! Challenge solved!"
+                return True, "🎉 Flag chính xác! Đã giải xong challenge!"
             elif status == "already_solved":
                 self.last_verdict = "correct"
-                return True, "✅ You have already solved this challenge!"
+                return True, "✅ Bạn đã giải challenge này trước đó rồi!"
             elif status == "incorrect":
                 self.last_verdict = "incorrect"
-                return False, "❌ Incorrect flag."
+                return False, "❌ Flag không đúng."
             elif status == "paused":
                 self.last_verdict = "unknown"
-                return False, "⏸️ CTF is currently paused."
+                return False, "⏸️ CTF đang tạm dừng."
             elif status == "ratelimited":
                 self.last_verdict = "ratelimited"
-                return False, "⏳ Rate limited! Please wait before submitting again."
+                return False, "⏳ Rate limited! Vui lòng chờ rồi submit lại."
             else:
                 self.last_verdict = "unknown"
                 return False, f"Status: {status} ({message})"
 
         except Exception as e:
             self.last_verdict = "unknown"
-            return False, f"Exception during submission"
+            return False, f"Ngoại lệ khi submit flag"
 
     def _clean_user_access(self, val: Optional[str]) -> Optional[str]:
         if not val:
@@ -495,11 +495,11 @@ class CTFdPlatform(BasePlatform):
                         "raw": container_data
                     }
                 else:
-                    return False, {"message": data.get("message", "Container start failed.")}
+                    return False, {"message": data.get("message", "Khởi động container thất bại.")}
             elif resp.status_code == 500:
-                return False, {"message": "Server Error (500): Server-side container runner / Docker Swarm is unreachable or not configured by CTF admin."}
+                return False, {"message": "Lỗi server (500): container runner / Docker Swarm phía server không truy cập được hoặc admin CTF chưa cấu hình."}
         except Exception as e:
-            Logger.warning(f"Error calling {whale_v1_url}: {e}")
+            Logger.warning(f"Lỗi khi gọi {whale_v1_url}: {e}")
 
         # 2. Try legacy /plugins/ctfd-whale/container
         whale_url = f"{self.base_url}/plugins/ctfd-whale/container"
@@ -527,7 +527,7 @@ class CTFdPlatform(BasePlatform):
         except Exception:
             pass
 
-        return False, {"message": "No active container plugin or instance service found for this challenge."}
+        return False, {"message": "Không tìm thấy plugin container hay dịch vụ instance nào cho challenge này."}
 
     def stop_instance(self, challenge_id: Any) -> Tuple[bool, str]:
         """
@@ -541,7 +541,7 @@ class CTFdPlatform(BasePlatform):
         try:
             resp = self.session.delete(whale_v1_url, json={}, timeout=15)
             if resp.status_code == 200:
-                return True, "Container stopped."
+                return True, "Đã dừng container."
         except Exception:
             pass
 
@@ -549,10 +549,10 @@ class CTFdPlatform(BasePlatform):
         try:
             resp = self.session.delete(whale_url, json={"challenge_id": challenge_id}, timeout=15)
             if resp.status_code == 200:
-                return True, "Container stopped."
+                return True, "Đã dừng container."
         except Exception:
             pass
-        return False, "Failed to stop container on CTFd."
+        return False, "Dừng container trên CTFd thất bại."
 
     def extend_instance(self, challenge_id: Any) -> Tuple[bool, str]:
         """
@@ -566,7 +566,7 @@ class CTFdPlatform(BasePlatform):
         try:
             resp = self.session.patch(whale_v1_url, json={}, timeout=15)
             if resp.status_code == 200:
-                return True, "Container lifetime extended."
+                return True, "Đã gia hạn thời gian sống của container."
         except Exception:
             pass
 
@@ -574,10 +574,10 @@ class CTFdPlatform(BasePlatform):
         try:
             resp = self.session.patch(whale_url, json={"challenge_id": challenge_id}, timeout=15)
             if resp.status_code == 200:
-                return True, "Container lifetime extended."
+                return True, "Đã gia hạn thời gian sống của container."
         except Exception:
             pass
-        return False, "Failed to extend container on CTFd."
+        return False, "Gia hạn container trên CTFd thất bại."
 
     def get_instance_status(self, challenge_id: Any) -> Dict[str, Any]:
         """
@@ -759,7 +759,7 @@ class CTFdPlatform(BasePlatform):
                     })
                 result["standings"] = standings
         except Exception as e:
-            Logger.warning(f"Failed to fetch scoreboard from CTFd: {e}")
+            Logger.warning(f"Không tải được scoreboard từ CTFd: {e}")
 
         return result
 

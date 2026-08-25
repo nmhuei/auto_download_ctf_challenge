@@ -27,4 +27,4 @@ def save_global_config(cfg: Dict[str, Any]):
         with open(GLOBAL_CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(cfg, f, indent=2, ensure_ascii=False)
     except Exception as e:
-        Logger.warning(f'Could not save config: {e}')
+        Logger.warning(f'Không lưu được config: {e}')
