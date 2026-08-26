@@ -45,6 +45,11 @@ FIRSTBLOOD = "#FF2E63"    # ◆ + bold
 ERROR = "#E5534B"         # ✗ đỏ
 WARN = "#EAC54F"          # !
 
+# SPEC UI v2 §S1 — selection state: reverse highlight fg near-black trên
+# nền accent amber (không hue mới; nền trùng đúng ACCENT lead).
+SEL_FG = "#14100A"        # chữ trên nền chọn
+SEL_BG = ACCENT           # nền chọn = amber lead
+
 DEFAULT_STYLES: dict[str, str] = {
     # --- Legacy aliases (PALETTE) ĐẨY TRƯỚC để token spec ghi đè hết:
     # trước đây "error" của PALETTE đè token hex (codex-r3 #1) ---
@@ -70,6 +75,9 @@ DEFAULT_STYLES: dict[str, str] = {
     "div_line": ACCENT_DEEP,
     "hi_fg": ACCENT,
     "unsolved": FG_FAINT,
+    # --- Selection state §S1 ---
+    "sel": f"{SEL_FG} on {SEL_BG}",
+    "done": f"strike {FG_MUTED}",
 }
 
 
@@ -97,4 +105,5 @@ __all__ = [
     "FG_BASE", "FG_MUTED", "FG_FAINT",
     "ACCENT", "ACCENT_HI", "ACCENT_DEEP",
     "INFO", "SOLVED", "FIRSTBLOOD", "ERROR", "WARN",
+    "SEL_FG", "SEL_BG",
 ]

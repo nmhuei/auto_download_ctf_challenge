@@ -25,6 +25,7 @@ from .storage.global_config import (  # noqa: F401 — re-export để giữ tư
 # PHOSPHOR FIELD KIT (design-system spec §2/§3) — banner + palette tokens.
 from . import __version__
 from .ui.banner import banner_b, tagline_text
+from .ui.selection import MENU_CURSOR, selected_row
 from .ui.theme import ACCENT, FG_BASE, FG_FAINT, FG_MUTED, INFO, WARN, load_theme
 from .ui.widgets import AMBER_RAMP, footer_bar, meter
 
@@ -65,7 +66,7 @@ def _option(key: str, label: str):
 
 def _prompt(msg: str) -> str:
     """Selection prompt ``❯`` accent amber (stderr, đọc stdin như input())."""
-    t = Text('❯ ', style=ACCENT)
+    t = Text(f'{MENU_CURSOR} ', style=ACCENT)
     t.append(msg)
     return _menu_console().input(t).strip()
 
@@ -79,7 +80,36 @@ def _footer(bindings=None):
     con.print(f'  {footer_bar(bindings, width)}')
 
 
+def _workspace_rows(workspaces, active: str):
+    """Các dòng workspace cho switcher (SPEC UI v2 §S1.2).
+
+    Workspace đang dùng → ``selected_row(..., selected=True)`` full
+    reverse-highlight (thay suffix '❯ đang dùng' cũ); workspace giải xong
+    100% liệt kê kèm token ``done`` (strike muted) trên tên.
+    """
+    rows = []
+    for idx, (p, st) in enumerate(workspaces, 1):
+        title = str(st.get('title', os.path.basename(p)))[:30]
+        solv = f"{st.get('solved_challenges', 0)}/{st.get('total_challenges', 0)}"
+        meta = f"{st.get('platform', 'generic').upper():<8}{solv} solved"
+        if os.path.abspath(p) == active:
+            rows.append(selected_row(f'[{idx:>2}] {title:<30}{meta}', selected=True))
+            continue
+        total = st.get('total_challenges', 0)
+        done = total > 0 and st.get('solved_challenges', 0) >= total
+        row = Text('  ')
+        row.append(f'[{idx:>2}]', style=ACCENT)
+        row.append(f' {title:<30}', style='done' if done else FG_BASE)
+        row.append(meta, style=FG_MUTED)
+        rows.append(row)
+    return rows
+
+
 class CTFInteractiveConsole:
+    # §S1: option là hành động gần nhất → ❯ reverse. Default lớp để an toàn
+    # với instance dựng qua __new__ (test harness bỏ qua __init__).
+    _last_action: Optional[str] = None
+
     def __init__(self, workspace_path: Optional[str] = None, cookie: Optional[str] = None, token: Optional[str] = None):
         self.config = load_global_config()
         self.workspace_path = self._resolve_initial_workspace(workspace_path)
@@ -193,7 +223,13 @@ class CTFInteractiveConsole:
                     ('9', 'Cấu hình & Lưu Cookie / Token cho giải này (nhớ vĩnh viễn)'),
                     ('0', 'Thoát'),
                 ):
-                    _option(key, label)
+                    # §S1.1: option là hành động gần nhất → dòng ❯ reverse;
+                    # option thường giữ _option() nguyên trạng.
+                    if key == self._last_action:
+                        _menu_console().print(
+                            selected_row(f'[{key}] {label}', selected=True))
+                    else:
+                        _option(key, label)
                 _footer()
 
                 choice = _prompt('Chọn chức năng (0-9): ')
@@ -223,6 +259,10 @@ class CTFInteractiveConsole:
                     self._menu_configure_auth()
                 else:
                     Logger.warning('Lựa chọn không hợp lệ. Vui lòng chọn số từ 0 đến 9.')
+                # Ghi nhớ hành động gần nhất để vòng sau đánh dấu ❯ (§S1.1);
+                # input lạ ('x', '99') không được tính là action.
+                if len(choice) == 1 and '1' <= choice <= '9':
+                    self._last_action = choice
             except (EOFError, KeyboardInterrupt):
                 _menu_console().print(
                     Text('\nTạm biệt! Chúc bạn thi đấu CTF đạt kết quả cao.\n',
@@ -299,17 +339,7 @@ class CTFInteractiveConsole:
 
         con = _menu_console()
         active = os.path.abspath(self.workspace_path)
-        for idx, (p, st) in enumerate(workspaces, 1):
-            title = str(st.get('title', os.path.basename(p)))[:30]
-            solv = f"{st.get('solved_challenges', 0)}/{st.get('total_challenges', 0)}"
-            plat_str = st.get('platform', 'generic').upper()
-            row = Text('  ')
-            row.append(f'[{idx:>2}]', style=ACCENT)
-            row.append(f' {title:<30}', style=FG_BASE)
-            row.append(f'{plat_str:<8}', style=FG_MUTED)
-            row.append(f'{solv} solved', style=FG_MUTED)
-            if os.path.abspath(p) == active:
-                row.append('  ❯ đang dùng', style=ACCENT)
+        for row in _workspace_rows(workspaces, active):
             con.print(row)
 
         _option('C', 'Nhập đường dẫn thư mục tuỳ chỉnh')
@@ -395,9 +425,9 @@ class CTFInteractiveConsole:
 
         con = _menu_console()
         con.print()
-        head = Text('  ')
-        head.append(str(target.get('name')), style=f'bold {FG_BASE}')
-        head.append(f"  ID: {target.get('id')}  ", style=FG_MUTED)
+        # §S1.3: candidate khớp đầu tiên đánh dấu ❯ + reverse highlight.
+        head = selected_row(str(target.get('name')), selected=True)
+        head.append(f"  ID: {target.get('id')}  ", style=FG_FAINT)
         if target.get('solved_by_me'):
             head.append('✔ ĐÃ GIẢI', style='solved')
         else:
