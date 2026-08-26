@@ -4,6 +4,7 @@ Các hàm thuần (pure functions), không I/O, dễ test.
 """
 import re
 import threading
+import unicodedata
 from collections import Counter
 from typing import List, Optional
 
@@ -13,9 +14,11 @@ from typing import List, Optional
 # thread chính join(timeout) vẫn phải đợi match kết thúc. Phòng thủ thực tế:
 #   1. Giới hạn độ dài pattern.
 #   2. Từ chối pattern có QUANTIFIER LỒNG NHAU ((a+)+$, (.*)*, (x{1,5})+ ...)
-#      và ALTERNATION TRÙNG NHÁNH ((a|a)+$, ([ab]|[ab]) — cùng exponential)
+#      và ALTERNATION TRÙNG NHÁNH ((a|a)+$, ([ab]|[ab]), (?i)(x|X)+$,
+#      (\x61|a)+$ — nhánh tương đương sau khi decode escape/fold inline-flag)
 #      — hai lớp catastrophic backtracking kinh điển — bằng phân tích cú
-#      pháp nhẹ (scan escape/class/group đúng cách).
+#      pháp nhẹ (scan escape/class/group đúng cách, chuẩn hoá nhánh trước
+#      khi so sánh).
 #   3. Vẫn chạy match trong daemon thread với join timeout làm lớp phòng
 #      thủ thứ cấp (pattern chậm do lý do khác -> trả False sau timeout;
 #      daemon để process thoát được dù worker còn kẹt).
@@ -117,23 +120,179 @@ def _scan_nested_quantifier(pattern: str) -> bool:
     return False
 
 
-def _scan_dup_alternation(pattern: str) -> bool:
-    """True nếu pattern có nhóm alternation chứa HAI NHÁNH GIỐNG HỆT nhau
-    (vd ``(a|a)+``, ``([ab]|[ab])``, ``((x|y)|(x|y))``). Nhánh trùng nhân
-    đôi số đường backtracking theo cấp số mũ khi đứng dưới quantifier —
-    biến thể ReDoS mà _scan_nested_quantifier không thấy vì không có
-    quantifier nào lồng quantifier nào ((a|a)+$ vẫn exponential).
+# Mọi ký tự LITERAL sau chuẩn hoá được encode thành "\x00<hex>;" — marker
+# này không bao giờ xuất hiện nguyên trạng ngoài encoder (mọi ký tự thường
+# đều đi qua encoder), nhờ đó literal '|' từ ``\|`` không bị nhầm với
+# metachar '|' cấu trúc, literal '(' từ ``\(`` không nhầm với dấu mở nhóm.
+_LITERAL_MARK = "\x00"
+_FLAG_CHARS = set("aiLmsux-")
 
-    Heuristic thuần văn bản (KHÔNG phải regex-analyzer hoàn chỉnh): quét
-    một lượt O(n), bỏ qua đúng escape \\x và character class [...], so sánh
-    NHÁNH NGUYÊN VĂN trong cùng một mức nhóm; mỗi nhóm đóng được ghi nhận
-    như một "nguyên tử" nguyên văn của khung cha để bắt cả dup lồng nhau."""
+
+def _norm_literal(ch: str, icase: bool) -> str:
+    """Encode một ký tự literal thành token so sánh an toàn; fold lowercase
+    khi IGNORECASE đang hiệu lực ('x' ≡ 'X' dưới (?i))."""
+    if icase:
+        ch = ch.lower()
+    return _LITERAL_MARK + format(ord(ch), "x") + ";"
+
+
+def _is_flag_segment(seg: str) -> bool:
+    """``seg`` có phải bộ inline flags hợp lệ (vd 'i', 'imsx', '-i',
+    'im-sx')? Dùng để phân biệt (?i)/(?i: với (?P<name>, (?P=name...)."""
+    return (bool(seg)
+            and all(c in _FLAG_CHARS for c in seg)
+            and any(c.isalpha() for c in seg))
+
+
+def _norm_escape_token(pattern: str, i: int, n: int, in_class: bool,
+                       icase: bool, captures: int):
+    """Chuẩn hoá escape bắt đầu tại ``pattern[i] == '\\'`` thành một token so
+    sánh. Trả về ``(token, next_i)``:
+
+    - Escape sinh KÝ TỰ LITERAL (\x61, \\u0061, \\U00000061, octal \\0dd,
+      \\n \\t ..., \\\\, \\. \\{ ...) -> token đã encode qua ``_norm_literal``
+      để ``\\x61`` ≡ ``a``, ``\\|`` ≡ literal '|';
+    - Escape SYMBOLIC (\\d \\w \\s \\A \\Z..., \\b ngoài class, backreference
+      \\1 \\g<name>, escape lạ) -> giữ nguyên văn — không suy ra nội dung."""
+    if i + 1 >= n:
+        return "\\", n                      # backslash cụt — re sẽ báo lỗi
+    c = pattern[i + 1]
+    simple = {"a": "\a", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v"}
+    if c in simple:
+        return _norm_literal(simple[c], icase), i + 2
+    if c == "b":
+        if in_class:
+            return _norm_literal("\x08", icase), i + 2   # backspace trong class
+        return "\\b", i + 2                              # word boundary
+    if c in ("d", "w", "s", "D", "W", "S", "B", "A", "Z"):
+        return "\\" + c, i + 2
+    for kind, width in (("x", 2), ("u", 4), ("U", 8)):
+        if c == kind:
+            h = pattern[i + 2:i + 2 + width]
+            if (len(h) == width
+                    and all(d in "0123456789abcdefABCDEF" for d in h)):
+                try:
+                    ch = chr(int(h, 16))
+                except ValueError:
+                    return "\\" + kind, i + 2    # ngoài khoảng Unicode hợp lệ
+                return _norm_literal(ch, icase), i + 2 + width
+            return "\\" + kind, i + 2                # hỏng/không đủ chiều dài
+    if c == "N" and i + 2 < n and pattern[i + 2] == "{":
+        end = pattern.find("}", i + 3)
+        if end != -1:
+            try:
+                ch = unicodedata.lookup(pattern[i + 3:end])
+                return _norm_literal(ch, icase), end + 1
+            except KeyError:
+                return pattern[i:end + 1], end + 1       # tên không tồn tại
+        return "\\N", i + 2
+    if c.isdigit():
+        if c == "0":                                     # octal \0dd
+            k = i + 2
+            while k < n and k - (i + 2) < 2 and pattern[k] in "01234567":
+                k += 1
+            return _norm_literal(chr(int(pattern[i + 1:k], 8)), icase), k
+        # \1..\9, \12... : theo luật sre, là backreference NẾU nhóm tương
+        # ứng đã mở; nếu không thì là octal (vd \101 trong (?:...) = 'A').
+        k = i + 1
+        while k < n and pattern[k].isdigit():
+            k += 1
+        digits = pattern[i + 1:k]
+        ref_len = 0
+        for ln in range(len(digits), 0, -1):
+            if int(digits[:ln]) <= captures:
+                ref_len = ln
+                break
+        if ref_len:
+            return pattern[i:i + 1 + ref_len], i + 1 + ref_len
+        if (len(digits) <= 3 and all(d in "01234567" for d in digits)
+                and int(digits, 8) <= 0o377):
+            return _norm_literal(chr(int(digits, 8)), icase), k
+        return pattern[i:k], k          # re sẽ báo invalid group reference
+    if c == "g":                                         # \g<name> / \g'name'
+        o = pattern[i + 2] if i + 2 < n else ""
+        if o in ("'", "<"):
+            close = ">" if o == "<" else "'"
+            end = pattern.find(close, i + 3)
+            if end != -1:
+                return pattern[i:end + 1], end + 1
+        return "\\g", i + 2
+    if not c.isalnum():                                  # \. \( \{ ... -> literal
+        return _norm_literal(c, icase), i + 2
+    return "\\" + c, i + 2                               # escape lạ — re sẽ từ chối
+
+
+def _norm_class_token(cls: str, icase: bool, captures: int) -> str:
+    """Chuẩn hoá một character class nguyên khối ``[...]``: decode escape về
+    literal, fold case theo IGNORECASE; giữ nguyên cấu trúc ``^``, '-' và
+    '[' (posix class) để hai class khác ngữ nghĩa không bao giờ hoá vào
+    nhau. Hai class giống nhau sau chuẩn hoá thì mới coi là trùng."""
+    out = ["["]
+    body = cls[1:-1]
+    m = len(body)
+    k = 0
+    if body.startswith("^"):
+        out.append("^")
+        k = 1
+    if k < m and body[k] == "]":
+        out.append(_norm_literal("]", icase))   # []] — ']' literal mở màn
+        k += 1
+    while k < m:
+        ch = body[k]
+        if ch == "\\":
+            tok, adv = _norm_escape_token(body, k, m, True, icase, captures)
+            out.append(tok)
+            k = adv
+            continue
+        if ch in "-[":
+            out.append(ch)
+        else:
+            out.append(_norm_literal(ch, icase))
+        k += 1
+    out.append("]")
+    return "".join(out)
+
+
+def _scan_dup_alternation(pattern: str) -> bool:
+    """True nếu pattern có nhóm alternation chứa HAI NHÁNH TƯƠNG ĐƯƠNG nhau
+    (vd ``(a|a)+``, ``([ab]|[ab])``, ``(?i)(x|X)+$``, ``(\\x61|a)+$``). Nhánh
+    trùng nhân đôi số đường backtracking theo cấp số mũ khi đứng dưới
+    quantifier — biến thể ReDoS mà _scan_nested_quantifier không thấy vì
+    không có quantifier nào lồng quantifier nào ((a|a)+$ vẫn exponential).
+
+    Heuristic quét một lượt O(n), KHÔNG phải regex-analyzer hoàn chỉnh.
+    Trước khi so sánh, token được CHUẨN HOÁ về dạng tương đương để chống
+    bypass qua chính tả:
+      - decode escape sinh literal (\\x61, \\u0061, octal, \\n, \\\\ ...) về
+        ký tự thường -> ``\\x61`` ≡ ``a``;
+      - theo dõi inline flags: (?i) toàn cục và (?i:...) phạm vi nhóm bật
+        case-fold cho phần phía sau -> ``(?i)(x|X)`` bị thấy là trùng
+        (flag không đổi nội dung nhánh nhưng đổi NGÔN NGỮ so sánh);
+      - thân nhóm con đóng được đưa vào khung cha ở dạng ĐÃ chuẩn hoá,
+        nên dup lồng kiểu ``((\\x61)|a)+`` vẫn bị bắt;
+      - literal bọc marker ``\\x00<hex>;`` để không đụng độ metachar cấu
+        trúc giữ nguyên văn (``\\|`` là literal '|' và phải khác '|').
+
+    Giới hạn còn lại (chấp nhận miss có chủ ý): backreference \\1/\\g<name>
+    giữ nguyên văn; các cặp tương đương hình thức khác (\\d vs [0-9],
+    [a-b] vs [ab], hai class khác chính tả dưới (?i)) và ngữ nghĩa phức
+    tạp hơn (recursive, khoảng cách lặp đếm lớn) KHÔNG được mô hình hoá."""
     n = len(pattern)
     i = 0
     in_class = False
     class_start = -1
-    # Mỗi khung nhóm: buffer nhánh đang gom + tập nhánh đã thấy ở mức đó.
-    stack: List[dict] = [{"buf": [], "seen": set(), "start": 0}]
+    icase = False   # IGNORECASE hiệu lực tại vị trí đang quét
+    captures = 0    # số nhóm capturing đã mở — quyết định \NN = backref/octal
+    # Mỗi khung nhóm: buffer nhánh đang gom + tập nhánh đã thấy ở mức đó +
+    # toàn thân nhóm đã chuẩn hoá ("full", làm nguyên tử cho khung cha) +
+    # snapshot icase lúc mở nhóm (để kết thúc phạm vi (?i:...).
+    stack: List[dict] = [
+        {"buf": [], "full": [], "seen": set(), "start": 0, "icase": False}
+    ]
+
+    def _push(frame: dict, token: str) -> None:
+        frame["buf"].append(token)
+        frame["full"].append(token)
 
     def _close_branch(frame: dict) -> bool:
         branch = "".join(frame["buf"])
@@ -152,14 +311,15 @@ def _scan_dup_alternation(pattern: str) -> bool:
                 i += 2
                 continue
             if c == "]":
-                # Cả class giữ nguyên văn như một nguyên tử của nhánh.
-                stack[-1]["buf"].append(pattern[class_start:i + 1])
+                tok = _norm_class_token(pattern[class_start:i + 1], icase,
+                                        captures)
+                _push(stack[-1], tok)
                 in_class = False
             i += 1
             continue
         if c == "\\":
-            stack[-1]["buf"].append(pattern[i:i + 2])
-            i += 2
+            tok, i = _norm_escape_token(pattern, i, n, False, icase, captures)
+            _push(stack[-1], tok)
             continue
         if c == "[":
             in_class = True
@@ -172,8 +332,42 @@ def _scan_dup_alternation(pattern: str) -> bool:
                 end = pattern.find(")", i + 3)
                 i = (end + 1) if end != -1 else n
                 continue
-            stack.append({"buf": [], "seen": set(), "start": i})
-            # Nhảy qua intro nhóm (?:, (?=, (?P<name>, (?i:, ...) — nếu không,
+            # Inline flags: (?flags) toàn cục hoặc (?flags:body) phạm vi nhóm.
+            flag_end = -1
+            scoped = False
+            if i + 1 < n and pattern[i + 1] == "?":
+                j = i + 2
+                while j < n and (pattern[j].isalpha() or pattern[j] == "-"):
+                    j += 1
+                seg = pattern[i + 2:j]
+                if j < n and pattern[j] in ":)" and _is_flag_segment(seg):
+                    negated = False
+                    for fch in seg:
+                        if fch == "-":
+                            negated = True
+                        elif fch == "i":
+                            icase = not negated
+                    scoped = pattern[j] == ":"
+                    flag_end = j + 1
+            if flag_end != -1:
+                if scoped:
+                    # (?flags:body) — snapshot icase sau khi áp flags; khôi
+                    # phục khi nhóm đóng.
+                    stack.append({"buf": [], "full": [], "seen": set(),
+                                  "start": i, "icase": icase})
+                i = flag_end          # (?flags) toàn cục: không mở nhóm mới
+                continue
+            # Đánh số nhóm capturing: (...) và (?P<name> / (?<name> có số;
+            # (?:, (?=, (?!, (?<=, (?<!, (?flags: không.
+            if i + 1 >= n or pattern[i + 1] != "?":
+                captures += 1                       # nhóm thường (...)
+            elif i + 3 < n and pattern[i + 2] == "P" and pattern[i + 3] == "<":
+                captures += 1                       # (?P<name>
+            elif i + 3 < n and pattern[i + 2] == "<" and pattern[i + 3] not in ("=", "!"):
+                captures += 1                       # (?<name>
+            stack.append({"buf": [], "full": [], "seen": set(),
+                          "start": i, "icase": icase})
+            # Nhảy qua intro nhóm (?:, (?=, (?P<name>, ...) — nếu không,
             # nhánh đầu sẽ bị dính chữ khai báo và so nguyên văn sai lệch.
             i = _group_body_start(pattern, i)
             continue
@@ -182,19 +376,23 @@ def _scan_dup_alternation(pattern: str) -> bool:
                 frame = stack.pop()
                 if _close_branch(frame):
                     return True
-                # Nhóm đóng -> ghi THÂN nhóm (đã bỏ intro và cặp ngoặc)
-                # vào khung cha để so nguyên văn đúng ngữ nghĩa:
-                # ``(?:ab)`` ≡ ``(ab)`` ≡ ``ab`` khi đứng trong nhánh.
-                body_start = _group_body_start(pattern, frame["start"])
-                stack[-1]["buf"].append(pattern[body_start:i])
+                icase = frame["icase"]     # hết phạm vi (?flags:...)
+                # Nhóm đóng -> ghi THÂN nhóm ĐÃ CHUẨN HOÁ vào khung cha để
+                # so đúng ngữ nghĩa: ``(?:ab)`` ≡ ``(ab)`` ≡ ``ab`` trong
+                # nhánh, và ``((\\x61)|a)`` ≡ trùng sau decode.
+                atom = "".join(frame["full"])
+                parent = stack[-1]
+                parent["buf"].append(atom)
+                parent["full"].append(atom)
             i += 1
             continue
         if c == "|":
             if _close_branch(stack[-1]):
                 return True
+            stack[-1]["full"].append("|")
             i += 1
             continue
-        stack[-1]["buf"].append(c)
+        _push(stack[-1], _norm_literal(c, icase))
         i += 1
     return False
 

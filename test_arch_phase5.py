@@ -1025,6 +1025,58 @@ class TestDupAlternationReDoSGuard(unittest.TestCase):
             regex_search_with_timeout("^PTITCTF\\{.+\\}$", "PTITCTF{x}"))
         self.assertTrue(validate_flag("PTITCTF{abc}", "^PTITCTF\\{.+\\}$"))
 
+    # ------------------------------------------------------------------
+    # MED-fix (review 9b04099): bypass lớp guard qua inline-flag / escape
+    # — (?i)(x|X)+$ và (\x61|a)+$ trượt cả _scan_nested_quantifier lẫn
+    # _scan_dup_alternation vì so nhánh NGUYÊN VĂN.
+    # ------------------------------------------------------------------
+
+    def test_scanner_catches_inline_flag_and_escape_dup_variants(self):
+        from ctf_downloader.utils.flag_format import _scan_dup_alternation as dup
+
+        self.assertTrue(dup("(?i)(x|X)+$"))        # (?i) gộp x ≡ X
+        self.assertTrue(dup("(?i:(?:x|X))+"))      # scoped (?i:...)
+        self.assertTrue(dup(r"(\x61|a)+$"))        # \x61 ≡ a sau decode
+        self.assertTrue(dup(r"(A|\x41)+"))    # A ≡ \x41
+        self.assertTrue(dup("(?i)((x)|(X))+"))     # thân nhóm lồng đã fold
+        self.assertTrue(dup("(?:\\101|A)+"))       # octal \101 ≡ 'A'
+
+    def test_scanner_not_overblocking_flagged_valid_patterns(self):
+        from ctf_downloader.utils.flag_format import _scan_dup_alternation as dup
+
+        self.assertFalse(dup("(?i)(foo|bar)+$"))   # có (?i), nhánh khác nhau
+        self.assertFalse(dup(r"(?-i:(a|A))+$"))    # tắt ignorecase → a ≠ A thật
+        self.assertFalse(dup(r"(\x61|b)+$"))       # escape nhưng không trùng
+        self.assertFalse(dup("(?i)[ab]+"))         # không có alternation
+        self.assertFalse(dup(r"a\|b|(?:c|d)"))     # '|' literal ≠ '|' cấu trúc
+
+    def test_redos_bypass_variants_blocked_statically_10k(self):
+        from ctf_downloader.utils.flag_format import regex_search_with_timeout
+        import time
+
+        cases = [
+            (r"(\x61|a)+$", "a" * 10000 + "B"),
+            ("(?i)(x|X)+$", "x" * 20000 + "B"),       # ~4.4s nếu lọt qua guard
+            ("(?i)(?:ab|AB)+$", "ab" * 5000 + "Z"),   # exponential thật
+        ]
+        for pat, payload in cases:
+            t0 = time.monotonic()
+            m = regex_search_with_timeout(pat, payload)
+            elapsed = time.monotonic() - t0
+            self.assertIsNone(m, pat)
+            self.assertLess(elapsed, 2.0, pat)
+
+    def test_flagged_legit_pattern_still_matches(self):
+        from ctf_downloader.utils.flag_format import (
+            regex_search_with_timeout,
+            validate_flag,
+        )
+
+        self.assertIsNotNone(
+            regex_search_with_timeout("(?i)(ptit)+ctf", "xxPTITptitctf"))
+        self.assertTrue(
+            validate_flag("PTITCTF{abc}", "(?i)^PTITCTF\\{.+\\}$"))
+
 
 # ----------------------------------------------------------------------
 # Wave #3 fixes (weakness-report-cycle2): W4.1a OverflowError _safe_int,
