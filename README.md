@@ -61,29 +61,33 @@ Credentials được lưu trong **auth map** tại `~/.config/ctf_toolkit/config
 | `register` | Tạo tài khoản + lưu auth map | `ctf register -u https://ctf.example.com --tempmail` |
 | `menu` | Interactive console đầy đủ | `ctf menu` |
 
-### Giao diện PHOSPHOR
+### Giao diện Amber Refit
 
-Output TUI dùng theme **phosphor** (progress bar `█░`, icon trạng thái: ✔ solved · ⛁ có attachment · ⎘ có note · ✎ draft flag):
+Output TUI dùng theme **Amber Refit** (lineage Phosphor Field Kit) — accent `#FFB000`, meter `▰▱`, glyph trạng thái: ✔ solved · ◆ working · ⛁ container · ✎ draft writeup · ⎘ có file:
 
 ```text
-▐██ CTF·TOOLKIT  │  status · PTIT_CTF_2026                           22:05 UTC+7
-╭────────────────  Vòng loại PTIT CTF 2026  ─────────────────╮
-│                                                            │
-│  TIẾN ĐỘ                           ĐIỂM                    │
-│  ░░░░░░░░░░░░░░░░░░░░░░            500 / 8135              │
-│  1/35 solved · 2.9%                hoarded 0 · drafts 1    │
-│                                                            │
-╰──────────────────── gzctf · B23DCCE070 ────────────────────╯
+░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒
+···································· CTF·TOOLKIT v3◢····································
+▍status  ·  PTIT_CTF_2026
+▸                                                                            22:05 UTC+7
 
-── CRYPTO                                              0/7 ░░░░░░░░░░ 0/1880
+╭─────────────  TIẾN ĐỘ  ─────────────╮╭───────────────────  GIẢI  ────────────────────╮
+│ ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 1/35         ││ +0 flags 24h ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀                     │
+│ 1/35 solved · 2.9%                  │╰───────────────────────────────────────────────╯
+│ 500/8135 pts · hoarded 0 · drafts 1 │
+╰── Vòng loại PTIT CTF 2026 · gzctf ──╯
+
+┌┐ CRYPTO ───────────────────────────────────────────────────  0/7 ▱▱▱▱▱▱▱▱▱▱ 0/1880
   ·  12  SSSH                      180 pts    9 giải   ⛁ ⎘
   ·   5  Signaling                 108 pts   20 giải   ⎘
 
-── REVERSE                                           1/7 █░░░░░░░░░ 500/1587
+┌┐ REVERSE ────────────────────────────────────────────────  1/7 ▰▱▱▱▱▱▱▱▱▱ 500/1587
   ✔  18  Tiger Bạc                 500 pts    0 giải   ✎
 
-↑↓ di chuyển · ? help · q thoát
+[số] chọn · ❯ mục mặc định · ? help · q thoát
 ```
+
+AppHeader "Phosphor Radar" 4 dòng: scanline `░░▒▒▓▓` full-width · title `CTF·TOOLKIT v3◢` căn giữa · `▍` lệnh + context · `▸` timestamp mép phải. Hai panel overview TIẾN ĐỘ + GIẢI xếp ngang khi terminal ≥ 96 cột, xếp dọc khi hẹp hơn; nhịp giải 24h (sparkline braille) nằm trong panel GIẢI. Meter gradient amber chỉ bật trên TTY ≥ 60 cột — non-TTY/terminal hẹp fallback plain `▰▱` không màu. Chọn bằng phím số `[n]`; mục mặc định/đang dùng đánh dấu `❯`.
 
 Chạy `ctf <lệnh> --help` để xem đầy đủ tuỳ chọn của từng lệnh.
 

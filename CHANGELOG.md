@@ -4,6 +4,12 @@ Toàn bộ thay đổi đáng chú ý của dự án được ghi lại tại đ
 
 Format dựa trên [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **ui** (UI v2): meter gradient per-cell → ramp `▰▱` 3 mốc amber (non-TTY/terminal hẹp fallback plain không màu); AppHeader slab → **Phosphor Radar** 4 dòng (scanline `░░▒▒▓▓` full-width · title `CTF·TOOLKIT v3◢` căn giữa · `▍` lệnh + context · `▸` timestamp mép phải); palette amber-only → **Amber Refit** (retune fg.base/muted/faint/solved, giữ accent #FFB000); selection ❯ reverse #14100A-on-#FFB000 + phím số `[n]`, item giải xong strike; lỗi render theo error-tree `├─`/`└─ ACTION REQUIRED`; status overview tách 2 panel TIẾN ĐỘ + GIẢI responsive (≥96 cột xếp ngang, hẹp xếp dọc, sparkline braille nhịp giải trong panel GIẢI)
+
 ## [3.0.0] - 2026-08-24
 
 Rebuild kiến trúc trên nhánh `rebuild/architecture` — Layered Monolith + Registry.
