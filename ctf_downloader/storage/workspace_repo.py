@@ -134,7 +134,9 @@ class WorkspaceRepo:
             return {}
         try:
             data = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:
+            # json.JSONDecodeError là subclass của ValueError nên một nhánh
+            # là đủ (deferred triage: bỏ exception dư thừa trong tuple).
             data = None
         if not isinstance(data, dict):
             # JSON hỏng HOẶC hợp lệ nhưng sai kiểu (list/string/...) ->
