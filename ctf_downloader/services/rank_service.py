@@ -40,6 +40,26 @@ _COOKIE_HINTS = (
 _NO_SCOREBOARD_HINT = "platform này chưa có scoreboard công khai"
 
 
+def _score_int(value) -> int:
+    """[hunt-c18 LOW] Ép điểm do server trả về về int một cách an toàn.
+
+    Scoreboard JSON có thể mang score dạng chuỗi ("300", "12.9") — đưa
+    NGUYÊN vào max()/phép trừ thì so lexicographic ("9" > "1000") hoặc
+    TypeError ngay chỗ tính gap. Chuỗi số nguyên parse trực tiếp; số thập
+    phân cắt cụt về int; mọi thứ không parse được (None/"abc"/inf) fallback
+    0 thay vì làm nổ cả panel."""
+    if value is None:
+        return 0
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 class RankService:
     def __init__(
         self,
@@ -180,11 +200,13 @@ class RankService:
             # top_score lấy MAX thay vì standings[0], cộng clamp tại nguồn
             # để gap luôn >= 0 (không bao giờ in '--N pts'); footer phía
             # dưới đã clamp theo cùng cách.
-            top_score = max((s.get("score") or 0) for s in standings)
+            # Hunt-c18 LOW: score ép int an toàn trước khi max/trừ.
+            top_score = max((_score_int(s.get("score")) for s in standings),
+                            default=0)
             for idx, s in enumerate(standings[:top_n], 1):
                 pos = s.get("pos") or idx
                 name = strip_ansi(s.get("name") or "") or "Unknown"
-                score = s.get("score") or 0
+                score = _score_int(s.get("score"))
 
                 gap_pts = max(0, top_score - score)
                 gap_str = "-" if gap_pts == 0 else f"-{gap_pts} pts"
@@ -207,11 +229,14 @@ class RankService:
 
             footer_parts = []
             if my_rank:
-                rank_str = (f"rank {my_rank}/{total_teams}" if total_teams
-                            else f"rank {my_rank}")
+                # Hunt-c18 (cùng họ C14-1): rank/total cũng do server kiểm
+                # soát — strip control trước khi vào Text footer.
+                rank_str = (f"rank {strip_ansi(my_rank)}/"
+                            f"{strip_ansi(total_teams)}" if total_teams
+                            else f"rank {strip_ansi(my_rank)}")
                 footer_parts.append(rank_str)
             if my_score is not None:
-                gap_pts = max(0, top_score - my_score)
+                gap_pts = max(0, top_score - _score_int(my_score))
                 footer_parts.append(f"gap {gap_pts} pts")
             body = (Group(table, Text(" · ".join(footer_parts),
                                       style="fg.muted"))
@@ -234,10 +259,17 @@ class RankService:
         title = md_cell(data.get("title")) or "CTF Competition"
         my_team = data.get("my_team") or "-"
         my_user = data.get("my_user") or "-"
-        my_rank = data.get("my_rank") or "-"
-        my_score = data.get("my_score") if data.get("my_score") is not None else "-"
         total_teams = data.get("total_teams") or len(data.get("standings", []))
         standings = data.get("standings", [])
+        # Hunt-c18 BUG-1 (MED): my_rank/my_score/pos/score CŨNG là dữ liệu
+        # server-control — trước đây nhúng NGUYÊN vào dòng bullet và ô bảng
+        # (newline tách dòng, pipe vỡ bảng). Giữ biến raw để is_me/badge so
+        # sánh đúng; mọi giá trị in ra đi qua md_cell NGAY TẠI SINK.
+        raw_rank = data.get("my_rank")
+        raw_score = data.get("my_score")
+        rank_cell = md_cell(raw_rank) or "-"
+        points_cell = md_cell(raw_score) if raw_score is not None else "-"
+        teams_cell = md_cell(total_teams)
 
         # 1. Write RANKING.md — qua WorkspaceRepo (atomic + flock), KHÔNG
         #    open() thô (spec-audit: mọi writer state đi qua storage layer).
@@ -246,22 +278,27 @@ class RankService:
             f"- **Last Updated**: `{now_str}`",
             f"- **Team**: `{md_cell(my_team)}`",
             f"- **User**: `{md_cell(my_user)}`",
-            f"- **Current Rank**: `#{my_rank}` / `{total_teams} teams`",
-            f"- **Total Points**: `{my_score} pts`\n",
+            f"- **Current Rank**: `#{rank_cell}` / `{teams_cell} teams`",
+            f"- **Total Points**: `{points_cell} pts`\n",
             "## 📊 Top Standings\n",
             "| Rank | Team / Player | Points |",
             "| :---: | :--- | :---: |"
         ]
 
         for idx, s in enumerate(standings[:30], 1):
-            pos = s.get("pos") or idx
-            name = s.get("name") or "Unknown"
-            score = s.get("score") or 0
-            is_me = (my_team and name == my_team) or (my_user and name == my_user)
+            pos_cell = md_cell(s.get("pos") or idx)
+            name_raw = s.get("name") or "Unknown"
+            row_score = s.get("score")
+            score_cell = md_cell(0 if row_score is None else row_score)
+            is_me = ((my_team and name_raw == my_team)
+                     or (my_user and name_raw == my_user))
             if is_me:
-                lines.append(f"| **#{pos}** | **{md_cell(name)} (You)** 🎯 | **{score}** |")
+                lines.append(f"| **#{pos_cell}** | "
+                             f"**{md_cell(name_raw)} (You)** 🎯 | "
+                             f"**{score_cell}** |")
             else:
-                lines.append(f"| #{pos} | {md_cell(name)} | {score} |")
+                lines.append(f"| #{pos_cell} | {md_cell(name_raw)} | "
+                             f"{score_cell} |")
 
         lines.append("")
         self.repo.write_ranking_md("\n".join(lines))
@@ -276,7 +313,7 @@ class RankService:
         # ngoặc vuông từ tên team không được lọt qua đường badge. Với dữ
         # liệu hợp lệ (số nguyên/tên sạch) md_cell là no-op.
         rank_badge = (
-            f"{LIVE_RANK_PREFIX} `#{md_cell(my_rank)}` / `{md_cell(total_teams)}`"
+            f"{LIVE_RANK_PREFIX} `#{md_cell(raw_rank)}` / `{md_cell(total_teams)}`"
             f" (Team: `{md_cell(my_team)}`)"
         )
         self.repo.patch_summary_live_rank(rank_badge)

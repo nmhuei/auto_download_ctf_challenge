@@ -17,7 +17,9 @@ from typing import Any, Callable, Dict, Optional
 from rich.markup import escape
 
 from ..platforms.base import PlatformRegisterUnsupported
-from ..storage.global_config import load_global_config, save_global_config
+from ..storage.global_config import (load_global_config, save_global_config,
+                                     update_global_config)
+from ..storage.fileio import SKIP_WRITE
 from ..ui.theme import ERROR, FG_BASE, FG_FAINT, FG_MUTED, INFO, SOLVED, WARN
 from ..utils.logger import Logger, console
 from ..utils.tempmail import TempMailClient, TempMailError
@@ -63,13 +65,19 @@ class RegisterService:
                  now_fn: Callable[[], float] = time.time,
                  sleep_fn: Callable[[float], None] = time.sleep,
                  config_loader: Callable[[], Dict] = load_global_config,
-                 config_saver: Callable[[Dict], Any] = save_global_config,
+                 config_saver: Optional[Callable[[Dict], Any]] = None,
                  tempmail_factory: Callable[[], TempMailClient] = TempMailClient,
-                 detect_fn: Optional[Callable] = None):
+                 detect_fn: Optional[Callable] = None,
+                 config_updater: Optional[Callable[[Callable], Any]] = None):
         self._now = now_fn
         self._sleep = sleep_fn
         self._load_cfg = config_loader
-        self._save_cfg = config_saver
+        # Legacy seam (trước đây dùng cho mọi lần ghi); từ hunt-c18 mọi GHI
+        # đi qua ``config_updater`` (đọc-mutate-ghi trong khóa flock). Vẫn
+        # nhận tham số để giữ tương thích caller cũ; mặc định nạp hàm thật.
+        self._save_cfg = config_saver or save_global_config
+        self._update_cfg = config_updater if config_updater is not None \
+            else (lambda mutator: update_global_config(mutator))
         self._tempmail_factory = tempmail_factory
         if detect_fn is None:
             # import muộn để tránh vòng phụ thuộc khi chỉ dùng unit-test thuần
@@ -94,6 +102,46 @@ class RegisterService:
         entry = state.setdefault(url_key, {})
         entry["last_attempt_ts"] = self._now()
         return cfg
+
+    def _commit_attempt(self, url_key: str,
+                        auth_key: Optional[str] = None,
+                        auth_entry: Optional[Dict[str, Any]] = None) -> bool:
+        """[hunt-c18 BUG-2, MED] Ghi nhận attempt (+ auth entry tùy chọn)
+        NGUYÊN TỬ chống TOCTOU: đọc-mutate-ghi TRONG CÙNG khóa flock của
+        global config, và re-check rate limit trên state MỚI NHẤT TRÊN ĐĨA
+        — không phải cfg đã load từ đầu lần chạy (network + xác minh email
+        có thể kéo dài hàng phút, hai CLI song song cùng URL đều pass check
+        ban đầu).
+
+        Trả True nếu đã ghi; False khi một tiến trình khác vừa ghi attempt
+        cùng URL trong lúc mình chạy (thua cuộc): KHÔNG ghi gì để không đè
+        timestamp của tiến trình thắng cuộc hay lost-update phần còn lại
+        của config."""
+        preempted = {"wait": 0.0}
+
+        def _mut(fresh: Dict[str, Any]):
+            wait = self._check_rate_limit(fresh, url_key)
+            if wait > 0:
+                preempted["wait"] = wait
+                return SKIP_WRITE
+            self._record_attempt(fresh, url_key)
+            if auth_entry is not None and auth_key:
+                fresh.setdefault("auth", {})[auth_key] = auth_entry
+            return fresh
+
+        self._update_cfg(_mut)
+        return preempted["wait"] <= 0.0
+
+    def _set_auth_entry(self, key: str, entry: Dict[str, Any]) -> None:
+        """Merge auth entry vào global config NGUYÊN TỬ qua khóa flock
+        (trước đây load-stale-save — cửa sổ RMW gây lost update với process
+        khác). Không re-check rate limit: attempt của chính mình đã được
+        commit ngay sau register rồi."""
+        def _mut(fresh: Dict[str, Any]) -> Dict[str, Any]:
+            fresh.setdefault("auth", {})[key] = entry
+            return fresh
+
+        self._update_cfg(_mut)
 
     @staticmethod
     def _print_warnings(url: str) -> None:
@@ -203,12 +251,19 @@ class RegisterService:
                 return False
             try:
                 resp = session.get(link, timeout=20)
-                ok = getattr(resp, "status_code", 0) == 200 or \
-                    "confirm" in str(getattr(resp, "url", "")).lower() or \
-                    True  # nhiều CTFd redirect về profile sau confirm
-                Logger.success(f"Đã mở link xác nhận ({link}) "
-                               f"-> HTTP {getattr(resp, 'status_code', '?')}.")
-                return bool(ok)
+                # Hunt-c18 BUG-6 (LOW): biểu thức cũ kết thúc ``or True`` —
+                # mọi HTTP status đều được tính là verified (check chết).
+                # requests tự follow redirect nên chuỗi confirm chuẩn luôn
+                # kết thúc 200; 404/500 phải trả False để user biết phải
+                # xác minh thủ công.
+                status = getattr(resp, "status_code", 0)
+                if status == 200:
+                    Logger.success(f"Đã mở link xác nhận ({link}) "
+                                   f"-> HTTP {status}.")
+                    return True
+                Logger.error(f"Link xác nhận trả HTTP {status or '?'} — "
+                             "chưa xác minh được email, kiểm tra thủ công.")
+                return False
             except Exception as exc:
                 Logger.error(f"Mở link xác nhận thất bại: {exc}")
                 return False
@@ -262,6 +317,15 @@ class RegisterService:
                 username=creds["username"], email=reg_email,
                 password=creds["password"], verify_email_hook=hook)
         except PlatformRegisterUnsupported as exc:
+            # Hunt-c18 BUG-7 (LOW): nhánh captcha CŨNG là MỘT lần attempt —
+            # trước đây re-raise KHÔNG ghi nhận nên chạy lại liền nhau bypass
+            # rate limit. Ghi NGAY (atomic anti-TOCTOU) trước khi re-raise;
+            # thua cuộc race thì giữ nguyên attempt của tiến trình thắng.
+            if not self._commit_attempt(url):
+                Logger.warning(
+                    "Một tiến trình khác vừa ghi nhận register cùng URL khi "
+                    "lần chạy này đang diễn ra — giữ nguyên attempt của "
+                    "tiến trình đó.")
             # Diagnostic-style (spec §4.6): ✗ kết quả → ╰─▶ hướng dẫn thủ công.
             console.print(
                 f"[bold {ERROR}]✗[/bold {ERROR}] "
@@ -279,13 +343,24 @@ class RegisterService:
             # nên credentials KHÔNG được mất, và attempt vẫn phải được ghi
             # nhận để rate-limit không bị bypass.
             Logger.error(f"Register lỗi giữa chừng: {str(exc)[:200]}")
+            if not self._commit_attempt(url):
+                Logger.warning(
+                    "Một tiến trình khác vừa ghi nhận register cùng URL khi "
+                    "lần chạy này đang diễn ra — giữ nguyên attempt của "
+                    "tiến trình đó.")
             self._print_credentials({**creds, "url": url, "email": reg_email},
                                     created=False)
-            self._save_cfg(self._record_attempt(cfg, url))
             raise
 
-        # Van-an-toàn: ghi nhận MỌI lần attempt để siết rate limit.
-        self._save_cfg(self._record_attempt(cfg, url))
+        # Van-an-toàn: ghi nhận MỌI lần attempt để siết rate limit — giờ là
+        # atomic: re-check trên state mới nhất TRONG khóa (hunt-c18 BUG-2);
+        # thua cuộc race nghĩa là một CLI song song vừa tạo tài khoản cùng
+        # URL → dừng sạch thay vì tạo trùng.
+        if not self._commit_attempt(url):
+            raise RuntimeError(
+                "Rate limit: một tiến trình khác vừa đăng ký cùng URL trong "
+                "khi lần chạy này đang diễn ra — dừng để tránh tạo trùng "
+                "tài khoản.")
 
         if not result.get("ok"):
             Logger.error(f"Register thất bại: {result.get('message')}")
@@ -310,10 +385,11 @@ class RegisterService:
         if token:
             auth_entry["token"] = token
 
-        fresh_cfg = self._load_cfg()
+        # Hunt-c18 BUG-2: auth map merge NGUYÊN TỬ qua updater (đọc-mutate-
+        # ghi trong khóa) thay vì load-stale-save; attempt đã commit ở bước
+        # trên nên không ghi đè timestamp lần nữa.
         key = self._auth_key(workspace, url)
-        fresh_cfg.setdefault("auth", {})[key] = auth_entry
-        self._save_cfg(self._record_attempt(fresh_cfg, url))
+        self._set_auth_entry(key, auth_entry)
 
         saved_as = ("workspace " + key) if workspace and \
             os.path.isdir(os.path.abspath(workspace)) else f"URL {key}"

@@ -133,7 +133,9 @@ class TestNoLegacyColorTagsInOwnedModules(unittest.TestCase):
         src = self._src("ctf_downloader/services/submit_service.py")
         # Regex format là literal; tên/path/flag là dữ liệu → neutral.
         self.assertIn("[literal]{escape(fmt)}[/literal]", src)
-        self.assertEqual(src.count("[info]"), 5)
+        # hunt-c18: +1 là dòng "challenge đã solved — bỏ qua candidate còn
+        # lại" trong auto_scan_and_submit (tên challenge = dữ liệu → [info]).
+        self.assertEqual(src.count("[info]"), 6)
 
 
 if __name__ == "__main__":

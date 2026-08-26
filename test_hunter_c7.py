@@ -155,57 +155,67 @@ def test_a4_auth_entry_keyed_bang_URL_khong_bao_gio_duoc_resolve(monkeypatch):
 # B. RegisterService — tempmail fail giữa chừng, captcha lạ, hook, password
 # ----------------------------------------------------------------------
 
-def _svc(saver_calls, tempmail_factory=None, detect_fn=None):
+def _svc(saver_calls, tempmail_factory=None, detect_fn=None, store=None):
+    """Dựng RegisterService test: từ hunt-c18 mọi GHI đi qua config_updater
+    (đọc-mutate-ghi trong khóa flock) — fake updater ghi vào ``store`` dict
+    với đúng ngữ nghĩa locked_update_json (SKIP_WRITE = bỏ qua)."""
+    import copy
+
+    from ctf_downloader.storage.fileio import SKIP_WRITE
+
+    store = {} if store is None else store
+
+    def fake_updater(mutator):
+        fresh = copy.deepcopy(store)
+        result = mutator(fresh)
+        if result is SKIP_WRITE:
+            return None
+        store.clear()
+        store.update(result)
+        return copy.deepcopy(result)
+
     return RegisterService(
         now_fn=lambda: 1000.0,
         sleep_fn=lambda s: None,
         config_loader=lambda: {},
         config_saver=lambda cfg: saver_calls.append(cfg),
+        config_updater=fake_updater,
         tempmail_factory=tempmail_factory or (lambda: types.SimpleNamespace(
             create_mailbox=lambda: (_ for _ in ()).throw(
                 TempMailError("mail.tm down")))),
         detect_fn=detect_fn,
-    )
+    ), store
 
 
 def test_b1_tempmail_fail_truoc_register_state_sach():
     """False-alarm check: mailbox fail -> RuntimeError, KHÔNG ghi gì xuống
     config (không attempt, không auth entry) — state để lại sạch."""
     saver = []
-    svc = _svc(saver)
+    svc, store = _svc(saver)
     with pytest.raises(RuntimeError):
         svc.run("https://ctf.example.com", use_tempmail=True)
     assert saver == []          # không persist gì cả
+    assert store == {}          # đường updater cũng phải để state sạch
 
 
 def test_b2_register_exception_thuong_mat_credentials_va_skip_rate_limit():
-    """R2 (BUG — test FAIL chủ ý).
-
-    run() chỉ bắt PlatformRegisterUnsupported (register_service.py:264).
-    Exception thường từ platform.register — vd TempMailError ném ra từ
-    verify-hook (fetch_message_text KHÔNG được wrap trong
-    _make_verify_hook, register_service.py:198) hoặc lỗi mạng chưa guard —
-    thoát ra ngoài khiến:
-      (a) credentials đã sinh CHƯA hề được in -> mất luôn dù account có thể
-          đã tạo server-side;
-      (b) van-an-toàn "ghi nhận MỌI lần attempt" bị bypass — rate limit
-          không record (comment register_service.py:277 nói ngược lại).
-    Fix đề xuất: try/except Exception quanh platform.register -> in creds +
-    _record_attempt trước khi raise lại.
-    """
-    saver = []
+    """R2 (đã fix, hunt-c18 chuyển sang đường commit atomic): exception
+    thường giữa flow vẫn phải ghi attempt (account có thể đã tồn tại
+    server-side) — giờ quan sát qua store của config_updater."""
 
     def boom(**kw):
         raise TempMailError("mail.tm chết giữa flow xác minh email")
 
     plat = types.SimpleNamespace(register=boom)
-    svc = _svc(saver, detect_fn=lambda url, sess: (plat, make_info()))
+    saver = []
+    svc, store = _svc(saver, detect_fn=lambda url, sess: (plat, make_info()))
     with pytest.raises(TempMailError):
         svc.run("https://ctf.example.com", email="a@b.c")
-    # MONG MUỐN: attempt vẫn được record (account đã tồn tại server-side).
-    assert len(saver) >= 1, (
-        "exception giữa flow: attempt KHÔNG được record -> rate-limit bypass "
-        "+ credentials mất (chưa in)")
+    # MONG MUỐN: attempt vẫn được record qua đường updater (atomic).
+    ts = store.get("register_state", {}).get("https://ctf.example.com", {}) \
+        .get("last_attempt_ts")
+    assert ts == 1000.0, (
+        "exception giữa flow: attempt KHÔNG được record -> rate-limit bypass")
 
 
 def test_b3_captcha_la_geetest_dung_sach_platform_register_unsupported():
@@ -263,7 +273,7 @@ def test_b6_password_gen_4_nhom_ky_tu_khong_ky_tu_loi_shell():
 def test_b7_verify_hook_tempmail_chet_giua_chung_raise_nguyen_trang():
     """Root-cause của R2: fetch_message_text raise TempMailError thì hook
     KHÔNG wrap -> ném xuyên qua platform.register ra run()."""
-    svc = _svc([])
+    svc, _store = _svc([])
     client = types.SimpleNamespace(
         wait_for_message=lambda timeout_s: {"id": "m1"},
         fetch_message_text=lambda mid: (_ for _ in ()).throw(
@@ -280,9 +290,10 @@ def test_b7_verify_hook_tempmail_chet_giua_chung_raise_nguyen_trang():
 
 
 def test_b8_hook_status_check_dead_code_or_true():
-    """Doc L: `_make_verify_hook` dòng `... or True` (register_service.py:208)
-    khiến mọi status đều 'ok' — check HTTP chết. Ghi nhận hiện trạng."""
-    svc = _svc([])
+    """Hunt-c18 BUG-6 (đã fix): biểu thức cũ kết thúc ``or True`` khiến mọi
+    status đều 'ok'. Giờ check HTTP status THẬT: 200 -> True; 404/500 ->
+    False (xác minh thủ công)."""
+    svc, _store = _svc([])
     client = types.SimpleNamespace(
         wait_for_message=lambda timeout_s: {"id": "m1"},
         fetch_message_text=lambda mid: "https://x/confirm/abc",
@@ -290,10 +301,15 @@ def test_b8_hook_status_check_dead_code_or_true():
     hook = svc._make_verify_hook(client)
 
     class Sess:
-        def get(self, url, timeout=None):
-            return FakeResp(500, url=url)
+        def __init__(self, code):
+            self.code = code
 
-    assert hook(Sess()) is True     # 500 vẫn báo thành công (dead check)
+        def get(self, url, timeout=None):
+            return FakeResp(self.code, url=url)
+
+    assert hook(Sess(200)) is True, "HTTP 200 phải tính verified"
+    assert hook(Sess(404)) is False, "HTTP 404 không được tính verified"
+    assert hook(Sess(500)) is False, "HTTP 500 không được tính verified"
 
 
 # ----------------------------------------------------------------------

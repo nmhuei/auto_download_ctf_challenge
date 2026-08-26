@@ -409,10 +409,26 @@ class TestRateLimit60s(unittest.TestCase):
         def detect(url, session):
             return holder["platform"], FakeInfo()
 
+        # hunt-c18: mọi GHI đi qua config_updater (đọc-mutate-ghi trong
+        # khóa flock). Fake mô phỏng đúng ngữ nghĩa locked_update_json:
+        # mutator nhận state FRESH, SKIP_WRITE -> bỏ qua ghi.
+        import copy
+        from ctf_downloader.storage.fileio import SKIP_WRITE
+
+        def fake_updater(mutator):
+            fresh = copy.deepcopy(store)
+            result = mutator(fresh)
+            if result is SKIP_WRITE:
+                return None
+            store.clear()
+            store.update(result)
+            return copy.deepcopy(result)
+
         svc = RegisterService(now_fn=lambda: now_box[0],
                               sleep_fn=lambda *_: None,
                               config_loader=lambda: dict(store),
                               config_saver=lambda cfg: store.clear() or store.update(cfg),
+                              config_updater=fake_updater,
                               tempmail_factory=lambda: None,
                               detect_fn=detect)
         return svc, holder["platform"]

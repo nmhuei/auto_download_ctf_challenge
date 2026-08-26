@@ -206,8 +206,11 @@ class TestRegisterTurnstileManualGuide(TempWorkspaceCase):
         saved = []
 
         con, buf = make_console()
+        # hunt-c18: nhánh captcha cũng ghi attempt qua config_updater —
+        # inject no-op updater để test không đụng global config THẬT.
         svc = RegisterService(config_loader=lambda: {},
                               config_saver=saved.append,
+                              config_updater=lambda mutator: None,
                               tempmail_factory=lambda: (_ for _ in ()).throw(
                                   AssertionError("tempmail không được dùng")),
                               detect_fn=lambda url, session: (platform, info))

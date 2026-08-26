@@ -19,6 +19,7 @@ from ..platforms.detector import PlatformDetector
 from ..platforms.base import BasePlatform  # noqa: F401  (giữ kiểu tham chiếu cũ)
 from ..platforms.registry import UnknownPlatformError, get_spec
 from ..storage.constants import SOLVE_RANK
+from ..storage.fileio import atomic_write_text, locked_path
 from ..storage.workspace_repo import WorkspaceRepo
 
 NO_FORMAT_MESSAGE = (
@@ -207,6 +208,11 @@ class SubmitService:
             return cid, name
 
         ident_str = str(identifier).lower().strip()
+        if not ident_str:
+            # Hunt-c18 BUG-8 (LOW): identifier rỗng/toàn khoảng trắng —
+            # ``"" in key`` khớp partial-match ĐẦU TIÊN bừa bãi (nộp flag
+            # vào challenge ngẫu nhiên). Trả None để caller báo lỗi rõ.
+            return None, str(identifier)
         if ident_str in self.challenges_cache:
             c = self.challenges_cache[ident_str]
             return c.get("id"), c.get("name", str(identifier))
@@ -568,6 +574,17 @@ class SubmitService:
             return "submitted_ok"
         return "failed"
 
+    def _challenge_is_solved_now(self, meta_path) -> bool:
+        """[hunt-c18 BUG-4] Re-load trạng thái solved MỚI NHẤT của challenge
+        từ đĩa (block status qua migrate-on-read của repo) — gate giữa các
+        candidate flag: submit() vừa đánh dấu solved thì các candidate còn
+        lại CÙNG challenge phải bị bỏ qua."""
+        try:
+            st = self.repo.read_status(meta_path)
+        except Exception:
+            return False
+        return SOLVE_RANK.get(st.get("solve"), 0) >= SOLVE_RANK["solved_by_me"]
+
     def auto_scan_and_submit(self, force: bool = False) -> List[Dict[str, Any]]:
         """
         Scans workspace directory for filled flags in README.md or flag.txt and submits them.
@@ -644,6 +661,18 @@ class SubmitService:
                     "message": msg,
                     "category": category,
                 })
+                # Hunt-c18 BUG-4 (MED): candidate ĐẦU TIÊN của challenge
+                # vừa đúng — re-load trạng thái solved rồi bỏ qua các
+                # candidate còn lại CÙNG challenge (nộp tiếp flag khác sai
+                # = penalty trên nhiều platform). Gate theo trạng thái đĩa
+                # chứ không theo chuỗi flag: chỉ dừng khi THẬT sự solved.
+                if category == "submitted_ok" \
+                        and self._challenge_is_solved_now(meta_path):
+                    Logger.info(
+                        f"[info]{escape(str(chall_name))}[/info] đã solved "
+                        f"— bỏ qua các candidate flag còn lại cùng "
+                        f"challenge.", markup=True)
+                    break
 
         Logger.print_table(
             title=f"Tổng kết auto-scan submit ({len(results)} ứng viên)",
@@ -688,16 +717,28 @@ class SubmitService:
                 existing = [r for r in r_candidates if r.exists()]
                 self.repo.write_solved_state(existing, solved=True)
                 for r_candidate in existing:
-                    with open(r_candidate, "r", encoding="utf-8") as f:
-                        r_text = f.read()
-                    if "FLAG{...}" in r_text:
-                        with open(r_candidate, "w", encoding="utf-8") as f:
-                            f.write(r_text.replace("FLAG{...}", flag))
+                    # Hunt-c18 BUG-3 (MED): đọc/ghi README qua storage/fileio
+                    # (khóa flock + atomic os.replace) thay vì open() thô —
+                    # crash giữa chừng từng truncate README, writer khác
+                    # từng lost-update. Lỗi KHÔNG còn bị nuốt lặng lẽ.
+                    try:
+                        with locked_path(r_candidate):
+                            r_text = r_candidate.read_text(encoding="utf-8")
+                            if "FLAG{...}" in r_text:
+                                atomic_write_text(
+                                    r_candidate,
+                                    r_text.replace("FLAG{...}", flag))
+                    except OSError as e:
+                        Logger.warning(
+                            f"Không thay được placeholder FLAG{{...}} trong "
+                            f"{r_candidate}: {e}")
 
                 Logger.success(f"Đã cập nhật tài liệu local cho [info]{escape(str(challenge_name))}[/info] -> Solved ✅", markup=True)
                 break
-            except Exception:
-                pass
+            except Exception as e:
+                Logger.warning(
+                    f"Không thể cập nhật tài liệu local cho "
+                    f"{escape(str(challenge_name))}: {e}")
 
     def submit_single_flag(
         self,
