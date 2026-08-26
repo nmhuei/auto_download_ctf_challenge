@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, Optional
 from rich.markup import escape
 
 from ..platforms.base import PlatformRegisterUnsupported
+from .auth_service import auth_key
 from ..storage.global_config import (load_global_config, save_global_config,
                                      update_global_config)
 from ..storage.fileio import SKIP_WRITE
@@ -231,12 +232,12 @@ class RegisterService:
     # ------------------------------------------------------------------ #
     @staticmethod
     def _auth_key(workspace: Optional[str], url: str) -> str:
-        """Key trong auth map: đường dẫn workspace tuyệt đối nếu có, ngược lại URL."""
-        if workspace:
-            abs_ws = os.path.abspath(workspace)
-            if os.path.isdir(abs_ws):
-                return abs_ws
-        return url
+        """Key trong auth map — delegate về helper CHUNG
+        ``auth_service.auth_key`` (open-code batch-3, DEFERRED_TRIAGE #10):
+        một nguồn định nghĩa quy ước key workspace-abs-or-URL để hết drift
+        với read-side. ``url`` luôn truthy trong flow run() (đã chặn sớm),
+        fallback chỉ phòng thủ."""
+        return auth_key(workspace, url) or url
 
     @staticmethod
     def _cookies_to_header(cookies: Dict[str, str]) -> str:

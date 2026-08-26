@@ -6,6 +6,29 @@ from urllib.parse import urlparse
 from ..storage.global_config import load_global_config
 
 
+def auth_key(workspace: Optional[str], url: Optional[str] = None) -> Optional[str]:
+    """Key CHUẨN của entry auth trong global config — quy ước duy nhất dùng
+    chung bởi register (ghi, qua ``RegisterService._auth_key``) và read-side
+    của module này. Open-code batch-3 (DEFERRED_TRIAGE #10): trước đây ghi
+    và đọc mỗi bên một impl rời rạc → drift quy ước key giữa các lần sửa.
+
+      - workspace là thư mục thật → đường dẫn tuyệt đối của nó;
+      - ngược lại (workspace ảo/không truyền) → URL platform, bỏ dấu ``/``
+        cuối để key ổn định giữa các kiểu ghi URL.
+
+    Trả None khi không đủ dữ liệu suy ra key. Read-side KHÔNG được chỉ dựa
+    vào helper này: phải qua :meth:`AuthService.lookup_auth_entry` để giữ
+    compat cả hai quy ước key cũ trong dữ liệu user (không migration).
+    """
+    if workspace:
+        abs_ws = os.path.abspath(str(workspace))
+        if os.path.isdir(abs_ws):
+            return abs_ws
+    if url:
+        return str(url).rstrip('/')
+    return None
+
+
 class AuthService:
     @staticmethod
     def resolve(
@@ -26,15 +49,32 @@ class AuthService:
                     return f.read().strip(), token_arg
             return cookie_arg, token_arg
 
-        abs_ws = os.path.abspath(workspace)
         cfg = load_global_config()
-        auth_map = cfg.get('auth', {})
-        saved = auth_map.get(abs_ws)
-        if saved is None:
-            saved = AuthService._url_keyed_entry(workspace, auth_map)
+        saved = AuthService.lookup_auth_entry(workspace, cfg.get('auth', {}))
         if saved is not None:
             return saved.get('cookie'), token_arg or saved.get('token')
         return None, token_arg
+
+    @classmethod
+    def lookup_auth_entry(cls, workspace: str,
+                          auth_map: dict) -> Optional[dict]:
+        """Read-side helper chung (open-code batch-3): tra entry auth cho
+        workspace theo CẢ HAI quy ước key hiện có — compat đầy đủ với dữ
+        liệu user cũ, không migration:
+
+          1. key workspace tuyệt đối — probe VÔ ĐIỀU KIỆN (không gate qua
+             ``auth_key``): entry từng được ghi khi workspace VẪN là dir
+             thật, dir có thể đã bị xoá sau đó (test_arch_phase3 đọc entry
+             key abs cho workspace chưa tồn tại);
+          2. URL-keyed qua :meth:`_url_keyed_entry` — exact + unique-host
+             (R3), cho entry do register lưu khi --workspace không phải dir.
+        """
+        if not isinstance(auth_map, dict) or not auth_map:
+            return None
+        saved = auth_map.get(os.path.abspath(str(workspace)))
+        if isinstance(saved, dict):
+            return saved
+        return cls._url_keyed_entry(workspace, auth_map)
 
     @staticmethod
     def _url_host(value) -> Optional[str]:

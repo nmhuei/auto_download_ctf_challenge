@@ -561,6 +561,33 @@ def _handle_hoard_remove(args):
                        f"[bold][info]{shown_name}[/info][/bold].", markup=True)
 
 
+def _hoard_identifier(svc, explicit_id, candidate):
+    """Ưu tiên tra theo TÊN trước khi coi target toàn số là challenge id.
+
+    Open-code batch-3 (DEFERRED_TRIAGE #6): logic cũ dùng ``isdigit()``
+    route MỌI target toàn số thẳng sang ID nên challenge tên "1337" không
+    bao giờ tra được theo tên. Quy ước mới:
+
+      - ``--id`` tường minh luôn thắng (người dùng đã chọn rõ);
+      - candidate toàn số mà cache có key TÊN khớp chính xác
+        (case-insensitive — cùng quy ước cache của SubmitService) → dùng id
+        THẬT của entry đó để resolve downstream không nhầm;
+      - còn lại giữ hành vi cũ (toàn số = id, chữ = tên/partial-match).
+        Cache rỗng (không có challenges.json / fetch live lỗi) cũng rơi
+        về đây — không đổi behavior offline.
+    """
+    if explicit_id:
+        return explicit_id
+    text = str(candidate)
+    if text.isdigit():
+        entry = (getattr(svc, 'challenges_cache', None) or {}).get(
+            text.lower().strip())
+        real_id = entry.get('id') if isinstance(entry, dict) else None
+        if real_id is not None and str(real_id) != text:
+            return real_id
+    return candidate
+
+
 def handle_hoard(args):
     """GAP-02 / spec §7: ``ctf hoard`` — kho flag local.
 
@@ -573,6 +600,10 @@ def handle_hoard(args):
 
     Quyết định đặt tên: tên ``flag`` theo spec đã bị ``submit`` dùng làm alias
     (tồn tại từ trước) — nên lệnh mới là ``hoard``, alias ``flag-stash``.
+
+    Route target (open-code batch-3): tên được ưu tiên trước — target toàn
+    số chỉ coi là ID khi không có challenge nào mang đúng tên đó; ``--id``
+    tường minh vẫn thắng mọi thứ (xem :func:`_hoard_identifier`).
     """
     if getattr(args, 'list', False):
         _render_hoard_list(args)
@@ -582,14 +613,11 @@ def handle_hoard(args):
         _handle_hoard_remove(args)
         return
 
-    chall_id = getattr(args, 'id', None) or (
-        args.target if args.target and str(args.target).isdigit() else None)
-    chall_name = getattr(args, 'name', None) or (
-        args.target if args.target and not str(args.target).isdigit() else None)
-    identifier = chall_id if chall_id is not None else chall_name
+    chall_id = getattr(args, 'id', None)
+    candidate = getattr(args, 'name', None) or args.target
     flag_value = args.flag or args.flag_val
 
-    if not identifier or not flag_value:
+    if not (chall_id or candidate) or not flag_value:
         Logger.error("Usage: ctf hoard <challenge_id|name> <FLAG>\n"
                      "       ctf hoard -w WS --list [--all]\n"
                      "       ctf hoard <challenge_id|name> --remove")
@@ -600,6 +628,8 @@ def handle_hoard(args):
     except Exception as e:
         Logger.error(f'Khởi tạo thất bại: {e}')
         sys.exit(1)
+
+    identifier = _hoard_identifier(svc, chall_id, candidate)
 
     ok, message = svc.hoard_flag(identifier, flag_value)
     if not ok:
