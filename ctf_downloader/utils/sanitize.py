@@ -127,26 +127,35 @@ def sanitize_folder_name(name: str, max_length: int = 80, default: str = "challe
 def sanitize_filename(name: str, max_length: int = 120, default: str = "attachment.bin") -> str:
     """
     Sanitize filename while preserving file extension if possible.
+
+    C19-M6: ``max_length`` tính theo BYTE utf-8 (NAME_MAX của Linux là 255
+    byte, không phải số ký tự — tên emoji dài cắt theo char vẫn có thể vượt
+    trần và OSError lúc ghi). Phần cắt rơi giữa multi-byte sequence bị bỏ
+    qua khi decode thay vì sinh byte lỗi / đứt codepoint; nếu cắt xong rỗng
+    thì trả ``default``.
     """
     if not name or not isinstance(name, str):
         return default
-    
+
     name = urllib.parse.unquote(name).strip()
-    
+
     # Extract query params if attached to filename (e.g. file.zip?token=xxx)
     if '?' in name:
         name = name.split('?')[0]
     if '#' in name:
         name = name.split('#')[0]
-        
+
     # Replace illegal filesystem characters
     clean = re.sub(r'[\\/*?:"<>|\x00-\x1f]', '_', name)
     clean = clean.strip(' .')
-    
+
     if not clean:
         return default
-        
-    return clean[:max_length]
+
+    raw = clean.encode("utf-8")
+    if len(raw) > max_length:
+        clean = raw[:max_length].decode("utf-8", "ignore")
+    return clean or default
 
 def extract_filename_from_url(url: str, default: str = "download.bin") -> str:
     """
