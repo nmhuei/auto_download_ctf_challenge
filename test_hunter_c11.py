@@ -156,7 +156,7 @@ class TestC11Case1WatchBackoff(unittest.TestCase):
         try:
             svc = _mk_watch(ws, 429, {"Retry-After": "90"})
             cfg = _auto_cfg()
-            before = time.monotonic()
+            before = time.time()
             svc._run_round(cfg)
             t = svc.scheduler._tasks["notices"]
             self.assertEqual(t["interval"], 15)     # base bất biến (R2)
@@ -164,7 +164,7 @@ class TestC11Case1WatchBackoff(unittest.TestCase):
             # Server hồi phục → tick bình thường
             svc.platform.session.get.return_value = _resp(200)
             svc.scheduler._tasks["notices"]["deadline"] = 0.0
-            before2 = time.monotonic()
+            before2 = time.time()
             svc._run_round(cfg)
             t2 = svc.scheduler._tasks["notices"]
             self.assertAlmostEqual(t2["deadline"] - before2, 15.0, delta=1.0,
@@ -206,7 +206,7 @@ class TestC11Case1WatchBackoff(unittest.TestCase):
             cfg = _auto_cfg()
             svc.state_store.checkpoint_type = MagicMock(
                 side_effect=OSError("read-only fs"))
-            before = time.monotonic()
+            before = time.time()
             lines = svc._run_round(cfg)
             t = svc.scheduler._tasks["notices"]
             self.assertEqual(t["mult"], 1.0,

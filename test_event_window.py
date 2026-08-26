@@ -442,7 +442,8 @@ class TestPollScheduler(unittest.TestCase):
         lo_seen, hi_seen = float("inf"), float("-inf")
         for _ in range(200):
             deadline = self.sched.postpone("scoreboard", interval=100)
-            delay = deadline - time.monotonic()
+            # deadline neo WALL-CLOCK (hunt-c17 F-1) — so cùng nguồn time.time()
+            delay = deadline - time.time()
             lo_seen, hi_seen = min(lo_seen, delay), max(hi_seen, delay)
         self.assertGreaterEqual(lo_seen, 100 * (1 - 0.2) - 1e-6)
         self.assertLessEqual(hi_seen, 100 * (1 + 0.2) + 1e-6)

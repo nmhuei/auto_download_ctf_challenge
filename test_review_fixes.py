@@ -54,7 +54,7 @@ def _mk_watch(tmp_path, resp):
 class TestR1NoticesBackoffSurvivesReward:
     def test_429_without_header_backoff_survives_reward(self, tmp_path):
         svc, cfg = _mk_watch(tmp_path, _resp(429, {}))
-        before = time.monotonic()
+        before = time.time()
         lines = svc._run_round(cfg)
         delta = svc.scheduler._tasks["notices"]["deadline"] - before
         assert any("429" in ln for ln in lines)
@@ -69,7 +69,7 @@ class TestR1NoticesBackoffSurvivesReward:
         svc, cfg = _mk_watch(tmp_path, _resp(429, {}))
         svc._run_round(cfg)
         svc.scheduler._tasks["notices"]["deadline"] = 0.0
-        before = time.monotonic()
+        before = time.time()
         svc._run_round(cfg)
         delta = svc.scheduler._tasks["notices"]["deadline"] - before
         assert delta >= 60 * 0.8, (
@@ -79,7 +79,7 @@ class TestR1NoticesBackoffSurvivesReward:
 class TestR2RetryAfterOneShot:
     def test_penalty_one_shot_base_interval_immutable(self, tmp_path):
         svc, cfg = _mk_watch(tmp_path, _resp(429, {"Retry-After": "90"}))
-        before = time.monotonic()
+        before = time.time()
         svc._run_round(cfg)
         t = svc.scheduler._tasks["notices"]
         # R2: interval CƠ SỞ bất biến — Retry-After là penalty tạm thời,
@@ -90,7 +90,7 @@ class TestR2RetryAfterOneShot:
         assert 90 * 0.8 <= delta <= 90 * 1.2 + 0.5, (
             f"kỳ này phải lùi ~90s theo Retry-After, thực tế {delta:.1f}s")
         # Kỳ kế tiếp quay về base (penalty one-shot đã tiêu)
-        before2 = time.monotonic()
+        before2 = time.time()
         svc.scheduler.postpone("notices")
         delta2 = svc.scheduler._tasks["notices"]["deadline"] - before2
         assert delta2 <= 15 * 1.2 + 0.5

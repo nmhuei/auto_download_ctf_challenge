@@ -1,11 +1,14 @@
 """WatchService — auto-sync dữ liệu giải trong event window (spec event-window §4-§6).
 
 Thành phần:
-  - PollScheduler: stdlib-only, dict task→deadline_monotonic, jitter ±20%,
-    backoff ×2 cap 600s; 429 đi qua penalty ONE-SHOT (Retry-After hoặc
-    backoff nội bộ) — sống qua reward, interval cơ sở bất biến.
-  - WindowGuard: monotonic cho mọi sleep nội bộ; wall-clock chỉ so start/end;
-    clock-skew phát hiện qua lệch Date header server.
+  - PollScheduler: stdlib-only, dict task→deadline WALL-CLOCK (time.time()),
+    jitter ±20%, backoff ×2 cap 600s; 429 đi qua penalty ONE-SHOT (Retry-After
+    hoặc backoff nội bộ) — sống qua reward, interval cơ sở bất biến.
+  - WindowGuard: window/countdown neo WALL-CLOCK (time.time()) — CLOCK_MONOTONIC
+    ngừng đếm khi laptop sleep/suspend nên neo monotonic cũ làm guard kẹt pha
+    và poll chết đói sau resume (hunt-c17 F-1); nhảy ngược bất thường của
+    time.time() → cảnh báo một lần, KHÔNG kẹt vĩnh viễn; clock-skew phát hiện
+    qua lệch Date header server.
   - WatchStateStore: .ctf/watch_state.json atomic + lockfile pid chống chạy đôi.
   - run_event_window_wizard: 3 câu hỏi ghi .ctf/config.json đúng 1 lần.
   - WatchService.run(): foreground rich Live (🩸 ✨ 💡 📢 ⏱️ 🔴), --once mode,
@@ -61,6 +64,9 @@ CLOCK_SKEW_WARN_SECONDS = 120
 MAX_TRUSTED_SKEW_SECONDS = 21600     # R4: |offset| > 6h -> Date header bị coi
                                      # là giả/hỏng, KHÔNG hiệu chỉnh wall_now
 GRACE_DEFAULT = 300                  # wall > end+grace → final sync rồi exit
+WALL_JUMP_WARN_SECONDS = 120         # time.time() lùi sâu hơn thế → cảnh báo
+                                     # MỘT lần (NTP step/user đổi giờ) nhưng
+                                     # wall_now vẫn theo thực tế — không kẹt
 
 # Mini-scoreboard dùng chung meter ramp amber 3 mốc (than hồng → hổ phách →
 # vàng nhạt, PHOSPHOR FIELD KIT spec §3) — ``ui.widgets.AMBER_RAMP`` canonical
@@ -108,7 +114,7 @@ def fmt_countdown(seconds: float) -> str:
 
 
 # ---------------------------------------------------------------------- #
-# PollScheduler — stdlib-only, deadline monotonic
+# PollScheduler — stdlib-only, deadline WALL-CLOCK (hunt-c17 F-1)
 # ---------------------------------------------------------------------- #
 class PollScheduler:
     def __init__(self, jitter: float = JITTER_FRACTION,
@@ -117,18 +123,28 @@ class PollScheduler:
         self._rng = rng or random.uniform
         self._tasks: Dict[str, Dict[str, float]] = {}
 
+    @staticmethod
+    def _clock() -> float:
+        """Nguồn thời gian cho deadline — ``time.time()`` (WALL-CLOCK).
+
+        Deadline poll/keepalive phải sống qua suspend: CLOCK_MONOTONIC
+        ngừng đếm khi máy ngủ ⇒ sau resume mọi task tưởng chưa đến kỳ và
+        poll/renewal chết đói. time.time() trôi đều qua giấc ngủ; NTP step
+        ngược chỉ làm kỳ kế đến trễ tương ứng — không bao giờ kẹt vĩnh viễn
+        (monotonic chỉ còn vai trò đo khoảng ngắn trong tick, vd anti-spin)."""
+        return time.time()
+
+    def _jittered_delay(self, interval: float) -> float:
+        lo, hi = interval * (1 - self.jitter), interval * (1 + self.jitter)
+        return self._rng(lo, hi)
+
     def register(self, task: str, interval: float, due_now: bool = True) -> None:
         self._tasks[task] = {"interval": max(1.0, float(interval)),
                              "mult": 1.0,
                              "rl_mult": 1.0,
                              "penalty": None,
-                             "deadline": 0.0 if due_now else self._deadline(interval)}
-        if not due_now:
-            self._tasks[task]["deadline"] = self._deadline(interval)
-
-    def _deadline(self, interval: float) -> float:
-        lo, hi = interval * (1 - self.jitter), interval * (1 + self.jitter)
-        return time.monotonic() + self._rng(lo, hi)
+                             "deadline": 0.0 if due_now else self._clock()
+                                         + self._jittered_delay(interval)}
 
     def _effective_interval(self, name: str) -> float:
         t = self._tasks[name]
@@ -142,7 +158,7 @@ class PollScheduler:
     def due(self, task: str, now: Optional[float] = None) -> bool:
         if task not in self._tasks:
             return False
-        return (now if now is not None else time.monotonic()) \
+        return (now if now is not None else self._clock()) \
             >= self._tasks[task]["deadline"]
 
     def due_tasks(self, now: Optional[float] = None) -> List[str]:
@@ -158,8 +174,8 @@ class PollScheduler:
         if interval is not None:
             t["interval"] = max(1.0, float(interval))
         eff = self._effective_interval(task)
-        t["deadline"] = (now if now is not None else time.monotonic()) \
-            + self._deadline(eff) - time.monotonic()
+        t["deadline"] = (now if now is not None else self._clock()) \
+            + self._jittered_delay(eff)
         t["penalty"] = None
         return t["deadline"]
 
@@ -216,16 +232,16 @@ class PollScheduler:
             t["rl_mult"] = 1.0
 
     def next_timeout(self, now: Optional[float] = None) -> float:
-        """Số giây tới deadline sớm nhất (≥0.05) — dùng cho sleep monotonic."""
+        """Số giây tới deadline sớm nhất (≥0.05) — dùng cho sleep chia chunk."""
         if not self._tasks:
             return 1.0
-        cur = now if now is not None else time.monotonic()
+        cur = now if now is not None else self._clock()
         soonest = min(t["deadline"] for t in self._tasks.values())
         return max(0.05, soonest - cur)
 
 
 # ---------------------------------------------------------------------- #
-# WindowGuard — window so bằng wall-clock, sleep nội bộ bằng monotonic
+# WindowGuard — window/countdown neo WALL-CLOCK (hunt-c17 F-1)
 # ---------------------------------------------------------------------- #
 class WindowGuard:
     BEFORE, LIVE, ENDED = "before", "live", "ended"
@@ -236,14 +252,35 @@ class WindowGuard:
         self.start_utc = start_utc
         self.end_utc = end_utc
         self.grace_seconds = grace_seconds
-        # Anchor: monotonic nội bộ để system-clock nhảy không phá sleep
-        self._mono_anchor = time.monotonic()
-        self._wall_anchor = time.time()
+        # Neo WALL-CLOCK: event window là deadline wall-time. Neo monotonic
+        # cũ (_mono_anchor/_wall_anchor) đứng yên cả giấc ngủ máy — suspend
+        # qua đêm là guard kẹt BEFORE với countdown sai hoàn toàn, poll và
+        # keepalive renewal chết đói; rescue skew-tick so Date server còn bị
+        # R4 từ chối hiệu chỉnh >6h vì nghi giả.
+        self._last_raw_wall: Optional[float] = None
+        self._jump_warned = False
         self._server_offset = 0.0
 
     def wall_now(self) -> float:
-        return (self._wall_anchor + (time.monotonic() - self._mono_anchor)
-                + self._server_offset)
+        """Wall-clock thực (epoch giây) + hiệu chỉnh skew server.
+
+        Neo ``time.time()``: trôi đều qua suspend. time.time() nhảy NGƯỢC
+        lớn bất thường (NTP step/user đổi giờ) → cảnh báo đúng MỘT lần rồi
+        vẫn theo thực tế — không bao giờ kẹt vĩnh viễn như neo monotonic cũ."""
+        raw = time.time()
+        last = self._last_raw_wall
+        if last is not None:
+            if raw < last - WALL_JUMP_WARN_SECONDS:
+                if not self._jump_warned:
+                    Logger.warning(
+                        f"🕐 Đồng hồ hệ thống bị lùi {(last - raw):.0f}s "
+                        f"trong lúc chạy — countdown/event window sẽ trễ "
+                        f"theo mức lùi; kiểm tra NTP/clock sync.")
+                    self._jump_warned = True
+            elif raw >= last:
+                self._jump_warned = False   # đã tiến bình thường → arm lại
+        self._last_raw_wall = raw
+        return raw + self._server_offset
 
     def apply_server_offset(self, offset_seconds: float) -> None:
         """Hiệu chỉnh wall-clock theo lệch Date header server (F-3):
@@ -413,23 +450,55 @@ class WatchStateStore:
 
     # ---- lockfile pid chống chạy đôi ---------------------------------- #
     @staticmethod
+    def _cmdline_looks_like_watch(pid: int) -> Optional[bool]:
+        """Đối chiếu /proc/<pid>/cmdline với dấu hiệu 'ctf'/'watch'
+        (hunt-c17 F-4). Trả None khi không kiểm tra được (non-Linux, hết
+        quyền đọc, process vừa biến mất) — caller giữ kết luận bảo thủ."""
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                raw = f.read()
+        except Exception:
+            return None
+        if not raw:
+            return False     # zombie / đang exec — không phải watch của ta
+        txt = raw.replace(b"\x00", b" ").decode("utf-8", "replace").lower()
+        return "ctf" in txt or "watch" in txt
+
+    @staticmethod
     def _pid_alive(pid: int) -> bool:
+        """``os.kill(pid, 0)`` sống sót cả khi PID đã bị process khác REUSE
+        (chrome/tab mới chiếm pid của watch cũ) — lock stale bị coi là live
+        mãi mãi, watch không chạy lại được (hunt-c17 F-4). Khi /proc đọc
+        được, pid sống nhưng cmdline KHÔNG có dấu hiệu 'ctf'/'watch' được
+        coi là reuse → stale.
+
+        Hạn chế (chấp nhận theo finding): watch chạy qua wrapper mà argv
+        không chứa 'ctf'/'watch' sẽ bị nhầm là stale; non-Linux/hết quyền
+        đọc → giữ hành vi bảo thủ như cũ."""
         if pid <= 0:
             return False
         try:
             os.kill(pid, 0)
-            return True
         except ProcessLookupError:
             return False
         except PermissionError:
             return True     # tồn tại nhưng của user khác
         except OSError:
             return False
+        looks = WatchStateStore._cmdline_looks_like_watch(pid)
+        if looks is False:
+            return False    # pid sống nhưng là process khác (PID reuse)
+        return True
 
     def acquire_lock(self) -> bool:
         """True = chiếm được lock. Bước chiếm quyền là NGUYÊN TỬ qua
         ``os.open(O_CREAT|O_EXCL)`` (chống TOCTOU khi 2 process cùng lúc);
-        EEXIST → đọc pid: live-pid → False, stale-pid → dọn rồi thử lại."""
+        EEXIST → đọc pid: live-pid → False, stale-pid → dọn rồi thử lại.
+
+        hunt-c17 F-2: trước unlink, verify nội dung file VẪN ghi đúng pid
+        vừa đọc — 2 process cùng đọc stale-pid rồi lần lượt unlink/create
+        từng XOÁ SẠCH lock tươi của nhau và cùng "thành công". Nội dung đã
+        đổi tay ⇒ người khác vừa chiếm ⇒ bỏ lượt (kỳ sau thử lại)."""
         os.makedirs(self.dir, exist_ok=True)
 
         def _try_create() -> "int | None":
@@ -453,8 +522,10 @@ class WatchStateStore:
                         break
             if pid != os.getpid() and self._pid_alive(pid):
                 return False     # watch đang chạy
-            # stale / của chính process này → chiếm lại (1 lần thử nữa;
-            # nếu vẫn thua tức là process khác vừa giành được — thua sạch sẽ)
+            # stale / của chính process này → chỉ giành lại khi file VẪN
+            # ghi đúng pid vừa đọc; đã đổi tay thì thua sạch sẽ.
+            if pid != os.getpid() and self._read_lock_pid() != pid:
+                return False
             try:
                 os.unlink(self.lock_path)
             except OSError:
@@ -682,6 +753,7 @@ class WatchService:
         self._live = None
         self._feed: List[str] = []
         self._scoreboard_idle = 0
+        self._scoreboard_base_interval: Optional[float] = None  # F-3 ratchet
         self._burst_until_mono: Optional[float] = None
         self._known_chall_count: Optional[int] = None
         self._last_score: Optional[tuple] = None
@@ -772,7 +844,14 @@ class WatchService:
             self.state_store.release_lock()
             return 1
 
-        guard = self._resolve_window(auto_cfg)
+        try:
+            guard = self._resolve_window(auto_cfg)
+        except Exception as exc:
+            # hunt-c17 F-5: _resolve_window nằm NGOÀI try cũ — exception
+            # thoát mà không release_lock, phiên kế bị chặn bởi stale lock.
+            Logger.error(f"Không xác định được event window: {exc}")
+            self.state_store.release_lock()
+            return 1
         if guard is None:
             Logger.warning("⏱️ Không xác định được event window "
                            "(platform + CTFtime đều fail) — dùng `ctf watch "
@@ -868,8 +947,17 @@ class WatchService:
                 window_active = False
             else:
                 secs = guard.seconds_to_end()
-                if secs is not None:
+                if secs is not None and secs > 0:
                     lines.append(f"⏱️ Kết thúc sau {fmt_countdown(secs)}")
+                elif secs is not None:
+                    # hunt-c17 F-6: trong grace (end < now ≤ end+grace) bản
+                    # cũ clamp "kết thúc sau 0m00s" suốt 5 phút — hiểu nhầm
+                    # là đã ngừng đồng bộ. Hiện trạng thái grace riêng.
+                    grace_left = max(0.0, secs + float(guard.grace_seconds))
+                    lines.append(
+                        f"⏱️ Hết giờ — grace còn "
+                        f"{fmt_countdown(grace_left)} (đồng bộ cuối rồi "
+                        f"thoát).")
 
         for task in ("notices", "scoreboard", "challenges", "keepalive"):
             if not self.scheduler.due(task):
@@ -903,8 +991,10 @@ class WatchService:
         return lines
 
     def _sleep_until_next(self, guard: Optional[WindowGuard]) -> None:
-        """Sleep monotonic tới deadline sớm nhất; wake-from-sleep → tick ngay
-        (deadline đã quá ⇒ next_timeout ≈ 0)."""
+        """Sleep tới deadline sớm nhất đo bằng WALL-CLOCK (hunt-c17 F-1):
+        suspend/wake → time.time() đã vượt deadline ⇒ thoát ngay và tick.
+        Neo monotonic cũ bỏ quên cả giấc ngủ — máy ngủ qua đêm thì vòng
+        lặp còn ngủ tiếp phần thời gian còn lại TÍNH THEO GIẤC THỨC."""
         timeout = self.scheduler.next_timeout()
         if guard is not None and guard.state() == WindowGuard.BEFORE:
             to_start = guard.seconds_to_start() or 0
@@ -913,9 +1003,9 @@ class WatchService:
             # khi pause từng đẩy vòng lặp spin 50ms (đốt CPU + checkpoint
             # đĩa liên tục). Vẫn thức đúng lúc window mở (trễ ≤1s).
             timeout = max(1.0, min(timeout, max(0.05, to_start)))
-        deadline = time.monotonic() + timeout
-        while not self._stop and time.monotonic() < deadline:
-            time.sleep(min(0.5, max(0.05, deadline - time.monotonic())))
+        deadline = time.time() + timeout
+        while not self._stop and time.time() < deadline:
+            time.sleep(min(0.5, max(0.05, deadline - time.time())))
 
     def _final_sync(self) -> None:
         """wall > end+grace → final sync (scoreboard + rank cuối) rồi exit 0."""
@@ -1071,14 +1161,28 @@ class WatchService:
                          f"{my_rank or '-'} ({my_score}) · tổng {total} teams")
         self._last_score = cur
 
-        # Adaptive: 3 kỳ liên tiếp không đổi → nới interval lên 120s
+        # Adaptive HAI CHIỀU (hunt-c17 F-3): 3 kỳ liên tiếp không đổi → nới
+        # interval lên 120s; activity quay lại (idle bị reset) → trả về đúng
+        # interval cơ sở trước đó thay vì kẹt 120s đến hết giải.
         if cur == getattr(self, "_prev_score_same", None):
             self._scoreboard_idle += 1
         else:
             self._scoreboard_idle = 0
         self._prev_score_same = cur
         if self._scoreboard_idle >= SCOREBOARD_IDLE_ROUNDS:
-            self.scheduler.set_interval("scoreboard", ADAPTIVE_SCOREBOARD_INTERVAL)
+            base_iv = (self.scheduler._tasks.get("scoreboard") or {}).get(
+                "interval")
+            if base_iv is not None \
+                    and float(base_iv) != ADAPTIVE_SCOREBOARD_INTERVAL:
+                self._scoreboard_base_interval = float(base_iv)
+            self.scheduler.set_interval("scoreboard",
+                                        ADAPTIVE_SCOREBOARD_INTERVAL)
+        elif getattr(self, "_scoreboard_base_interval", None) is not None:
+            # getattr phòng thủ: tick methods có thể được gọi trên instance
+            # dựng qua __new__ (test harness) thiếu attr __init__
+            self.scheduler.set_interval(
+                "scoreboard", self._scoreboard_base_interval)
+            self._scoreboard_base_interval = None
 
         # Mirror live rank vào SUMMARY.md
         if my_rank:
@@ -1237,7 +1341,14 @@ class WatchService:
             secs = (self.guard.seconds_to_start()
                     if st == WindowGuard.BEFORE
                     else self.guard.seconds_to_end())
-            if secs is not None and st != WindowGuard.ENDED:
+            if st == WindowGuard.LIVE and secs is not None and secs <= 0:
+                # hunt-c17 F-6: đang trong grace — không hiện "kết thúc sau
+                # 0m00s" (clamp suốt 5 phút), hiện thời gian grace còn lại.
+                grace_left = max(0.0, secs + float(getattr(
+                    self.guard, "grace_seconds", GRACE_DEFAULT)))
+                head.append("  ⏱️ hết giờ — grace còn ", style=FG_MUTED)
+                head.append(fmt_countdown(grace_left), style=WARN)
+            elif secs is not None and st != WindowGuard.ENDED:
                 label = ("bắt đầu sau" if st == WindowGuard.BEFORE
                          else "kết thúc sau")
                 head.append(f"  ⏱️ {label} ", style=FG_MUTED)

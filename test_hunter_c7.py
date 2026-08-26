@@ -399,9 +399,9 @@ def test_d1_scheduler_interval_0_am_clamp_voi_due_ngay():
     s = PollScheduler(jitter=0.0, rng=lambda lo, hi: lo)
     s.register("zero", 0, due_now=False)
     assert s._tasks["zero"]["interval"] == 1.0        # clamp về >= 1s
-    assert s.due("zero", now=time.monotonic() + 1)    # deadline tính từ RAW 0
+    assert s.due("zero", now=time.time() + 1)    # deadline tính từ RAW 0
     s.register("neg", -5, due_now=False)
-    assert s.due("neg", now=time.monotonic() + 1)     # âm -> due ngay (doc)
+    assert s.due("neg", now=time.time() + 1)     # âm -> due ngay (doc)
 
 
 def test_d2_penalize_interval_tren_cap_lam_ngan_interval_thay_vi_backoff():
