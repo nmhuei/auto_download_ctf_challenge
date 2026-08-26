@@ -194,7 +194,18 @@ class WorkspaceBuilder:
         # ``metadata.json.lock`` (redownload giữa lúc sync đang chạy). Chuyển
         # qua locked_write_text: cùng khóa + atomic replace, GIỮ NGUYÊN format
         # payload (json.dumps indent=2, ensure_ascii=False, không newline cuối).
-        locked_write_text(meta_path, payload)
+        # Review 3e0fbcc-F1: locked_write_text trả False khi thư mục challenge
+        # bị xoá giữa lúc build (skip chống zombie BUG-C16-1) — KHÔNG được
+        # nuốt im lặng: warning rõ tên + đường dẫn để user biết workspace này
+        # thiếu metadata.json (builder giữ contract trả challenge_dir, không
+        # crash pipeline như các nhánh dị dạng khác).
+        if not locked_write_text(meta_path, payload):
+            Logger.warning(
+                f"Không ghi được metadata.json cho challenge "
+                f"'{challenge.name}' tại {meta_path} — thư mục đã bị xoá "
+                f"giữa lúc dựng workspace; bỏ qua lần ghi (workspace này "
+                f"THIẾU metadata.json, chạy lại pull để dựng lại)."
+            )
 
         # 3. Generate solver/solve.py if requested and doesn't exist
         solver_solve_path = os.path.join(solver_sub_dir, "solve.py")

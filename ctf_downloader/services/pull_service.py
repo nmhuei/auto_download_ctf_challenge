@@ -436,8 +436,14 @@ class PullService:
                 return st
 
             try:
-                after = repo.update_status(meta_path, _mut)["solve"]
-                if after != before_solve:
+                # Review 3e0fbcc-F3: chỉ đếm updated khi ghi THẬT SỰ persist
+                # (StatusWriteResult.persisted=True). Noop — process khác
+                # nâng solve trước trong race, ta KHÔNG ghi gì mà state trả
+                # về vẫn báo solve mới — hoặc skip (thư mục challenge biến
+                # mất) đều phải loại để tránh đếm ảo.
+                res = repo.update_status(meta_path, _mut)
+                if (getattr(res, "persisted", True)
+                        and res.get("solve") != before_solve):
                     updated += 1
             except Exception:
                 continue

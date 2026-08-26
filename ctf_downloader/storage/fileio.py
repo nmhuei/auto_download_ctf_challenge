@@ -76,7 +76,10 @@ def locked_write_text(path: PathLike, text: str) -> bool:
     tại (BUG-C16-1: sync giữ snapshot của challenge bị xoá giữa chừng —
     mkdir(parents=True) cũ HỒI SINH thư mục và sinh state zombie; giờ bỏ
     ghi thay vì dựng lại. Lần tạo ĐẦU TIÊN hợp lệ do caller tự đảm nhiệm
-    việc tạo thư mục — vd WorkspaceBuilder tự os.makedirs trước khi gọi)."""
+    việc tạo thư mục — vd WorkspaceBuilder tự os.makedirs trước khi gọi).
+    False còn trả khi thư mục cha biến mất NGAY TRƯỚC lúc mở lockfile
+    (review 3e0fbcc-F4: process xếp hàng phải nhận tín hiệu skip sạch như
+    holder, không phải FileNotFoundError)."""
     p = Path(path)
     if p.is_symlink():
         p = p.resolve()
@@ -85,7 +88,15 @@ def locked_write_text(path: PathLike, text: str) -> bool:
     lock_path = p.with_name(p.name + ".lock")
 
     while True:
-        lock_f = open(lock_path, "w")
+        try:
+            lock_f = open(lock_path, "w")
+        except FileNotFoundError:
+            # Review 3e0fbcc-F4: thư mục cha vừa biến mất giữa re-check
+            # is_dir và lúc mở lockfile (gồm cả trường hợp process XẾP HÀNG
+            # được grant trên inode mồ côi, re-validate thất bại rồi mở lại
+            # lockfile hiện hành). Trả cùng tín hiệu skip như holder thay
+            # vì để FileNotFoundError lộ ra caller.
+            return False
         fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
         try:
             try:
@@ -170,7 +181,15 @@ def locked_path(path: PathLike) -> Iterator[Path]:
     lock_path = p.with_name(p.name + ".lock")
 
     while True:
-        lock_f = open(lock_path, "w")
+        try:
+            lock_f = open(lock_path, "w")
+        except FileNotFoundError:
+            # Review 3e0fbcc-F4: thư mục cha biến mất ngay trước lúc mở
+            # lockfile — yield KHÔNG KHÓA như nhánh parent-gone ở trên:
+            # ghi của caller sẽ fail LOÁ (FileNotFoundError từ writer),
+            # không hồi sinh thư mục đã xoá.
+            yield p
+            return
         fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
         try:
             try:
@@ -231,8 +250,9 @@ def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, Non
       Resolve trước cũng đảm bảo mọi caller qua symlink khác nhau dùng CÙNG
       một lock file (lock của target thật).
 
-    Trả về dict state cuối cùng SAU KHI GHI; None khi bị SKIP — gồm hai
+    Trả về dict state cuối cùng SAU KHI GHI; None khi bị SKIP — gồm các
     trường hợp (BUG-C16-1): thư mục cha không còn tồn tại tại lúc ghi
+    (hoặc biến mất ngay trước lúc mở lockfile — review 3e0fbcc-F4)
     (không mkdir hồi sinh thư mục challenge bị xoá giữa chừng -> không sinh
     metadata.json zombie), hoặc mutator trả SKIP_WRITE. Lần tạo file ĐẦU
     TIÊN trong thư mục CÓ SẴN vẫn hoạt động như cũ.
@@ -245,7 +265,12 @@ def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, Non
     lock_path = p.with_name(p.name + ".lock")
 
     while True:
-        lock_f = open(lock_path, "w")
+        try:
+            lock_f = open(lock_path, "w")
+        except FileNotFoundError:
+            # Review 3e0fbcc-F4: thư mục cha biến mất giữa re-check is_dir
+            # và lúc mở lockfile — trả cùng tín hiệu skip (None) như holder.
+            return None
         fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
         try:
             # Re-validate: holder trước có thể vừa unlink lockfile (dọn cuối

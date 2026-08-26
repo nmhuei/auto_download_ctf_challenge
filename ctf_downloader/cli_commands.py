@@ -530,10 +530,25 @@ def _handle_hoard_remove(args):
         st["flag"]["state"] = "none"
         return st
 
-    repo.update_status(meta_path, _mut)
+    result = repo.update_status(meta_path, _mut)
     shown_name = (meta or {}).get('name') or str(identifier)
-    Logger.success("🗑 Đã gỡ flag khỏi kho cho "
-                   f"[bold cyan]{shown_name}[/bold cyan].", markup=True)
+    if getattr(result, "noop", False):
+        # Review 3e0fbcc-F2: giá trị cũ == giá trị mới — không có flag nào
+        # để gỡ. Thông điệp trung tính, không phải lỗi.
+        Logger.info("Không có gì thay đổi — "
+                    f"[bold cyan]{shown_name}[/bold cyan] không có flag "
+                    f"trong kho.", markup=True)
+    elif not getattr(result, "persisted", True):
+        # Ghi bị SKIP (thư mục/metadata biến mất trên đĩa): KHÔNG in
+        # 🗑 success — thất bại rõ để CLI exit nonzero.
+        Logger.error("Không gỡ được flag của "
+                     f"[bold cyan]{shown_name}[/bold cyan]: thư mục "
+                     f"workspace không còn trên đĩa ({meta_path}) — ghi "
+                     f"bị bỏ qua.")
+        sys.exit(1)
+    else:
+        Logger.success("🗑 Đã gỡ flag khỏi kho cho "
+                       f"[bold cyan]{shown_name}[/bold cyan].", markup=True)
 
 
 def handle_hoard(args):
