@@ -1,6 +1,8 @@
 import os
+import random
 import shutil
 import threading
+import time
 import requests
 from typing import Optional, Callable
 from urllib.parse import urlparse, urljoin
@@ -12,6 +14,11 @@ from .registry import register_downloader
 CHUNK_SIZE = 65536
 # Số lần thử resume (mở lại kết nối + Range) khi mất kết nối giữa chừng
 MAX_RESUME_ATTEMPTS = 3
+# C19-M5: exponential backoff cho vòng retry — 0.5×2^(n-1)s, cap 8s,
+# jitter nhẹ (≤0.25s) chống thundering herd giữa các worker.
+_RETRY_BASE_SECONDS = 0.5
+_RETRY_CAP_SECONDS = 8.0
+_RETRY_JITTER_SECONDS = 0.25
 # Các HTTP redirect được theo dõi khi probe thủ công
 _REDIRECT_CODES = (301, 302, 303, 307, 308)
 _MAX_PROBE_REDIRECTS = 10
@@ -76,6 +83,19 @@ class HttpDownloader:
     @staticmethod
     def _short_error(exc: Exception, max_len: int = 200) -> str:
         return str(exc).replace("\n", " ")[:max_len]
+
+    @staticmethod
+    def _retry_backoff(attempt: int) -> float:
+        """C19-M5: exponential backoff cho vòng retry resume — trước đây
+        ``continue`` NGAY sau khi tăng attempt nên các lần thử dồn cục bắn
+        liên hoàn vào server đang quá tải. Delay 0.5×2^(n-1)s cap 8s +
+        jitter nhẹ. Ngủ rồi trả về số giây đã ngủ (caller chỉ gọi khi còn
+        được phép thử lại)."""
+        delay = min(_RETRY_BASE_SECONDS * (2 ** max(0, attempt - 1)),
+                    _RETRY_CAP_SECONDS)
+        delay += random.uniform(0, _RETRY_JITTER_SECONDS)
+        time.sleep(delay)
+        return delay
 
     @staticmethod
     def probe_content_length(
@@ -167,6 +187,19 @@ class HttpDownloader:
                         f"hoàn tất khi chờ trùng đích -> bỏ qua tải lại {url}."
                     )
                     return target_path
+                # C19-M4: skip-if-exists theo PRESENCE (trừ khi force) — thực
+                # hiện TRƯỚC khi phát bất kỳ GET nào. Điều kiện skip cũ đòi
+                # Content-Length khai báo + khớp kích thước nên server
+                # chunked/unknown-length vẫn tải lại và ĐÈ file hoàn chỉnh
+                # đã có. .part còn tồn tại nghĩa là lần tải trước CHƯA xong
+                # -> không rơi nhánh này, resume chạy bình thường ở dưới.
+                if (not force and os.path.exists(target_path)
+                        and not os.path.exists(part_path)):
+                    Logger.info(
+                        f"'{os.path.basename(target_path)}' đã tồn tại — "
+                        f"bỏ qua tải {url} (force=False)."
+                    )
+                    return target_path
 
             while True:
                 offset = 0
@@ -184,6 +217,7 @@ class HttpDownloader:
                     if attempt > MAX_RESUME_ATTEMPTS:
                         Logger.warning(f"Tải thất bại {url}: quá số lần thử lại ({MAX_RESUME_ATTEMPTS}).")
                         return None
+                    HttpDownloader._retry_backoff(attempt)
                     continue
 
                 try:
@@ -230,6 +264,7 @@ class HttpDownloader:
                         if attempt > MAX_RESUME_ATTEMPTS:
                             Logger.warning(f"Tải thất bại {url}: quá số lần thử lại ({MAX_RESUME_ATTEMPTS}).")
                             return None
+                        HttpDownloader._retry_backoff(attempt)
                         continue
 
                     if status not in (200, 206):
@@ -270,13 +305,19 @@ class HttpDownloader:
                             )
                             return target_path
 
-                    # Skip nếu đã tồn tại file hoàn chỉnh cùng kích thước
+                    # Skip nếu file hoàn chỉnh đã tồn tại (C19-M4: theo
+                    # PRESENCE trừ khi force — không đòi Content-Length khớp;
+                    # .part còn nghĩa là chưa xong -> resume riêng ở dưới).
                     if (
-                        not force and status == 200 and total_size > 0
-                        and os.path.exists(target_path) and not os.path.exists(part_path)
-                        and os.path.getsize(target_path) == total_size
+                        not force
+                        and os.path.exists(target_path)
+                        and not os.path.exists(part_path)
                     ):
                         resp.close()
+                        Logger.info(
+                            f"'{os.path.basename(target_path)}' đã tồn tại — "
+                            f"bỏ qua tải {url} (force=False)."
+                        )
                         return target_path
 
                     append_mode = status == 206
@@ -303,7 +344,16 @@ class HttpDownloader:
                                 raise LargeFileSkipped(downloaded_bytes)
 
                     # Body kết thúc sớm so với Content-Length?
-                    if total_size and downloaded_bytes < total_size:
+                    # C19-L9: phép so chỉ hợp lệ khi byte đếm được == byte
+                    # TRÊN DÂY. Response gzip/deflate/br: iter_content trả
+                    # bytes ĐÃ GIẢI NÉN trong khi Content-Length là cỡ NÉN —
+                    # dữ liệu khó-nén giải ra NHỎ HƠN CL từng khiến check
+                    # báo "thiếu dữ liệu" ảo rồi retry đến chết dù file đủ.
+                    content_encoding = (
+                        resp.headers.get("Content-Encoding") or ""
+                    ).strip().lower()
+                    if (total_size and downloaded_bytes < total_size
+                            and not content_encoding):
                         attempt += 1
                         Logger.warning(
                             f"Dữ liệu tải về thiếu ({downloaded_bytes}/{total_size} bytes) từ {url}"
@@ -311,6 +361,7 @@ class HttpDownloader:
                         if attempt > MAX_RESUME_ATTEMPTS:
                             Logger.warning(f"Tải thất bại {url}: quá số lần thử lại ({MAX_RESUME_ATTEMPTS}).")
                             return None
+                        HttpDownloader._retry_backoff(attempt)
                         continue
 
                     shutil.move(part_path, target_path)
@@ -325,6 +376,7 @@ class HttpDownloader:
                     if attempt > MAX_RESUME_ATTEMPTS:
                         Logger.warning(f"Tải thất bại {url}: quá số lần thử lại ({MAX_RESUME_ATTEMPTS}).")
                         return None
+                    HttpDownloader._retry_backoff(attempt)
                     continue
         except LargeFileSkipped:
             # Dọn file tạm (.part/.tmp) — không giữ rác nửa chừng trên đĩa
@@ -395,10 +447,16 @@ class HttpDownloader:
                 resp.close()
                 raise LargeFileSkipped(total_size)
 
-            if not force and os.path.exists(target_path) and total_size > 0:
-                if os.path.getsize(target_path) == total_size:
-                    resp.close()
-                    return target_path
+            # C19-M4: skip-if-exists theo PRESENCE (trừ khi force) — điều kiện
+            # cũ đòi total_size > 0 và khớp kích thước nên stream không khai
+            # báo Content-Length vẫn ĐÈ file hoàn chỉnh đã có.
+            if not force and os.path.exists(target_path):
+                resp.close()
+                Logger.info(
+                    f"'{filename}' đã tồn tại — bỏ qua ghi đè stream "
+                    f"(force=False)."
+                )
+                return target_path
 
             downloaded_bytes = 0
             with open(tmp_path, "wb") as f, resp:
