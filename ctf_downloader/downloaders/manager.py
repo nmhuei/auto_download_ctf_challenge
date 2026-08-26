@@ -1,5 +1,6 @@
 import os
 import sys
+import threading
 import requests
 from typing import List, Dict, Optional, Tuple
 
@@ -17,6 +18,23 @@ from ..utils.sanitize import extract_filename_from_url
 
 # Mặc định 1 GB; 0 = tắt gate (không bao giờ hỏi)
 DEFAULT_SIZE_LIMIT_BYTES = 1073741824
+
+
+class ConsentState:
+    """Trạng thái consent + cache dung lượng dùng CHUNG giữa planner
+    (main thread, chạy TRƯỚC thread pool) và các DownloadManager của worker.
+
+    C19-M3: ``input()`` từ worker thread chồng prompt lên nhau — quyết định
+    consent phải được tính gộp trên main thread TRƯỚC lúc tải; worker chỉ
+    ĐỌC quyết định sẵn có. ``sizes`` là cache kết quả probe HEAD (mỗi URL
+    đúng một lần trong preflight) để đường tải không phải HEAD lặp lại.
+    """
+
+    def __init__(self) -> None:
+        # url -> True (được tải) / False (bị từ chối); chỉ ghi trong preflight
+        self.decisions: Dict[str, bool] = {}
+        # url -> dung lượng probe được (None = unknown); đọc-đa-luồng sau build
+        self.sizes: Dict[str, Optional[int]] = {}
 
 
 def human_size(num_bytes: Optional[float]) -> str:
@@ -37,13 +55,93 @@ class DownloadManager:
         session: requests.Session,
         timeout: int = 30,
         force: bool = False,
-        size_limit_bytes: int = DEFAULT_SIZE_LIMIT_BYTES
+        size_limit_bytes: int = DEFAULT_SIZE_LIMIT_BYTES,
+        consent_state: Optional[ConsentState] = None
     ):
         self.session = session
         self.timeout = timeout
         self.force = force
         # Ngưỡng consent file lớn; 0 = vô hiệu hoá gate
         self.size_limit_bytes = size_limit_bytes or 0
+        # C19-M3: quyết định consent + cache dung lượng dùng chung với
+        # planner (main thread). Mặc định state riêng — caller trực tiếp
+        # (ngoài pipeline pull) giữ hành vi interactive cũ.
+        self.consent = consent_state if consent_state is not None else ConsentState()
+
+    @staticmethod
+    def _is_main_thread() -> bool:
+        return threading.current_thread() is threading.main_thread()
+
+    # ------------------------------------------------------------------ #
+    # Consent preflight (C19-M3): quét TRƯỚC thread pool, hỏi gộp main thread
+    # ------------------------------------------------------------------ #
+    def plan_consents(self, urls: List[str]) -> None:
+        """Preflight consent cho toàn bộ candidate URL của lượt pull — gọi
+        TRƯỚC khi tạo ThreadPoolExecutor, trên MAIN thread.
+
+        - Probe dung lượng từng URL đúng MỘT lần, cache vào ``consent.sizes``:
+          đường tải sau đó dùng lại kết quả (bỏ HEAD trùng trước mỗi GET —
+          C19-M5); probe lỗi của một URL không chặn các URL còn lại.
+        - Gom các file vượt ngưỡng và hỏi GỘP trong MỘT prompt duy nhất
+          (thay vì input() rải rác trong worker thread chồng prompt lên
+          nhau); câu trả lời áp cho cả batch. Quyết định ghi vào
+          ``consent.decisions`` — worker chỉ đọc.
+        """
+        limit = self.size_limit_bytes
+        oversized: List[Tuple[str, Optional[int]]] = []
+        for url in dict.fromkeys(urls):   # khử trùng lặp, giữ thứ tự
+            if url in self.consent.sizes:
+                size = self.consent.sizes[url]
+            else:
+                try:
+                    size = HttpDownloader.probe_content_length(
+                        url, session=self.session, timeout=self.timeout)
+                except Exception as e:
+                    Logger.warning(
+                        f"Không xác định trước dung lượng của {url}: "
+                        f"{type(e).__name__}: {str(e)[:120]}")
+                    size = None
+                self.consent.sizes[url] = size
+            if limit and size is not None and size > limit:
+                oversized.append((url, size))
+        if not oversized:
+            return
+
+        allowed = self._ask_batched_consent(oversized)
+        for url, _size in oversized:
+            self.consent.decisions[url] = allowed
+            if not allowed:
+                Logger.warning(
+                    f"Bỏ qua {url}: dung lượng vượt quá giới hạn "
+                    f"{human_size(limit)} — người dùng không đồng ý tải.")
+
+    def _ask_batched_consent(
+            self, oversized: List[Tuple[str, Optional[int]]]) -> bool:
+        """MỘT prompt cho cả batch file vượt ngưỡng; chỉ chạy main thread.
+        Non-tty: tự từ chối kèm cảnh báo (nhất quán gate đơn lẻ)."""
+        pretty_limit = human_size(self.size_limit_bytes)
+        lines = [f"{len(oversized)} file vượt quá giới hạn {pretty_limit}:"]
+        for url, size in oversized:
+            lines.append(f"  - {os.path.basename(url)} ({human_size(size)})")
+        lines.append("Tải tất cả? [y/N]")
+
+        stdin = sys.stdin
+        is_tty = False
+        try:
+            is_tty = bool(stdin and stdin.isatty())
+        except Exception:
+            is_tty = False
+        if not is_tty:
+            Logger.warning(
+                "Không hỏi consent được (non-interactive) — bỏ qua các file "
+                f"vượt giới hạn {pretty_limit}.")
+            return False
+
+        try:
+            answer = input("\n".join(lines)).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return False
+        return answer in ("y", "yes")
 
     # ------------------------------------------------------------------ #
     # Consent gate cho file lớn
@@ -52,12 +150,28 @@ class DownloadManager:
         """
         Trả True nếu được phép tải tiếp.
         - Gate tắt (size_limit_bytes == 0) hoặc kích thước unknown/nhỏ hơn ngưỡng -> True.
-        - Vượt ngưỡng: hỏi user qua input() nếu stdin là tty; nếu không phải tty
-          thì tự skip kèm log cảnh báo.
+        - Vượt ngưỡng: dùng quyết định preflight (C19-M3) nếu đã có; worker
+          thread KHÔNG BAO GIỜ input() (tự skip kèm cảnh báo); chỉ main
+          thread ngoài preflight mới hỏi interactive như cũ.
         """
         limit = self.size_limit_bytes
         if not limit or expected_size is None or expected_size <= limit:
             return True
+
+        # C19-M3: quyết định đã tính gộp trên main thread trước pool — worker
+        # chỉ đọc, không mở prompt.
+        if url in self.consent.decisions:
+            return self.consent.decisions[url]
+
+        # Không qua preflight mà lại đang ở worker thread: input() tại đây
+        # chồng prompt lên prompt của thread khác — tự skip thay vì hỏi.
+        if not self._is_main_thread():
+            Logger.warning(
+                f"Bỏ qua {url}: dung lượng {human_size(expected_size)} vượt "
+                f"quá giới hạn {human_size(limit)} (worker thread không thể "
+                f"hỏi consent — chạy preflight plan_consents trước khi tải)."
+            )
+            return False
 
         pretty_size = human_size(expected_size)
         pretty_limit = human_size(limit)
@@ -139,6 +253,14 @@ class DownloadManager:
                 if MegaDownloader.available_tool() is None:
                     Logger.warning(MEGA_MISSING_TOOL_MESSAGE)
                     return False, None, MEGA_MISSING_TOOL_MESSAGE
+                # C19-L8: Mega đi qua consent gate như đường http — megatools
+                # không khai báo dung lượng trước nên mặc định unknown (gate
+                # cho qua), nhưng tôn trọng quyết định preflight nếu preflight
+                # đã biết kích thước của URL này.
+                mega_size = self.consent.sizes.get(url)
+                if not self._confirm_large_download(url, mega_size):
+                    return False, None, self._skip_large_message(
+                        url, mega_size, self.size_limit_bytes)
                 saved_path, msg = MegaDownloader.download(url, dest_dir, timeout=max(self.timeout * 10, 600))
                 return (saved_path is not None), saved_path, msg
 
@@ -179,7 +301,15 @@ class DownloadManager:
                 return False, None, f"Tải thất bại qua handler {link_type} (lỗi khi ghi dữ liệu)."
 
             # 4. Default: Direct / GitHub / GitLab / Discord / catbox / 0x0 / HTTP thuần
-            expected_size = HttpDownloader.probe_content_length(url, session=self.session, timeout=self.timeout)
+            # C19-M5: HEAD probe mặc định chuyển vào preflight (plan_consents
+            # trên main thread, mỗi URL đúng một lần); lúc tải chỉ DÙNG LẠI
+            # cache. Caller ngoài pipeline (không qua preflight) vẫn probe
+            # như cũ để consent gate còn hoạt động.
+            if url in self.consent.sizes:
+                expected_size = self.consent.sizes[url]
+            else:
+                expected_size = HttpDownloader.probe_content_length(
+                    url, session=self.session, timeout=self.timeout)
             if not self._confirm_large_download(url, expected_size):
                 return False, None, self._skip_large_message(url, expected_size, self.size_limit_bytes)
 
