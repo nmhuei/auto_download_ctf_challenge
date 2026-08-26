@@ -687,6 +687,8 @@ class WatchService:
         self._known_chall_count: Optional[int] = None
         self._last_score: Optional[tuple] = None
         self._last_skew_check_mono: float = -10**9   # F-3 clock-skew active
+        self._ckpt_fp: Optional[str] = None          # dirty-gate checkpoint
+        self._before_bucket: Optional[int] = None    # throttle feed ⏳ BEFORE
 
     # ------------------------------------------------------------------ #
     # Setup
@@ -855,7 +857,9 @@ class WatchService:
             st = guard.state()
             if st == WindowGuard.BEFORE:
                 secs = guard.seconds_to_start() or 0
-                lines.append(f"⏳ Giải bắt đầu sau {fmt_countdown(secs)} — pause.")
+                if self._before_feed_due(secs):
+                    lines.append(
+                        f"⏳ Giải bắt đầu sau {fmt_countdown(secs)} — pause.")
                 self._checkpoint_all()
                 return lines
             if st == WindowGuard.ENDED:
@@ -931,7 +935,35 @@ class WatchService:
         Logger.success("🏁 Event đã kết thúc — watch exit.")
 
     def _checkpoint_all(self) -> None:
+        """Dirty-gate (review LOW): BEFORE gọi ~1Hz nhưng state gần như
+        bất biến suốt giờ chờ — so fingerprint JSON của state với lần ghi
+        cuối, giống nhau ⇒ bỏ qua atomic write (đĩa/I/O vô ích hàng nghìn
+        lần/giờ giải). Fingerprint tại MỘT điểm nên bắt được mọi mutator,
+        kể cả mutator thêm sau quên mark-dirty; ``save``/_final_sync/
+        _shutdown vẫn ghi vô điều kiện. Không serialize nổi → ghi như cũ
+        (thà thừa còn thiếu — crash-safety ưu tiên hơn tiết kiệm I/O)."""
+        try:
+            fp = json.dumps(self.state, sort_keys=True, default=str)
+        except Exception:
+            fp = None
+        if fp is not None and fp == self._ckpt_fp:
+            return   # state không đổi kể từ lần ghi cuối
         self.state_store.save(self.state)
+        if fp is not None:
+            self._ckpt_fp = fp
+
+    def _before_feed_due(self, secs: float) -> bool:
+        """Throttle feed ⏳ (review INFO-UX): dòng đếm ngược BEFORE chỉ vào
+        ``_feed`` khi bucket phút (``secs // 60``) đổi — mốc tròn từng phút,
+        tự nhiên bao gồm 10/5/1 phút cuối; tick đầu luôn hiện. Ghi mỗi giây
+        thì ~3-4 phút đã nhấn chìm mọi event thật khỏi view
+        ``_feed[-FEED_MAX_LINES:]``. Panel rich không ảnh hưởng: header tự
+        render countdown mỗi tick qua ``_render_header``."""
+        bucket = int(max(0.0, float(secs)) // 60)
+        if bucket != self._before_bucket:
+            self._before_bucket = bucket
+            return True
+        return False
 
     # ------------------------------------------------------------------ #
     # Clock-skew chủ động (F-3): mỗi ~5 phút hỏi Date header server;

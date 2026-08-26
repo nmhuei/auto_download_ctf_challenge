@@ -12,6 +12,10 @@
 4. ``http_downloader._TARGET_LOCKS`` bound qua WeakValueDictionary — entry
    tự xoá khi thread cuối bỏ strong ref; lock vẫn sống đủ lâu cho mọi thread
    đang giữ/chờ.
+5. Review follow-up (commit 5f44900): BEFORE checkpoint dirty-gate — state
+   không đổi suốt giờ chờ ⇒ ``_checkpoint_all`` không ghi đĩa mỗi giây;
+   countdown feed throttle — dòng ⏳ chỉ vào ``_feed`` theo mốc phút thay vì
+   mỗi giây (tránh nhấn chìm event thật trong ``_feed[-200:]``).
 """
 from __future__ import annotations
 
@@ -173,6 +177,74 @@ class TestTargetLocksBounded(unittest.TestCase):
         del holder
         gc.collect()
         self.assertEqual(len(hd._TARGET_LOCKS), 0)
+
+
+# ---------------------------------------------------------------------- #
+# 5. BEFORE checkpoint dirty-gate (review LOW @ :859/:933-934)
+# ---------------------------------------------------------------------- #
+def _before_guard(secs_to_start: float) -> WindowGuard:
+    start = datetime.now(timezone.utc) + timedelta(seconds=secs_to_start)
+    return WindowGuard(start, start + timedelta(hours=2))
+
+
+class TestBeforeCheckpointDirtyGate(_TempWsCase):
+
+    def test_ten_ticks_without_state_change_write_disk_once(self):
+        """BEFORE ~1Hz: state bất biến ⇒ 10 round chỉ 1 lần atomic write."""
+        svc = _bare_svc(self.ws)
+        svc.guard = _before_guard(3600)
+        writes = []
+        with patch.object(wsm, "atomic_write_json",
+                          side_effect=lambda p, d: writes.append(p)):
+            for _ in range(10):
+                svc._run_round({})
+        self.assertEqual(len(writes), 1,
+                         "state không đổi phải bị gate, không ghi đĩa mỗi giây")
+
+    def test_state_change_midway_writes_on_that_tick(self):
+        svc = _bare_svc(self.ws)
+        svc.guard = _before_guard(3600)
+        writes = []
+        with patch.object(wsm, "atomic_write_json",
+                          side_effect=lambda p, d: writes.append(p)):
+            svc._run_round({})                    # tick 1: ghi (chưa có baseline)
+            svc._run_round({})                    # tick 2: không đổi → im
+            self.assertEqual(len(writes), 1)
+            svc.state["etag_cache"] = {"x": "y"}  # mutator thật giữa chừng
+            svc._run_round({})                    # tick 3: ghi NGAY tick này
+            self.assertEqual(len(writes), 2)
+            svc._run_round({})                    # tick 4: lại im
+            self.assertEqual(len(writes), 2)
+
+
+# ---------------------------------------------------------------------- #
+# 6. Countdown BEFORE throttle feed (review INFO-UX @ :1353)
+# ---------------------------------------------------------------------- #
+class TestCountdownFeedThrottle(_TempWsCase):
+
+    def test_countdown_120s_adds_at_most_three_feed_lines(self):
+        """120 round BEFORE (giờ ảo +1s/lần hỏi) → ≤3 dòng ⏳ trong feed,
+        event thật chèn giữa vẫn còn nguyên trong _feed[-200:]."""
+        svc = _bare_svc(self.ws)
+        guard = _before_guard(120)
+        base_wall = guard.wall_now()
+        calls = {"n": 0}
+
+        def fake_wall():
+            calls["n"] += 1
+            return base_wall + calls["n"]     # đồng hồ chạy 1s mỗi lần hỏi
+
+        guard.wall_now = fake_wall
+        svc.guard = guard
+        for i in range(120):
+            if i == 60:
+                svc._refresh_live(["🩸 rank đổi thật"])
+            svc._refresh_live(svc._run_round({}))   # đúng wire của _main_loop
+        countdown = [ln for ln in svc._feed if "⏳" in ln]
+        self.assertGreaterEqual(len(countdown), 1, "tick đầu vẫn phải hiện")
+        self.assertLessEqual(len(countdown), 3,
+                             f"throttle mốc phút, không {len(countdown)} dòng")
+        self.assertIn("🩸 rank đổi thật", svc._feed[-200:])
 
 
 if __name__ == "__main__":
