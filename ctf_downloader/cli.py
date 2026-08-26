@@ -88,8 +88,11 @@ class _PhosphorHelpParser(argparse.ArgumentParser):
 
         syntax = Text('  ctf <lệnh> [tuỳ chọn]', style=INFO)
 
-        footer = footer_bar([('↑↓', 'di chuyển'), ('?', 'help'),
-                             ('q', 'thoát')], width=max(40, console.width))
+        # Help cũng render-một-lần-rồi-thoát (không vòng đọc phím) → footer
+        # chỉ gợi lệnh THẬT, cùng nhịp với _FRAME_FOOTER.
+        footer = footer_bar([('ctf <lệnh> -h', 'trợ giúp lệnh'),
+                             ('ctf menu', 'console tương tác')],
+                            width=max(40, console.width))
 
         # Nhịp theo spec §4.8: AppHeader (codex-r3 #2 — help là lệnh thường
         # duy nhất còn thiếu) → 1 dòng trống → banner → 1 dòng trống (banner
@@ -367,7 +370,12 @@ def _frame_timestamp():
 
 
 #: FooterBar chuẩn cho lệnh thường (spec §4.7: phím amber · nhãn fg.base).
-_FRAME_FOOTER = [('↑↓', 'di chuyển'), ('?', 'help'), ('q', 'thoát')]
+#: Các surface framed đều render-một-lần-rồi-thoát — KHÔNG có vòng đọc phím
+#: (điều hướng thật chỉ tồn tại trong `ctf menu`: phím số + input(), dấu
+#: ``❯`` là marker item mặc định theo ui/selection.py) → không gợi ý phím
+#: ảo; thay bằng các lệnh THẬT người dùng chạy tiếp sau khi xem.
+_FRAME_FOOTER = [('ctf sync', 'đồng bộ'), ('ctf submit', 'nộp flag'),
+                 ('ctf menu', 'console tương tác')]
 
 
 def _print_app_header(label, context=""):

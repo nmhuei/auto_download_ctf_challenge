@@ -163,15 +163,21 @@ class FramedCommandGateTests(unittest.TestCase):
         self.assertIn("BODY", out)
         self.assertNotIn("q thoát", out)
         self.assertNotIn("di chuyển", out)
+        self.assertNotIn("console tương tác", out)
 
     def test_fake_tty_keeps_full_chrome(self):
         # TTY giả lập → rich tô màu ANSI → strip trước khi assert nội dung.
+        # Surface framed render-một-lần-rồi-thoát → footer chỉ gợi lệnh thật
+        # (_FRAME_FOOTER), không phím TUI ảo.
         out = self._strip_ansi(self._frame_output(FakeTTY))
         self.assertIn("BODY", out)
         self.assertLess(out.index("CTF·TOOLKIT"), out.index("BODY"))
-        self.assertGreater(out.index("q thoát"), out.index("BODY"))
-        for frag in ("↑↓ di chuyển", "? help", "q thoát"):
+        self.assertGreater(out.index("console tương tác"), out.index("BODY"))
+        for frag in ("ctf sync đồng bộ", "ctf submit nộp flag",
+                     "ctf menu console tương tác"):
             self.assertIn(frag, out)
+        for ghost in ("↑↓ di chuyển", "? help", "q thoát"):
+            self.assertNotIn(ghost, out)
 
 
 if __name__ == "__main__":

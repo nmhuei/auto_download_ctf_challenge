@@ -860,20 +860,30 @@ class TestAppHeaderFooterFrame(unittest.TestCase):
         self.assertIn("wsA", out)
         self.assertIn("BODY", out)
         self.assertLess(out.index("CTF·TOOLKIT"), out.index("BODY"))
-        # Non-tty: không chrome keybinding (uv-style machine-readable).
+        # Non-tty: không chrome footer (uv-style machine-readable) — kể cả
+        # gợi ý lệnh thật mới lẫn phím ảo cũ (phải không bao giờ hồi sinh).
         self.assertNotIn("q thoát", out)
         self.assertNotIn("di chuyển", out)
+        self.assertNotIn("console tương tác", out)
 
     def test_fake_tty_header_before_body_footer_after(self):
         out = self._strip_ansi(self._frame_output(_FakeTTY))
         self.assertIn("BODY", out)
         self.assertLess(out.index("CTF·TOOLKIT"), out.index("BODY"))
-        self.assertGreater(out.index("q thoát"), out.index("BODY"))
+        # Binding cuối ('ctf menu') luôn được giữ khi trim theo width.
+        self.assertGreater(out.index("console tương tác"),
+                           out.index("BODY"))
 
-    def test_footer_bindings_standard_set_on_tty(self):
+    def test_footer_hints_real_commands_on_tty(self):
+        # Surface framed render-một-lần-rồi-thoát: KHÔNG có vòng đọc phím →
+        # footer chỉ được gợi lệnh thật (ctf sync/submit/menu), cấm phím ảo
+        # kiểu TUI (↑↓/?/q) vốn không được xử lý ở đâu trên các màn này.
         out = self._strip_ansi(self._frame_output(_FakeTTY))
-        for frag in ("↑↓ di chuyển", "? help", "q thoát", " · "):
+        for frag in ("ctf sync đồng bộ", "ctf submit nộp flag",
+                     "ctf menu console tương tác", " · "):
             self.assertIn(frag, out)
+        for ghost in ("↑↓ di chuyển", "? help", "q thoát"):
+            self.assertNotIn(ghost, out)
 
     def test_framed_commands_wired_in_dispatch(self):
         import inspect
