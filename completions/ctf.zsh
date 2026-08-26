@@ -144,7 +144,10 @@ _ctf() {
                         '(-w --workspace)'{-w,--workspace}'[CTF workspace directory]:dir:_directories' \
                         '--id[target challenge ID]:id:' \
                         '(-n --name)'{-n,--name}'[target challenge name]:name:' \
-                        '(-f --flag)'{-f,--flag}'[flag string to hoard]:flag:'
+                        '(-f --flag)'{-f,--flag}'[flag string to hoard]:flag:' \
+                        '--list[bảng mọi flag đang giữ chờ submit]' \
+                        '--all[với --list: hiện flag đầy đủ]' \
+                        '--remove[gỡ flag khỏi kho cho challenge chỉ định]'
                     ;;
                 rank|scoreboard|leaderboard)
                     _arguments \
@@ -214,7 +217,9 @@ _ctf() {
                 history|log)
                     _arguments \
                         '(-w --workspace)'{-w,--workspace}'[CTF workspace directory]:dir:_directories' \
-                        '--all[hiện flag đầy đủ]'
+                        '--all[hiện flag đầy đủ (kèm in toàn bộ history)]' \
+                        '(--tail --limit)'--tail'[N entry mới nhất (0 = tất cả)]:N:' \
+                        '(--tail --limit)'--limit'[như --tail: N entry mới nhất]:N:'
                     ;;
                 sniper)
                     _arguments \

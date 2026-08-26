@@ -48,7 +48,7 @@ _ctf() {
         workspaces)  opts="-d --dir" ;;
         instance)    opts="-w --workspace -c --cookie -t --token --id -n --name -l --list -i --interactive --auto-extend --auto-extend-all -y --yes" ;;
         submit)      opts="-w --workspace -u --url -c --cookie -t --token --id -n --name -f --flag --auto --flag-format --force -i --interactive" ;;
-        hoard)       opts="-w --workspace --id -n --name -f --flag" ;;
+        hoard)       opts="-w --workspace --id -n --name -f --flag --list --all --remove" ;;
         rank)        opts="-w --workspace -u --url -c --cookie -t --token -n --top --no-docs" ;;
         watch)       opts="-w --workspace --once --no-scoreboard --start --end -c --cookie -t --token" ;;
         register)    opts="-u --url --email --tempmail --username --password -w --workspace" ;;
@@ -57,7 +57,7 @@ _ctf() {
         storage)     opts="-d --base-dir --threshold-mb archive" ;;
         sync)        opts="-w --workspace --verify" ;;
         export-pack) opts="-w --workspace --out" ;;
-        history)     opts="-w --workspace --all" ;;
+        history)     opts="-w --workspace --all --tail --limit" ;;
         open)        opts="-w --workspace" ;;
         config)      opts="key value on off auto-sync" ;;
         sniper)      opts="-w --workspace --start-at --retry-wrong --poll" ;;
