@@ -13,6 +13,7 @@ storage.constants.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -35,6 +36,7 @@ from .constants import (
     WRITEUP_STATES,
 )
 from .fileio import (
+    SKIP_WRITE,
     atomic_write_json,
     atomic_write_text,
     locked_path,
@@ -47,6 +49,26 @@ PathLike = Union[str, Path]
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+class StatusWriteResult(dict):
+    """Kết quả :meth:`WorkspaceRepo.update_status` — dict trạng thái
+    ``status`` (schema v2, đã normalize) kèm cờ kết quả lần ghi:
+
+    - ``noop``: True khi mutator không thay đổi gì so với nội dung trên
+      đĩa — lần gọi này KHÔNG ghi file và KHÔNG đụng ``updated_at``
+      (BUG-C16-2: trước đây luôn rewrite + stamp kể cả khi giá trị cũ).
+    - ``persisted``: False khi lần gọi KHÔNG chạm đĩa (no-op, hoặc thư
+      mục challenge đã bị xoá — skip chống zombie BUG-C16-1).
+
+    Là dict subclass nên mọi consumer hiện tại (``out["solve"]``,
+    ``out.get(...)``, ``json.dumps(out)``) hoạt động nguyên vẹn; hai cờ
+    là attribute riêng không nằm trong payload JSON."""
+
+    def __init__(self, data=None, *, noop: bool = False, persisted: bool = True):
+        super().__init__(data or {})
+        self.noop = noop
+        self.persisted = persisted
 
 
 def normalize_status(raw) -> dict:
@@ -343,42 +365,80 @@ class WorkspaceRepo:
             meta = self.read_metadata(meta_path)
         return self._migrate_status(meta, meta_path)
 
-    def update_status(self, meta_path: PathLike, mutator: Callable[[dict], "dict | None"]) -> dict:
+    def update_status(self, meta_path: PathLike,
+                      mutator: Callable[[dict], "dict | None"]) -> StatusWriteResult:
         """Read-mutate-write block ``status`` trong flock (lock granularity
         theo challenge — submit song song ở 2 challenge không chặn nhau).
 
         ``mutator(status_dict)`` nhận status đã normalize/migrate và trả về
         status mới (trả ``None`` để giữ nguyên). Sau khi mutate:
-          - stamp ``updated_at``
-          - mirror legacy ``solved_by_me`` (luôn == solve=='solved_by_me')
-          - toggle marker README theo hướng thay đổi của trục solve
-        Trả về status cuối cùng.
+          - NẾU có thay đổi thật so với nội dung trên đĩa: stamp
+            ``updated_at``, mirror legacy ``solved_by_me`` (luôn ==
+            solve=='solved_by_me'), toggle marker README theo hướng thay đổi
+            của trục solve, rồi ghi.
+          - NẾU KHÔNG có gì thay đổi (BUG-C16-2: vd mirror
+            ``container='running'`` trên giá trị cũ khi ``instance --sync``
+            chạy lại): BỎ QUA ghi — file giữ nguyên byte-in-byte,
+            ``updated_at`` không bị đụng.
+        Lần materialize ĐẦU TIÊN schema v2 trên metadata legacy vẫn là một
+        lần ghi hợp lệ (nội dung đĩa đổi) nhưng không stamp ``updated_at``
+        mới nếu trục trạng thái không hề đổi.
+
+        Trả về :class:`StatusWriteResult` — state đã merge TRONG lock
+        (không re-read ngoài khóa — BUG-C16-4: read-back ngoài khóa từng
+        làm pull_service đếm phantom updated), kèm cờ ``noop``/``persisted``.
         """
         meta_path = Path(meta_path)
         root = meta_path.parent
         readme_paths = [root / "writeup" / "README.md", root / "README.md"]
+        outcome: dict = {}
 
-        def _mut(meta: dict) -> dict:
-            meta = dict(meta or {})
-            current = self._migrate_status(meta, meta_path)
+        def _mut(meta: dict):
+            meta_orig = dict(meta or {})
+            current = self._migrate_status(meta_orig, meta_path)
+            # Chốt snapshot TRƯỚC khi mutator chạy: mutator style hiện hành
+            # mutate in-place trên dict nhận vào, so sánh sau phải dựa trên
+            # bản copy sạch của state cũ (deepcopy vì flag là dict lồng).
+            snapshot = copy.deepcopy(current)
             old_solve = current["solve"]   # chốt TRƯỚC khi mutator có thể mutate in-place
             new = mutator(current)
             new = normalize_status(new if new is not None else current)
-            new["updated_at"] = _now_iso()
 
-            meta["solved_by_me"] = new["solve"] == "solved_by_me"
-            meta["status"] = new
+            if new != snapshot:
+                new["updated_at"] = _now_iso()
+
+            candidate = dict(meta_orig)
+            candidate["solved_by_me"] = new["solve"] == "solved_by_me"
+            candidate["status"] = new
+
+            if candidate == meta_orig:
+                # Không có gì thay đổi so với nội dung trên đĩa (kể cả trường
+                # hợp mutator mutate in-place cùng giá trị cũ).
+                outcome["noop"] = True
+                outcome["status"] = new
+                return SKIP_WRITE
 
             if old_solve != new["solve"]:
                 if new["solve"] == "solved_by_me":
                     self.write_solved_state(readme_paths, True)
                 elif old_solve == "solved_by_me":
                     self.write_solved_state(readme_paths, False)
-            return meta
 
-        locked_update_json(meta_path, _mut)
-        updated = self.read_metadata(meta_path)
-        return normalize_status(updated.get("status"))
+            outcome["status"] = new
+            return candidate
+
+        merged = locked_update_json(meta_path, _mut)
+        if merged is None:
+            st = outcome.get("status")
+            return StatusWriteResult(
+                normalize_status(st if isinstance(st, dict) else {}),
+                noop=bool(outcome.get("noop")),
+                persisted=False)
+        block = merged.get("status") if isinstance(merged, dict) else None
+        return StatusWriteResult(
+            normalize_status(block if isinstance(block, dict) else {}),
+            noop=False,
+            persisted=True)
 
     # ------------------------------------------------------------------
     # submit_history.json
@@ -397,12 +457,61 @@ class WorkspaceRepo:
         raw_entries = data.get("entries", [])
         return {"entries": [e for e in raw_entries if isinstance(e, dict)]}
 
+    @staticmethod
+    def _submit_entry_key(entry: dict):
+        """Khóa định danh của một entry submit history. ``flag`` là định
+        danh tự nhiên (submit_service._find_history_entry tra cứu theo flag
+        từ trước); entry không có flag dùng khóa nội dung để không bị gộp
+        lẫn hay mất khi merge đa tiến trình."""
+        flag = entry.get("flag")
+        if isinstance(flag, str) and flag.strip():
+            return ("flag", flag.strip())
+        try:
+            content = json.dumps(entry, sort_keys=True, ensure_ascii=False)
+        except (TypeError, ValueError):
+            content = repr(entry)
+        return ("content", content)
+
     def save_submit_history(self, hist: dict) -> None:
-        entries = hist.get("entries", []) if isinstance(hist, dict) else []
-        locked_update_json(
-            self.submit_history_path,
-            lambda _current: {"entries": list(entries)},
-        )
+        """Persist submit history dưới lock với MERGE THEO KHÓA entry
+        (BUG-C16-3).
+
+        Caller vẫn truyền FULL list snapshot như cũ (API tương thích
+        submit_service: load 1 lần ở init rồi save cả list), nhưng bên
+        trong khóa ta đọc-LẠI state hiện hành trên đĩa rồi:
+          - giữ mọi entry trên đĩa mà caller KHÔNG mang trong snapshot
+            (entry do tiến trình khác vừa thêm — không còn bị lost update
+            P1 snapshot [A] / P2 persist [A,C] / P1 save [A,B] -> mất C);
+          - entry trùng khóa (cùng flag): BẢN CỦA CALLER thắng (upsert —
+            caller cầm kết quả mới nhất của submission đó);
+          - entry không flag: giữ theo khóa nội dung, không nhân đôi.
+
+        Thứ tự: entry caller THAY TẠI CHỖ của bản đĩa cùng khóa, entry
+        hoàn toàn mới nối CUỐI (``ctf history --tail`` dựa vào thứ tự
+        thời gian — không xáo trộn)."""
+        mine = [e for e in (hist.get("entries") or []
+                            if isinstance(hist, dict) else [])
+                if isinstance(e, dict)]
+        pending: dict = {}
+        for e in mine:
+            pending[self._submit_entry_key(e)] = e   # trùng khóa: bản sau thắng
+
+        def _mut(data: dict) -> dict:
+            cur = data.get("entries")
+            disk = [e for e in cur if isinstance(e, dict)] \
+                if isinstance(cur, list) else []
+            merged = []
+            for e in disk:
+                k = self._submit_entry_key(e)
+                if k in pending:
+                    merged.append(pending.pop(k))   # thay tại chỗ bằng bản caller
+                else:
+                    merged.append(e)                # chỉ có trên đĩa: giữ nguyên
+            merged.extend(pending.values())         # entry mới của caller: nối cuối
+            data["entries"] = merged
+            return data
+
+        locked_update_json(self.submit_history_path, _mut)
 
     # ------------------------------------------------------------------
     # Solved-state markers (writeup/README.md, README.md)

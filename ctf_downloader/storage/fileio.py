@@ -13,6 +13,14 @@ from typing import Callable, Iterator, Union
 PathLike = Union[str, Path]
 
 
+class _SkipWrite:
+    """Sentinel singleton: mutator của :func:`locked_update_json` trả về
+    đối tượng này để BỎ qua lần ghi (state giữ nguyên trên đĩa)."""
+
+
+SKIP_WRITE = _SkipWrite()
+
+
 def _tmp_path(path: Path) -> Path:
     return path.with_name(path.name + ".tmp")
 
@@ -49,7 +57,7 @@ def atomic_write_json(path: PathLike, obj) -> None:
     atomic_write_text(path, json.dumps(obj, indent=2, ensure_ascii=False))
 
 
-def locked_write_text(path: PathLike, text: str) -> None:
+def locked_write_text(path: PathLike, text: str) -> bool:
     """Ghi text nguyên tử dưới khóa độc quyền fcntl.flock(LOCK_EX).
 
     Cùng giao thức khóa với locked_update_json (dành cho state JSON):
@@ -63,11 +71,17 @@ def locked_write_text(path: PathLike, text: str) -> None:
       lockfile và dọn tmp.
     - Symlink: resolve sang ĐÍCH THẬT trước khi tính lock path và ghi
       (nhất quán atomic_write_text / locked_update_json).
-    """
+
+    Trả về True khi đã ghi, False khi BỎ QUA vì thư mục cha không còn tồn
+    tại (BUG-C16-1: sync giữ snapshot của challenge bị xoá giữa chừng —
+    mkdir(parents=True) cũ HỒI SINH thư mục và sinh state zombie; giờ bỏ
+    ghi thay vì dựng lại. Lần tạo ĐẦU TIÊN hợp lệ do caller tự đảm nhiệm
+    việc tạo thư mục — vd WorkspaceBuilder tự os.makedirs trước khi gọi)."""
     p = Path(path)
     if p.is_symlink():
         p = p.resolve()
-    p.parent.mkdir(parents=True, exist_ok=True)
+    if not p.parent.is_dir():
+        return False   # không hồi sinh thư mục đã bị xoá
     lock_path = p.with_name(p.name + ".lock")
 
     while True:
@@ -83,6 +97,15 @@ def locked_write_text(path: PathLike, text: str) -> None:
                 live = False
             if not live:
                 continue
+
+            # Re-check sau khi chờ khóa: thư mục có thể vừa bị xoa trong lúc
+            # ta xếp hàng — skip thay vì ghi vào dir mới dựng lại.
+            if not p.parent.is_dir():
+                try:
+                    os.unlink(lock_path)
+                except OSError:
+                    pass
+                return False
 
             fd, tmp_name = tempfile.mkstemp(
                 dir=str(p.parent), prefix=p.name + ".", suffix=".tmp"
@@ -107,7 +130,7 @@ def locked_write_text(path: PathLike, text: str) -> None:
                 os.unlink(lock_path)
             except OSError:
                 pass
-            return
+            return True
         finally:
             fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
             lock_f.close()
@@ -132,11 +155,18 @@ def locked_path(path: PathLike) -> Iterator[Path]:
       mồ côi khi holder trước vừa unlink).
     - Caller ghi THÀNH CÔNG: lockfile được unlink TRƯỚC khi unlock. Caller
       raise: giữ lại lockfile (nhất quán locked_update_json).
+
+    BUG-C16-1: KHÔNG còn mkdir(parents=True) — nếu thư mục cha không tồn
+    tại thì yield mà KHÔNG khóa (không có gì để bảo vệ): mọi ghi của caller
+    vào đường đích sẽ fail LOÁ (FileNotFoundError từ writer, không tự tạo
+    dir) thay vì hồi sinh thư mục đã bị xoá giữa chừng để sinh file zombie.
     """
     p = Path(path)
     if p.is_symlink():
         p = p.resolve()
-    p.parent.mkdir(parents=True, exist_ok=True)
+    if not p.parent.is_dir():
+        yield p   # thư mục cha đã biến mất: không khóa, ghi sẽ fail loud
+        return
     lock_path = p.with_name(p.name + ".lock")
 
     while True:
@@ -170,7 +200,7 @@ def locked_path(path: PathLike) -> Iterator[Path]:
             lock_f.close()
 
 
-def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, None]]) -> dict:
+def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, None]]) -> "dict | None":
     """
     Đọc-mutate-ghi JSON dưới khóa độc quyền fcntl.flock(LOCK_EX).
 
@@ -186,7 +216,9 @@ def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, Non
       ABORT — raise OSError lên caller, KHÔNG ghi đè (không có gì để
       backup an toàn, ghi đè sẽ phá dữ liệu gốc vĩnh viễn).
     - BOM UTF-8 ở đầu file được tự động bỏ qua (utf-8-sig).
-    - Gọi mutator(state); nếu mutator trả None thì giữ nguyên state.
+    - Gọi mutator(state); nếu mutator trả None thì giữ nguyên state; nếu
+      trả ``SKIP_WRITE`` thì BỎ QUA toàn bộ lần ghi (state trên đĩa giữ
+      nguyên byte-in-byte) và trả None.
     - Ghi lại bằng atomic write (trong phạm vi lock), trả về dict cuối cùng.
     - Ghi THÀNH CÔNG: lockfile `<name>.lock` được unlink (lỗi unlink bỏ qua).
       Unlink thực hiện TRƯỚC khi unlock, kèm re-validate inode sau mỗi lần
@@ -198,11 +230,18 @@ def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, Non
       thay thế link bằng file thường, target gốc không bao giờ được cập nhật.
       Resolve trước cũng đảm bảo mọi caller qua symlink khác nhau dùng CÙNG
       một lock file (lock của target thật).
+
+    Trả về dict state cuối cùng SAU KHI GHI; None khi bị SKIP — gồm hai
+    trường hợp (BUG-C16-1): thư mục cha không còn tồn tại tại lúc ghi
+    (không mkdir hồi sinh thư mục challenge bị xoá giữa chừng -> không sinh
+    metadata.json zombie), hoặc mutator trả SKIP_WRITE. Lần tạo file ĐẦU
+    TIÊN trong thư mục CÓ SẴN vẫn hoạt động như cũ.
     """
     p = Path(path)
     if p.is_symlink():
         p = p.resolve()
-    p.parent.mkdir(parents=True, exist_ok=True)
+    if not p.parent.is_dir():
+        return None   # không hồi sinh thư mục đã bị xoá
     lock_path = p.with_name(p.name + ".lock")
 
     while True:
@@ -223,6 +262,15 @@ def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, Non
                 live = False
             if not live:
                 continue
+
+            # Re-check sau khi chờ khóa: thư mục có thể vừa bị xoá trong lúc
+            # ta xếp hàng — skip thay vì dựng lại dir rồi ghi zombie.
+            if not p.parent.is_dir():
+                try:
+                    os.unlink(lock_path)
+                except OSError:
+                    pass
+                return None
 
             raw = ""
             if p.exists():
@@ -251,6 +299,14 @@ def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, Non
                     data = {}
 
             result = mutator(data)
+            if result is SKIP_WRITE:
+                # Mutator quyết định không đổi gì: bỏ qua ghi, dọn lockfile
+                # như nhánh thành công (không để lại rác .lock).
+                try:
+                    os.unlink(lock_path)
+                except OSError:
+                    pass
+                return None
             if result is not None and isinstance(result, dict):
                 data = result
 

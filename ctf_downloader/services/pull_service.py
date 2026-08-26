@@ -865,7 +865,11 @@ class PullService:
             except Exception:
                 challenges = []
         if not challenges:
+            # BUG-C16-5: đủ shape keys như nhánh thành công — consumer truy
+            # cập trực tiếp result["removed_local"] v.v. không bị KeyError.
             return {"ok": False, "updated": 0, "new": 0, "new_on_server": [],
+                    "removed_local": [], "corrupt_local": [],
+                    "write_errors": [],
                     "drift": [], "unsolved_locally_solved_remotely": [],
                     "total_local": 0, "total_server": 0}
 
