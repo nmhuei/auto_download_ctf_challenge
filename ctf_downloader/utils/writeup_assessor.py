@@ -25,6 +25,7 @@ import collections
 import difflib
 import hashlib
 import re
+import threading
 from typing import Dict, List, Optional
 
 from ..storage.constants import FLAG_PLACEHOLDER
@@ -125,6 +126,10 @@ def _strip_reference_content(md_text: str, reference_template: str) -> str:
 # ---- Memo kết quả chấm (pure-function cache trong cùng process) ---------
 _ASSESS_MEMO_MAX = 4096
 _assess_memo: "collections.OrderedDict[bytes, Dict[str, object]]" = collections.OrderedDict()
+# Khoá nhẹ chỉ bao get/promote + store/evict của dict (review-5): compute
+# NGOÀI lock nên thread chậm không cản thread khác; caller hiện tại
+# single-thread nhưng hợp đồng giữ đúng cả khi gọi từ nhiều worker.
+_assess_memo_lock = threading.Lock()
 
 
 def _memo_digest(md_text: str, flag_format: Optional[str],
@@ -150,20 +155,27 @@ def assess_writeup(md_text: str,
     (blake2b-128 của md/flag_format/reference_template) trong cùng process:
     scan/render/watch tick chấm lại writeup KHÔNG ĐỔI chỉ tốn 1 lần hash.
     Luôn trả bản copy — caller tự do mutate dict nhận về mà không nhiễm cache.
+    Thread-safe: khoá chỉ bao truy cập OrderedDict; phần chấm điểm chạy
+    ngoài lock (2 thread cùng miss có thể compute trùng — pure, vô hại).
     """
     try:
         key = _memo_digest(md_text, flag_format, reference_template)
     except Exception:            # input lạ (không encode được) — bỏ qua memo
         return _assess_writeup_uncached(md_text, flag_format, reference_template)
-    memo = _assess_memo
-    hit = memo.get(key)
+    with _assess_memo_lock:      # get + promote LRU nguyên tử với evict
+        hit = _assess_memo.get(key)
+        if hit is not None:
+            _assess_memo.move_to_end(key)
     if hit is None:
+        # Compute NGOÀI lock — giữ lock scope nhỏ nhất, không deadlock.
         hit = _assess_writeup_uncached(md_text, flag_format, reference_template)
-        memo[key] = hit
-        if len(memo) > _ASSESS_MEMO_MAX:   # bounded: FIFO theo LRU thứ tự truy cập
-            memo.popitem(last=False)
-    else:
-        memo.move_to_end(key)
+        with _assess_memo_lock:
+            _assess_memo[key] = hit
+            if len(_assess_memo) > _ASSESS_MEMO_MAX:   # bounded: FIFO theo LRU thứ tự truy cập
+                _assess_memo.popitem(last=False)
+    # (nhánh hit: đã promote LRU trong lock ở trên)
+    # Bản copy dựng NGOÀI lock từ entry bất biến-sau-chèn (uncached trả
+    # dict mới và không ai mutate bản gốc) — đọc an toàn dưới GIL.
     return {"status": hit["status"], "score": hit["score"],
             "signals": dict(hit["signals"]), "missing": list(hit["missing"])}
 
