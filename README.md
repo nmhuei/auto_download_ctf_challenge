@@ -89,6 +89,8 @@ Output TUI dùng theme **Amber Refit** (lineage Phosphor Field Kit) — accent `
 
 AppHeader "Phosphor Radar" 4 dòng: scanline `░░▒▒▓▓` full-width · title `CTF·TOOLKIT v3◢` căn giữa · `▍` lệnh + context · `▸` timestamp mép phải. Hai panel overview TIẾN ĐỘ + GIẢI xếp ngang khi terminal ≥ 96 cột, xếp dọc khi hẹp hơn; nhịp giải 24h (sparkline braille) nằm trong panel GIẢI. Meter gradient amber chỉ bật trên TTY ≥ 60 cột — non-TTY/terminal hẹp fallback plain `▰▱` không màu. Chọn bằng phím số `[n]`; mục mặc định/đang dùng đánh dấu `❯`.
 
+Mở `ctf menu`, một splash logo lớn hiện đúng một lần trước radar đầu tiên của phiên: terminal ≥ 80 cột nhận bản `big` trong khung box-drawing, hẹp hơn tự rơi về bản pagga rail gọn. Các lệnh framed khác vẫn giữ radar 4 dòng như mẫu trên.
+
 Chạy `ctf <lệnh> --help` để xem đầy đủ tuỳ chọn của từng lệnh.
 
 ## 4. Cây workspace output
