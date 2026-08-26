@@ -780,13 +780,16 @@ class TestPhosphorHelpScreen(unittest.TestCase):
         self.assertNotIn("q thoát", self.out)
 
     def test_app_header_first_line(self):
-        # codex-r3 #2: help là lệnh thường duy nhất còn thiếu AppHeader —
-        # dòng ĐẦU output phải là `▐██ CTF·TOOLKIT │ help`; banner vẫn giữ.
-        first = self.out.splitlines()[0]
-        self.assertIn("▐██", first)
-        self.assertIn("CTF·TOOLKIT", first)
-        self.assertIn("help", first)
-        self.assertIn("│", first)
+        # combo B: AppHeader → Phosphor Radar — dòng ĐẦU là dải scanline
+        # full-width, dòng 2 brand ``CTF·TOOLKIT v3◢`` căn giữa; lệnh `help`
+        # vẫn nằm trong khối header (dòng ▍); banner half-block vẫn giữ sau đó.
+        lines = self.out.splitlines()
+        self.assertIn("▓", lines[0])
+        self.assertIn("░", lines[0])
+        self.assertIn("CTF·TOOLKIT", lines[1])
+        self.assertIn("v3", lines[1])
+        header_block = "\n".join(lines[:4])
+        self.assertIn("help", header_block)
         # Banner half-block vẫn có mặt sau header.
         self.assertRegex(self.out, r"(?m)^█")
 
@@ -853,7 +856,8 @@ class TestAppHeaderFooterFrame(unittest.TestCase):
     def test_header_before_body_pipe_drops_footer(self):
         out = self._frame_output()
         self.assertIn("CTF·TOOLKIT", out)
-        self.assertIn("status · wsA", out)
+        self.assertIn("▍status", out)
+        self.assertIn("wsA", out)
         self.assertIn("BODY", out)
         self.assertLess(out.index("CTF·TOOLKIT"), out.index("BODY"))
         # Non-tty: không chrome keybinding (uv-style machine-readable).

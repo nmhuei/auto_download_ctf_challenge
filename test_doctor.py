@@ -257,6 +257,7 @@ class TestDoctorPhosphorRoles(unittest.TestCase):
     WARN_ANSI = "\x1b[38;2;234;197;79m"
     ACCENT_ANSI = "\x1b[38;2;255;176;0m"
     SOLVED_ANSI = "\x1b[38;2;98;201;126m"    # SOLVED = #62C97E
+    ACCENT_DEEP_ANSI = "\x1b[38;2;107;67;0m"  # ACCENT_DEEP = #6B4300
 
     def _partial_report(self):
         report = DoctorReport(url=URL)
@@ -314,11 +315,11 @@ class TestDoctorPhosphorRoles(unittest.TestCase):
                              f"dòng còn đệm trắng cuối: {plain!r}")
 
     def test_app_header_present_with_brand_block(self):
-        from ctf_downloader.ui.theme import ACCENT
         out = capture_render_ansi(self._partial_report())
-        # brand block amber ▐██ mở đầu AppHeader
-        self.assertIn(self.ACCENT_ANSI + "▐██", out)
-        self.assertIn("CTF·TOOLKIT", out)
+        # combo B Phosphor Radar: dải scanline accent.deep mở đầu AppHeader,
+        # brand ``CTF·TOOLKIT`` bold amber ở dòng 2 (căn giữa).
+        self.assertIn(self.ACCENT_DEEP_ANSI + "░", out)
+        self.assertIn("\x1b[1;" + self.ACCENT_ANSI[2:] + " CTF·TOOLKIT ", out)
         self.assertIn(URL, out)
 
     def test_capabilities_values_colored_individually(self):
@@ -371,7 +372,10 @@ class TestDoctorChromeAndWrap(unittest.TestCase):
         self.assertTrue(cont, f"không có continuation thụt cột nội dung:\n"
                               f"{buf.getvalue()}")
         # Mọi dòng không thuộc dạng dòng đầu khối đều phải được thụt lề.
-        allowed_prefixes = ("▐██", "CHECK", "KẾT QUẢ", "!", "✔", "✗", "↑↓")
+        # (combo B: 4 dòng AppHeader radar — scanline / title dot-wing /
+        # ▍ lệnh / ▸ timestamp — đều hợp lệ mở đầu ở cột 1.)
+        allowed_prefixes = ("▐██", "CHECK", "KẾT QUẢ", "!", "✔", "✗", "↑↓",
+                            "░░", "·", "▍", "▸")
         for ln in lines:
             if not ln.strip() or ln.startswith(allowed_prefixes):
                 continue
