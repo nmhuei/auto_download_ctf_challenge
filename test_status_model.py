@@ -1380,6 +1380,62 @@ class TestOverviewShellLayout(TempWorkspaceCase):
         self.assertIn("hoarded 1 · drafts 1", pts_line)
 
 
+class TestNonTTYColumnDefault(TempWorkspaceCase):
+    """synthesis uiv2 #9 — non-TTY KHÔNG còn ép layout tới trần.
+
+    - Trước đây ``_tty_columns`` trả 10**6 khi pipe → layout NGANG bị ép
+      tới trần ``OVERVIEW_MAX_COLS`` (dòng ~89 cells) bất kể terminal đích.
+    - Giờ: non-TTY + không env COLUMNS → mặc định **80 cols** (overview
+      XẾP DỌC, heading divider co, mọi dòng ≤80 cells). Env ``COLUMNS``
+      set rõ vẫn được tôn trọng (capture/script ép rộng có kiểm soát).
+    - TTY đo cửa sổ thật đã phủ bởi ``TestOverviewShellLayout`` (patch cols).
+    """
+
+    def _plain_env(self) -> dict:
+        env = dict(os.environ)
+        env.pop("COLUMNS", None)
+        env.pop("LINES", None)
+        return env
+
+    def test_non_tty_defaults_80_not_huge(self):
+        import ctf_downloader.services.status_service as ss_mod
+
+        def _no_window(fd):
+            raise OSError(25, "Inappropriate ioctl for device")
+
+        with patch.dict(os.environ, self._plain_env(), clear=True), \
+             patch.object(os, "get_terminal_size", side_effect=_no_window), \
+             patch.object(sys, "stdout", io.StringIO()):
+            cols = StatusService._tty_columns()
+        self.assertEqual(cols, 80)
+        # Pin đúng ngưỡng: phải dưới mốc xếp NGANG để pipe không dính panel.
+        self.assertLess(cols, 96)
+
+    def test_plain_render_stacks_panels_within_80_cells(self):
+        from rich.cells import cell_len
+
+        buf = io.StringIO()
+        with redirect_stdout(buf), \
+                patch.dict(os.environ, self._plain_env(), clear=True):
+            StatusService.render_tree(self.repo)
+        lines = buf.getvalue().splitlines()
+        ti_line = next(ln for ln in lines if "TIẾN ĐỘ" in ln)
+        self.assertNotIn("GIẢI", ti_line)          # <96 → XẾP DỌC
+        self.assertIn("GIẢI", buf.getvalue())
+        widest = max(cell_len(ln) for ln in lines)
+        self.assertLessEqual(widest, 80)
+
+    def test_explicit_columns_env_still_widens_layout(self):
+        buf = io.StringIO()
+        env = {**self._plain_env(), "COLUMNS": "120", "LINES": "40"}
+        with redirect_stdout(buf), patch.dict(os.environ, env, clear=True):
+            self.assertEqual(StatusService._tty_columns(), 120)
+            StatusService.render_tree(self.repo)
+        ti_line = next(ln for ln in buf.getvalue().splitlines()
+                       if "TIẾN ĐỘ" in ln)
+        self.assertIn("GIẢI", ti_line)             # ≥96 → NGANG như TTY rộng
+
+
 # ----------------------------------------------------------------------
 # Deferred-minors batch-3: dọn `.lock` sau khi locked_update_json thành công
 # ----------------------------------------------------------------------

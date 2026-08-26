@@ -78,8 +78,9 @@ CHALLENGE_NAME_MAX_CELLS = 24
 OVERVIEW_SIDE_BY_SIDE_MIN_COLS = 96
 #: Cell tối thiểu của panel TIẾN ĐỘ khi xếp ngang (spec: "trái min 38 cell").
 OVERVIEW_LEFT_MIN_COLS = 38
-#: Trần layout cho non-TTY (pipe ``_tty_columns`` trả số lớn) — pipe vẫn đầy
-#: đủ thông tin, chỉ chặn độ rộng dòng để không sinh output kilomet dài.
+#: Trần layout khi xếp NGANG (TTY rộng hoặc pipe có env COLUMNS set rõ) —
+#: chỉ chặn độ rộng dòng, không ẩn thông tin (synthesis uiv2 #9: non-TTY
+#: KHÔNG còn tự ép tới trần này — mặc định 80 cols xem ``_tty_columns``).
 OVERVIEW_MAX_COLS = 120
 
 
@@ -597,11 +598,22 @@ class StatusService:
 
     @classmethod
     def _tty_columns(cls) -> int:
-        """Số cột terminal cho logic degrade; non-TTY trả số lớn (pipe phải
-        GIỮ ĐẦY ĐỦ thông tin — không ẩn cột khi redirect)."""
+        """Số cột terminal cho logic degrade.
+
+        - TTY thật → đo cửa sổ thật (``shutil.get_terminal_size``).
+        - Non-TTY (pipe/redirect) → KHÔNG còn cửa sổ thật để đo: mặc định
+          **80 cols** thay vì số cực đại cũ (10**6) — trước đây pipe ra
+          terminal hẹp vẫn nhận dòng ~89 cells vì layout NGANG bị ép tới
+          trần ``OVERVIEW_MAX_COLS`` (synthesis uiv2 #9). Env ``COLUMNS``
+          set rõ vẫn được tôn trọng qua ``shutil.get_terminal_size``
+          (vd ``COLUMNS=120 python3 main.py status | cat``) để capture/
+          script giữ quyền ép độ rộng.
+        - Thông tin không mất theo width: ngưỡng narrow là ``< 80`` nên
+          mặc định 80 vẫn GIỮ đầy đủ cột solves/badges của ChallengeRow;
+          pipe chỉ bớt chrome tương tác (footer) đúng hợp đồng
+          ``ui.widgets.footer_bar``.
+        """
         try:
-            if not sys.stdout.isatty():
-                return 10 ** 6
             return shutil.get_terminal_size().columns
         except Exception:
             return 80
