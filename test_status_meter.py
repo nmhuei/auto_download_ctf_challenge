@@ -3,8 +3,9 @@
 Chạy: python3 -m pytest test_status_meter.py -q
 Kiểm tra:
 - render_tree gọi ``meter`` với đúng value (% hoàn thành) và width.
-- Output chứa ký tự block ('█'/'░') ở cả hai path.
-- Fallback plain cho non-TTY / terminal hẹp (<60 cols).
+- Output chứa glyph meter ▰/▱ (SPEC UI v2 §M1) ở cả hai path.
+- Fallback plain ``plain_meter`` (không màu) cho non-TTY / terminal hẹp
+  (<60 cols).
 """
 import io
 import json
@@ -49,7 +50,7 @@ def fake_meter_recorder(calls: List[tuple]):
     """Thay ``ui.widgets.meter``: ghi lại (value, width) và trả Text đầy."""
     def _rec(value, width, colors, **kw):
         calls.append((value, width))
-        return Text("█" * max(width, 1))
+        return Text("▰" * max(width, 1))
     return _rec
 
 
@@ -90,11 +91,12 @@ class TestMeterGradientPath(MeterTestCase):
         self.assertIn((100.0, 22), calls)   # bar tổng workspace (dashboard)
         self.assertIn((100.0, 10), calls)   # bar từng category
         out = buf.getvalue()
-        self.assertIn("█", out)             # output chứa ký tự block
+        self.assertIn("▰", out)             # output chứa glyph meter ▰
 
 
 class TestFallbackPlain(MeterTestCase):
-    """Non-TTY hoặc terminal hẹp (<60 cols) → fallback bar cũ, không gọi meter."""
+    """Non-TTY hoặc terminal hẹp (<60 cols) → fallback plain_meter, không
+    gọi meter gradient."""
 
     def test_non_tty_falls_back_to_plain_bar(self):
         calls: List[tuple] = []
@@ -103,9 +105,9 @@ class TestFallbackPlain(MeterTestCase):
             self._render(buf)
         self.assertEqual(calls, [])         # meter KHÔNG được gọi
         out = buf.getvalue()
-        self.assertIn("░", out)             # ký tự block phần rỗng
+        self.assertIn("▱", out)             # glyph phần rỗng của plain_meter
         # PHOSPHOR: bar plain 22 ô nằm trong cột TIẾN ĐỘ của dashboard.
-        self.assertIn("░" * 22, out)
+        self.assertIn("▱" * 22, out)
         self.assertIn("0/1", out)
         self.assertIn("0.0%", out)
 
@@ -118,8 +120,18 @@ class TestFallbackPlain(MeterTestCase):
             self._render(buf)
         self.assertEqual(calls, [])
         # PHOSPHOR: bar plain 22 ô nằm trong cột TIẾN ĐỘ của dashboard.
-        self.assertIn("░" * 22, buf.getvalue())
+        self.assertIn("▱" * 22, buf.getvalue())
         self.assertIn("0.0%", buf.getvalue())
+
+    def test_fallback_plain_is_colorless_and_ansi_safe(self):
+        """Fallback ASCII-an-toàn: plain_meter — không span màu, không ANSI,
+        đúng nguồn truth ``ui.widgets.plain_meter``."""
+        from ctf_downloader.ui.widgets import plain_meter
+        bar = StatusService._meter_only(40.0, 22)   # non-TTY → plain
+        self.assertEqual(bar.plain, plain_meter(40.0, 22).plain)
+        self.assertEqual(bar.spans, [])
+        self.assertNotIn("\x1b", bar.plain)
+        self.assertNotIn("#", bar.plain)
 
 
 class TestPhosphorMeterRamp(MeterTestCase):

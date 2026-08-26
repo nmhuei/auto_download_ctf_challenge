@@ -1486,7 +1486,7 @@ class TestRenderPanelBtop(TempWorkspaceCase):
             self.assertIn(f"Team{i}", text)
         self.assertNotIn("Team5", text)          # chỉ top-5
         meter_w = 16
-        self.assertIn("█" * meter_w, text)       # #1 → meter đầy (100%)
+        self.assertIn("▰" * meter_w, text)       # #1 → meter đầy (100%)
 
     def test_mini_scoreboard_empty_placeholder_when_no_data(self):
         svc = self._svc()
@@ -1537,9 +1537,9 @@ class TestRenderPanelBtop(TempWorkspaceCase):
         wide = _render_plain(svc._render_panel([], width=100), width=100)
         narrow = _render_plain(svc._render_panel([], width=70), width=70)
         self.assertIn("🏆", wide)
-        self.assertIn("█", wide)
+        self.assertIn("▰", wide)
         self.assertNotIn("🏆", narrow)
-        self.assertNotIn("█", narrow)
+        self.assertNotIn("▰", narrow)
         # notices + countdown vẫn còn ở bản degrade
         self.assertIn("📢 hello", narrow)
         self.assertIn("🔴 LIVE", narrow)

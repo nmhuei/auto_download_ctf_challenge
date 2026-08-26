@@ -198,6 +198,32 @@ class TestFormatReport(StorageTestBase):
                     "[green]", "[yellow]", "[red]", "[cyan]"):
             self.assertNotIn(tag, report)
 
+    def test_usage_meter_ruby_only_at_or_over_threshold(self):
+        # SPEC UI v2 §M1: cột USAGE-meter 8 ô — ramp RUBY (#E5534B→#FF2E63)
+        # CHỈ khi ratio = total/threshold ≥1×; dưới ngưỡng vẫn amber.
+        over = self._usage(name="over", total_bytes=2 * 1024 * 1024)    # 2×
+        under = self._usage(name="under", total_bytes=512 * 1024)       # 0.5×
+        report = StorageManager.format_report(
+            [under, over], threshold_mb=1, tty=True)
+        self.assertIn("USAGE", report)            # cột mới có mặt
+        self.assertIn("▰", report)                # meter 8 ô có mặt
+        self.assertIn("#ff2e63", report, "thiếu ruby FIRSTBLOOD cho ≥1× ngưỡng")
+        self.assertIn("#ffb000", report, "workspace <1× ngưỡng phải amber")
+
+    def test_usage_meter_amber_below_threshold_has_no_ruby(self):
+        small = self._usage(name="small", total_bytes=256 * 1024)   # 0.25×
+        report = StorageManager.format_report([small], threshold_mb=1, tty=True)
+        self.assertNotIn("#ff2e63", report)
+        self.assertNotIn("#e5534b", report)
+
+    def test_usage_meter_plain_when_non_tty(self):
+        """non-TTY → plain_meter: glyph ▰▱ không màu (ASCII-an-toàn pipe)."""
+        report = StorageManager.format_report([self._usage()], threshold_mb=1)
+        for hex_ in ("#6b4300", "#ffb000", "#ffe49a", "#e5534b", "#ff2e63"):
+            self.assertNotIn(hex_, report)
+        self.assertIn("▱", report)
+        self.assertNotIn("[dim]", report)
+
     def test_human_size_units(self):
         self.assertEqual(human_size(0), "0 B")
         self.assertEqual(human_size(512), "512 B")

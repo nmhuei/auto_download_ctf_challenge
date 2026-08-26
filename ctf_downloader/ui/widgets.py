@@ -40,8 +40,28 @@ BRAILLE_UP: Tuple[str, ...] = tuple(
     "⡇⣇⣧⣷⣿"
 )
 
-METER_FILL = "█"
-METER_EMPTY = "░"
+#: SPEC UI v2 §M1: glyph meter ▰ (U+25B0) / ▱ (U+25B1) — áp dụng cả path
+#: gradient lẫn plain fallback (một nguồn truth, hết nhân bản block tay).
+METER_FILL = "▰"
+METER_EMPTY = "▱"
+
+# Gradient meter ramp canonical (PHOSPHOR FIELD KIT §3.3, SPEC UI v2 §M1):
+# quantize 101 stop — y<34 than hồng · 34≤y<67 hổ phách · y≥67 vàng nhạt.
+# Mỗi ô nhận ĐÚNG một trong ba màu theo vị trí cột (per-cell btop), KHÔNG
+# nội suy thêm bước nào. ``services.status_service._METER_RAMP_3STOP`` là
+# alias của hằng này (tên cũ cho test + caller hiện hữu).
+AMBER_RAMP: tuple = tuple(
+    (0x6B, 0x43, 0x00) if y < 34 else (0xFF, 0xB0, 0x00) if y < 67 else (0xFF, 0xE4, 0x9A)
+    for y in range(101)
+)
+
+# Ruby ramp (SPEC UI v2 §M1): quantize 101 stop 2 mốc — y<50 #E5534B
+# (ERROR) · y≥50 #FF2E63 (FIRSTBLOOD). CHỈ dùng cho state rủi ro (storage
+# usage ≥1× ngưỡng); mọi meter khác amber tuyệt đối — rule "amber lead".
+RUBY_RAMP: tuple = tuple(
+    (0xE5, 0x53, 0x4B) if y < 50 else (0xFF, 0x2E, 0x63)
+    for y in range(101)
+)
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -150,6 +170,50 @@ def meter(value: float, width: int, colors: Sequence[RGB], *, invert: bool = Fal
         else:
             text.append(ch, style=_rgb_style(rgb))
     return text
+
+
+def plain_meter(value: float, width: int) -> Text:
+    """Bar ``▰``*n + ``▱``*n thuần KHÔNG màu (SPEC UI v2 §M1).
+
+    Fallback ASCII-an-toàn cho non-TTY / terminal hẹp — thay các bản
+    nhân bản ``'█'*n + '░'*n`` tay ở caller. ``value`` clamp 0-100,
+    ``width<1`` → :class:`rich.text.Text` rỗng. Trả ``Text`` (không phải
+    str) để caller không bị rich parse markup nhầm dấu ``[``.
+    """
+    if width < 1:
+        return Text()
+    v = int(_clamp(int(value), 0, 100))
+    filled = width * v // 100
+    return Text(METER_FILL * filled + METER_EMPTY * max(0, width - filled))
+
+
+def meter_markup(value: float, width: int, colors: Sequence[RGB], *,
+                 invert: bool = False) -> str:
+    """Bản rich-markup string của :func:`meter` (SPEC UI v2 §M1).
+
+    Cho report builder ghép dòng text thuần (vd cột USAGE trong storage
+    report) mà vẫn giữ per-cell gradient — render logic vẫn là ``meter()``
+    duy nhất, hàm này chỉ chuyển spans → tag ``[#rrggbb]``/``[dim]``.
+    """
+    text = meter(value, width, colors, invert=invert)
+    plain = text.plain
+    styles: list = [None] * len(plain)
+    for span in text.spans:
+        for i in range(span.start, min(span.end, len(plain))):
+            styles[i] = span.style
+    out: list = []
+    no_style = object()   # sentinel "chưa mở tag nào"
+    prev = no_style
+    for ch, st in zip(plain, styles):
+        if st != prev:
+            if prev is not no_style:
+                out.append("[/]")
+            out.append(f"[{st}]")
+            prev = st
+        out.append(ch)
+    if prev is not no_style:
+        out.append("[/]")
+    return "".join(out)
 
 
 def braille_graph(

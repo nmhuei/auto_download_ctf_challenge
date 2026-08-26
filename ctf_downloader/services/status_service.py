@@ -46,21 +46,11 @@ _UNSET = object()
 TAG_PATTERN = re.compile(r'^[a-z0-9-]{1,24}$')
 TAG_MAX_LEN = 24
 
-# Gradient meter (btop pattern, design-system spec §3.3):
-# than hồng → hổ phách → vàng nhạt (PHOSPHOR FIELD KIT — accent duy nhất).
-METER_RAMP_START = (0x6B, 0x43, 0x00)
-METER_RAMP_MID = (0xFF, 0xB0, 0x00)
-METER_RAMP_END = (0xFF, 0xE4, 0x9A)
-
-# Codex-r3 #1: meter chỉ được dùng ĐÚNG 3 mốc màu spec — mỗi ô nhận MỘT
-# trong ba màu trên theo vị trí cột (1/3 than hồng · 1/3 hổ phách · 1/3
-# vàng nhạt), KHÔNG nội suy thêm bước nào (gradient() cũ sinh các màu trung
-# gian như #885800/#FFD97B lệch spec). Index theo % vị trí ô 0-100 khớp
-# cách ``ui.widgets.meter`` tra màu.
-_METER_RAMP_3STOP: tuple = tuple(
-    METER_RAMP_START if y < 34 else METER_RAMP_MID if y < 67 else METER_RAMP_END
-    for y in range(101)
-)
+# Gradient meter (btop pattern, design-system spec §3.3 / SPEC UI v2 §M1):
+# ramp amber canonical đã chuyển sang ``ui.widgets.AMBER_RAMP`` (một nguồn
+# truth — than hồng → hổ phách → vàng nhạt, quantize 101 stop, per-cell
+# theo vị trí cột). Giữ alias tên cũ cho test + caller hiện hữu.
+from ..ui.widgets import AMBER_RAMP as _METER_RAMP_3STOP  # noqa: F401
 
 # Glyph ngữ nghĩa thay emoji (spec §4.3): state / draft / container / file.
 ROW_GLYPHS = {
@@ -579,16 +569,17 @@ class StatusService:
     def _meter_only(cls, rate: float, width: int) -> Text:
         """Meter amber thuần (không prefix/suffix) dạng ``rich.text.Text``.
 
-        - TTY đủ rộng → ``ui.widgets.meter`` per-cell với ramp 3 mốc spec
-          §3.3 (#6B4300/#FFB000/#FFE49A — codex-r3 #1, không nội suy thêm).
-        - Terminal hẹp / non-TTY → bar plain ``'█' * n + '░'`` (vẫn Text để
-          caller không bị rich parse markup nhầm dấu ``[``).
+        - TTY đủ rộng → ``ui.widgets.meter`` per-cell với ``AMBER_RAMP``
+          3 mốc spec §3.3 (#6B4300/#FFB000/#FFE49A — codex-r3 #1, không
+          nội suy thêm).
+        - Terminal hẹp / non-TTY → ``ui.widgets.plain_meter`` ▰▱ không màu
+          (SPEC UI v2 §M1 — một nguồn truth, vẫn Text để caller không bị
+          rich parse markup nhầm dấu ``[``).
         """
+        from ..ui.widgets import meter, plain_meter
         if cls._gradient_enabled():
-            from ..ui.widgets import meter
             return meter(rate, width, _METER_RAMP_3STOP)
-        filled = int(width * rate // 100)
-        return Text("█" * filled + "░" * max(0, width - filled))
+        return plain_meter(rate, width)
 
     @staticmethod
     def _emit(line: Union[str, Text, Table, Panel]) -> None:

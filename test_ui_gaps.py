@@ -128,10 +128,10 @@ class TestWatchDegradeNarrow(TempWorkspaceCase):
         # Wide: mini-scoreboard top-5 + meter gradient có mặt
         self.assertIn("🏆", wide)
         self.assertIn("Team0", wide)
-        self.assertIn("█", wide)
+        self.assertIn("▰", wide)
         # Narrow (<80): bỏ hẳn mini-scoreboard
         self.assertNotIn("🏆", narrow)
-        self.assertNotIn("█", narrow)
+        self.assertNotIn("▰", narrow)
 
     def test_narrow_keeps_notices_countdown_and_footer(self):
         svc = self._svc()

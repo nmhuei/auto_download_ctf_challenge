@@ -5,11 +5,17 @@ import unittest
 from rich.text import Text
 
 from ctf_downloader.ui.widgets import (
+    AMBER_RAMP,
     BRAILLE_UP,
+    METER_EMPTY,
+    METER_FILL,
+    RUBY_RAMP,
     braille_graph,
     footer_bar,
     gradient,
     meter,
+    meter_markup,
+    plain_meter,
     shortcut_title,
 )
 
@@ -55,9 +61,14 @@ class MeterTests(unittest.TestCase):
     def _styles_of(self, text: Text):
         return [style for _, style in text.spans] if text.spans else []
 
+    def test_meter_glyphs_are_btop_parallelogram(self):
+        # SPEC UI v2 §M1: glyph meter ▰ (U+25B0) / ▱ (U+25B1).
+        self.assertEqual(METER_FILL, "▰")
+        self.assertEqual(METER_EMPTY, "▱")
+
     def test_full_bar_all_cells_colored(self):
         t = meter(100, 10, self.ramp)
-        self.assertEqual(_strip(t), "█" * 10)
+        self.assertEqual(_strip(t), "▰" * 10)
         # Per-cell gradient: first and last cell colors differ.
         styles = [s.style for s in t.spans]
         self.assertEqual(len(styles), 10)
@@ -65,7 +76,7 @@ class MeterTests(unittest.TestCase):
 
     def test_empty_bar_dim_placeholder(self):
         t = meter(0, 8, self.ramp)
-        self.assertEqual(_strip(t), "░" * 8)
+        self.assertEqual(_strip(t), "▱" * 8)
 
     def test_clamp(self):
         over = _strip(meter(150, 6, self.ramp))
@@ -77,8 +88,8 @@ class MeterTests(unittest.TestCase):
 
     def test_partial_fill_counts(self):
         t = meter(50, 10, self.ramp)
-        filled = _strip(t).count("█")
-        empty = _strip(t).count("░")
+        filled = _strip(t).count("▰")
+        empty = _strip(t).count("▱")
         self.assertEqual(filled + empty, 10)
         self.assertGreater(filled, 0)
         self.assertGreater(empty, 0)
@@ -98,6 +109,78 @@ class MeterTests(unittest.TestCase):
 
     def test_zero_width(self):
         self.assertEqual(_strip(meter(50, 0, self.ramp)), "")
+
+
+class PlainMeterTests(unittest.TestCase):
+    """SPEC UI v2 §M1: plain_meter — fallback ▰▱ KHÔNG màu (non-TTY/hẹp)."""
+
+    def test_no_color_spans(self):
+        t = plain_meter(73.0, 12)
+        self.assertIsInstance(t, Text)
+        self.assertEqual(_strip(t), "▰" * 8 + "▱" * 4)
+        self.assertEqual(t.spans, [])   # không span màu nào
+
+    def test_zero_and_negative_width_empty(self):
+        self.assertEqual(_strip(plain_meter(50, 0)), "")
+        self.assertEqual(_strip(plain_meter(50, -3)), "")
+
+    def test_clamp_matches_gradient_meter(self):
+        self.assertEqual(_strip(plain_meter(150, 6)), _strip(plain_meter(100, 6)))
+        self.assertEqual(_strip(plain_meter(-5, 6)), _strip(plain_meter(0, 6)))
+
+    def test_ascii_safe_no_ansi(self):
+        out = plain_meter(40, 10).plain
+        self.assertNotIn("\x1b", out)
+        self.assertNotIn("#", out)
+
+
+class MeterMarkupTests(unittest.TestCase):
+    """meter_markup — bản markup string của meter() cho report builder."""
+
+    RAMP = gradient((0, 0, 0), None, (200, 200, 200))
+
+    def test_markup_renders_same_plain(self):
+        import re as _re
+        m = meter_markup(60, 10, self.RAMP)
+        visible = _re.sub(r"\[[^\]]*\]", "", m)
+        self.assertEqual(visible, _strip(meter(60, 10, self.RAMP)))
+
+    def test_markup_carries_hex_styles(self):
+        m = meter_markup(100, 4, self.RAMP)
+        self.assertTrue(m.startswith("[#323232]"))
+        self.assertIn("[#c8c8c8]▰[/]", m)
+        self.assertEqual(m.count("[/]"), 4)   # mỗi run màu một tag đóng
+
+    def test_ruby_ramp_markup_for_storage_over_threshold(self):
+        m = meter_markup(100, 8, RUBY_RAMP)
+        self.assertIn("#e5534b", m)
+        self.assertIn("#ff2e63", m)
+
+
+class RampConstantTests(unittest.TestCase):
+    """SPEC UI v2 §M1: AMBER_RAMP canonical 101 stop 3 mốc; RUBY_RAMP
+    101 stop 2 mốc — ruby CHỈ cho state rủi ro (storage ≥1× ngưỡng)."""
+
+    def test_amber_ramp_exactly_three_spec_stops(self):
+        self.assertEqual(len(AMBER_RAMP), 101)
+        self.assertEqual(set(AMBER_RAMP), {
+            (0x6B, 0x43, 0x00), (0xFF, 0xB0, 0x00), (0xFF, 0xE4, 0x9A)})
+        # Biên quantize: y<34 than hồng · 34≤y<67 hổ phách · y≥67 vàng nhạt.
+        self.assertEqual(AMBER_RAMP[33], (0x6B, 0x43, 0x00))
+        self.assertEqual(AMBER_RAMP[34], (0xFF, 0xB0, 0x00))
+        self.assertEqual(AMBER_RAMP[66], (0xFF, 0xB0, 0x00))
+        self.assertEqual(AMBER_RAMP[67], (0xFF, 0xE4, 0x9A))
+
+    def test_ruby_ramp_two_stops_with_boundary_at_50(self):
+        self.assertEqual(len(RUBY_RAMP), 101)
+        self.assertEqual(set(RUBY_RAMP),
+                         {(0xE5, 0x53, 0x4B), (0xFF, 0x2E, 0x63)})
+        self.assertEqual(RUBY_RAMP[49], (0xE5, 0x53, 0x4B))   # ERROR
+        self.assertEqual(RUBY_RAMP[50], (0xFF, 0x2E, 0x63))   # FIRSTBLOOD
+
+    def test_status_service_alias_points_to_canonical(self):
+        from ctf_downloader.services.status_service import _METER_RAMP_3STOP
+        self.assertIs(_METER_RAMP_3STOP, AMBER_RAMP)
 
 
 class BrailleGraphTests(unittest.TestCase):

@@ -29,13 +29,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ..storage.fileio import atomic_write_json
 from ..storage.workspace_repo import WorkspaceRepo
-from .status_service import _METER_RAMP_3STOP
 from ..ui.theme import (
     ACCENT, ACCENT_DEEP, ACCENT_HI,
     ERROR, FG_BASE, FG_FAINT, FG_MUTED, INFO, SOLVED, WARN,
     load_theme,
 )
-from ..ui.widgets import footer_bar, meter
+from ..ui.widgets import AMBER_RAMP, footer_bar, meter
 from ..utils.logger import Logger
 
 try:
@@ -64,8 +63,8 @@ MAX_TRUSTED_SKEW_SECONDS = 21600     # R4: |offset| > 6h -> Date header bị coi
 GRACE_DEFAULT = 300                  # wall > end+grace → final sync rồi exit
 
 # Mini-scoreboard dùng chung meter ramp amber 3 mốc (than hồng → hổ phách →
-# vàng nhạt, PHOSPHOR FIELD KIT spec §3) đã chuẩn hoá ở
-# ``status_service._METER_RAMP_3STOP`` — mỗi ô một màu, không nội suy.
+# vàng nhạt, PHOSPHOR FIELD KIT spec §3) — ``ui.widgets.AMBER_RAMP`` canonical
+# (SPEC UI v2 §M1): mỗi ô một màu theo vị trí cột, không nội suy.
 MIN_PANEL_WIDTH = 40                 # dưới ngưỡng này ép width tối thiểu
 DEGRADE_WIDTH = 80                   # width < 80 → bỏ mini-scoreboard
 FEED_MAX_LINES = 200                 # trần feed 📢 — _refresh_live wire làm
@@ -1299,7 +1298,7 @@ class WatchService:
 
     def _render_mini_scoreboard(self) -> List[Any]:
         """🏆 Mini scoreboard top-5 — meter ramp amber 3 mốc
-        (#6B4300 → #FFB000 → #FFE49A, ``_METER_RAMP_3STOP`` chung)."""
+        (#6B4300 → #FFB000 → #FFE49A, ``AMBER_RAMP`` chung)."""
         rows = list(getattr(self, "_mini_sb_rows", None) or [])[:5]
         parts: List[Any] = []
         if not rows:
@@ -1310,7 +1309,7 @@ class WatchService:
             top = max(float(r.get("score") or 0) for r in rows)
         except (TypeError, ValueError):
             top = 0.0
-        colors = _METER_RAMP_3STOP
+        colors = AMBER_RAMP
         meter_w = 16
         parts.append(Text("🏆 SCOREBOARD TOP-5", style=FG_FAINT))
         for r in rows:

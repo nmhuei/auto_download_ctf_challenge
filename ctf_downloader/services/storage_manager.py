@@ -32,6 +32,7 @@ import os
 import re as _re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import zipfile
@@ -48,6 +49,7 @@ from ..ui.theme import ERROR as _ERROR_COLOR
 from ..ui.theme import FG_FAINT as _FAINT_COLOR
 from ..ui.theme import FG_MUTED as _MUTED_COLOR
 from ..ui.theme import WARN as _WARN_COLOR
+from ..ui.widgets import AMBER_RAMP, RUBY_RAMP, meter_markup, plain_meter
 
 # Thư mục con chuẩn của một challenge (workspace layout:
 # <ws>/<Category>/<Chall>/{challenge,script,solver,writeup}/)
@@ -228,14 +230,22 @@ class StorageManager:
     #: giờ vượt width này — tên workspace dài bị cắt ellipsis (codex-r2 P1).
     REPORT_MAX_WIDTH = 80
 
+    #: Độ rộng cột USAGE-meter (SPEC UI v2 §M1): 8 ô ▰▱.
+    USAGE_METER_WIDTH = 8
+
     @staticmethod
     def format_report(
-        usages: Sequence[WorkspaceUsage], threshold_mb: int = 1024
+        usages: Sequence[WorkspaceUsage], threshold_mb: int = 1024, *,
+        tty: Optional[bool] = None,
     ) -> str:
         """Bảng text PHOSPHOR: workspace sắp theo size giảm dần + dòng tổng.
 
         - Nhãn cột UPPERCASE faint (ATTACH/WRITEUP/SOLVER/TOTAL) — không
           emoji chrome; số liệu neutral (không tô màu theo mức dung lượng).
+        - Cột USAGE-meter 8 ô (SPEC UI v2 §M1): bar ``▰▱`` thể hiện
+          ratio = total/ngưỡng (clamp 100%). Dưới ngưỡng dùng ramp amber;
+          ratio ≥1× ngưỡng — state rủi ro — chuyển nguyên bar sang ramp
+          ruby (#E5534B→#FF2E63). non-TTY → ``plain_meter`` không màu.
         - Vượt ngưỡng ``threshold_mb`` chỉ được đánh dấu bằng glyph semantic
           ở cột NOTE: ``!`` amber khi ≥ 1× ngưỡng, ``✗`` error khi ≥ 2× —
           màu warn/error luôn đi kèm glyph. Workspace đã ended: nhãn chữ
@@ -246,9 +256,31 @@ class StorageManager:
           86–90 cột.
         - KHÔNG đường ngang full-width ``----`` (ngoài whitelist glyph
           PHOSPHOR): heading faint + khoảng thở đảm nhiệm phân đoạn.
+
+        ``tty=None`` → tự dò ``sys.stdout.isatty()`` (pattern footer_bar);
+        smoke test truyền tường minh để khoá path render.
         """
+        if tty is None:
+            try:
+                tty = bool(sys.stdout.isatty())
+            except Exception:
+                tty = False
         threshold_bytes = int(threshold_mb) * 1024 * 1024
         rows = sorted(usages, key=lambda u: u.total_bytes, reverse=True)
+
+        def _usage_ratio(u: WorkspaceUsage) -> float:
+            if threshold_bytes <= 0:
+                return 0.0
+            return u.total_bytes / threshold_bytes
+
+        def _usage_cell(u: WorkspaceUsage) -> str:
+            ratio = _usage_ratio(u)
+            pct = min(100.0, ratio * 100.0)
+            if not tty:
+                # non-TTY → plain_meter: ASCII-an-toàn, machine-readable.
+                return plain_meter(pct, StorageManager.USAGE_METER_WIDTH).plain
+            ramp = RUBY_RAMP if ratio >= 1 else AMBER_RAMP
+            return meter_markup(pct, StorageManager.USAGE_METER_WIDTH, ramp)
 
         name_natural = max(
             [len("WORKSPACE")]
@@ -266,6 +298,7 @@ class StorageManager:
             max([len(h)] + [len(v) for v in col]) if rows else len(h)
             for h, col in zip(headers, col_raw)
         ]
+        usage_w = StorageManager.USAGE_METER_WIDTH
 
         def _note_markup(usage: WorkspaceUsage) -> str:
             notes: List[str] = []
@@ -287,9 +320,9 @@ class StorageManager:
         ) if rows else len("NOTE")
 
         # Cột name co lại để TỔNG width bảng luôn ≤ REPORT_MAX_WIDTH (cùng
-        # viewport AppHeader); 6 khe 2-space giữa 7 cột + 6 cell CHALLS.
-        gaps_total = 12
-        fixed_w = sum(size_w) + 6 + note_w + gaps_total
+        # viewport AppHeader); 7 khe 2-space giữa 8 cột + 6 cell CHALLS.
+        gaps_total = 14
+        fixed_w = sum(size_w) + 6 + usage_w + note_w + gaps_total
         name_w = min(name_natural, max(12, StorageManager.REPORT_MAX_WIDTH
                                        - fixed_w))
 
@@ -310,6 +343,7 @@ class StorageManager:
                 f"[{faint}]{h:>{w}}[/{faint}]"
                 for h, w in zip(headers, size_w)
             )
+            + f"  [{faint}]{'USAGE':<{usage_w}}[/{faint}]"
             + f"  [{faint}]{'CHALLS':>6}[/{faint}]  "
             + f"[{faint}]{f'NOTE':<{note_w}}[/{faint}]"
         )
@@ -322,6 +356,7 @@ class StorageManager:
             )
             lines.append(
                 f"{escape(_fit_name(usage.name)):<{name_w}}  {cells}"
+                f"  {_usage_cell(usage):<{usage_w}}"
                 f"  {usage.challenge_count:>6}  {note_cells[idx]}"
             )
         total_line = (
