@@ -65,6 +65,10 @@ RUBY_RAMP: tuple = tuple(
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
+    """Clamp vào ``[lo, hi]``; NaN/±inf → ``lo`` an toàn (caller ``int()``-hoá
+    giá trị — không được raise ValueError/OverflowError)."""
+    if not math.isfinite(value):
+        return lo
     return max(lo, min(hi, value))
 
 
@@ -161,7 +165,7 @@ def meter(value: float, width: int, colors: Sequence[RGB], *, invert: bool = Fal
     """
     if width < 1:
         return Text()
-    v = int(_clamp(int(value), 0, 100))
+    v = int(_clamp(value, 0, 100))
     colors_key = tuple(tuple(c) for c in colors)
     text = Text()
     for ch, rgb in _meter_cells(v, width, colors_key, invert):
@@ -182,7 +186,7 @@ def plain_meter(value: float, width: int) -> Text:
     """
     if width < 1:
         return Text()
-    v = int(_clamp(int(value), 0, 100))
+    v = int(_clamp(value, 0, 100))
     filled = width * v // 100
     return Text(METER_FILL * filled + METER_EMPTY * max(0, width - filled))
 

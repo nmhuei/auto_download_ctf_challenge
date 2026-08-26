@@ -151,7 +151,7 @@ def test_render_warning_label_yellow():
 
 
 def test_build_lines_cause_branch_connector_and_indent():
-    diag = error("top level", cause="root cause here")
+    diag = error("top level", cause="root cause here", hints=["fix it"])
     lines = build_lines(diag, width=80)
     cause_line = next(ln for ln in lines if TREE_TEE in ln.plain)
     # branch connector starts indented under the label column
@@ -226,9 +226,48 @@ def test_e1_no_hints_skips_action_required_node():
 
     diag2 = error("boom", cause="root cause")
     plain = [ln.plain for ln in build_lines(diag2, width=80)]
-    assert any(TREE_TEE in p for p in plain)
+    # cause là node cuối (không hints) → connector kết cây └─, không còn ├─
+    assert any(TREE_ELL in p for p in plain)
+    assert not any(TREE_TEE in p for p in plain)
     assert not any("ACTION REQUIRED" in p for p in plain)
-    assert not any(TREE_ELL in p for p in plain)
+
+
+def test_build_lines_empty_message_still_renders_headline():
+    """message="" không được làm nổ build_lines — headline vẫn hiện."""
+    lines = build_lines(error(""), width=80)
+    assert len(lines) == 1
+    assert lines[0].plain.startswith("✗ error:")
+
+
+def test_empty_hints_are_skipped():
+    """Hint rỗng bị bỏ qua: không leaf dòng trắng, các hint thật vẫn hiện."""
+    diag = error("m", hints=["", "real hint"])
+    plain = [ln.plain for ln in build_lines(diag, width=80)]
+    assert any("ACTION REQUIRED" in p for p in plain)
+    leaves = [p for p in plain if p.lstrip().startswith(LEAF_DOT.strip())]
+    assert leaves == [f"     {LEAF_DOT}real hint"]
+
+
+def test_all_empty_hints_skip_action_required_node():
+    """Toàn bộ hint rỗng → coi như không có hints, không treo node kết."""
+    plain = [ln.plain for ln in build_lines(error("m", hints=["", ""]), width=80)]
+    assert len(plain) == 1
+    assert not any("ACTION REQUIRED" in p for p in plain)
+
+
+def test_terminal_cause_uses_ell_connector():
+    """Có cause NHƯNG không hints: cause là node cuối → └─ thay vì ├─."""
+    plain = [ln.plain for ln in build_lines(error("m", cause="why"), width=80)]
+    assert any(p.startswith("  └─ why") for p in plain)
+    assert not any("├" in p for p in plain)
+
+
+def test_terminal_wrapped_cause_continuation_has_no_vertical_bar():
+    """Cause node cuối khi wrap: continuation thụt dòng, không treo '│'."""
+    diag = error("m", cause="word " * 20)
+    plain = [ln.plain for ln in build_lines(diag, width=40)]
+    assert len(plain) > 2  # cause đã wrap nhiều dòng
+    assert not any(p.startswith("  │") for p in plain), plain
 
 
 def test_e1_warning_uses_bang_glyph_and_same_tree():

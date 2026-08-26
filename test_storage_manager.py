@@ -216,6 +216,24 @@ class TestFormatReport(StorageTestBase):
         self.assertNotIn("#ff2e63", report)
         self.assertNotIn("#e5534b", report)
 
+    def test_usage_meter_ruby_exactly_at_one_times_threshold(self):
+        # Biên trên: ratio đúng ==1× ngưỡng đã là state rủi ro → ruby,
+        # không còn cell amber nào trong bar.
+        exact = self._usage(name="exact", total_bytes=1024 * 1024)  # == 1 MiB
+        report = StorageManager.format_report([exact], threshold_mb=1, tty=True)
+        self.assertIn("#e5534b", report)
+        self.assertIn("#ff2e63", report)
+        for amber in ("#6b4300", "#ffb000", "#ffe49a"):
+            self.assertNotIn(amber, report)
+
+    def test_usage_meter_amber_just_below_threshold_1023kib_of_1mib(self):
+        # Sát dưới ngưỡng (1023 KiB / 1 MiB = 0.999×) vẫn amber, không ruby.
+        near = self._usage(name="near", total_bytes=1023 * 1024)
+        report = StorageManager.format_report([near], threshold_mb=1, tty=True)
+        self.assertIn("#ffb000", report)
+        for ruby in ("#ff2e63", "#e5534b"):
+            self.assertNotIn(ruby, report)
+
     def test_usage_meter_plain_when_non_tty(self):
         """non-TTY → plain_meter: glyph ▰▱ không màu (ASCII-an-toàn pipe)."""
         report = StorageManager.format_report([self._usage()], threshold_mb=1)

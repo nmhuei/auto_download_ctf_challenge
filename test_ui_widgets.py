@@ -111,6 +111,24 @@ class MeterTests(unittest.TestCase):
         self.assertEqual(_strip(meter(50, 0, self.ramp)), "")
 
 
+class NonFiniteValueTests(unittest.TestCase):
+    """NaN/±inf không được làm nổ meter — clamp về 0 an toàn (bar rỗng),
+    nhất quán với triết lý width<1 → Text rỗng thay vì raise."""
+
+    def setUp(self):
+        self.ramp = gradient((255, 0, 0), None, (0, 255, 0))
+
+    def test_meter_nan_inf_renders_empty_bar(self):
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            self.assertEqual(_strip(meter(bad, 10, self.ramp)), "▱" * 10,
+                             f"meter({bad}) phải bar rỗng")
+
+    def test_plain_meter_nan_inf_renders_empty_bar(self):
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            self.assertEqual(_strip(plain_meter(bad, 10)), "▱" * 10,
+                             f"plain_meter({bad}) phải bar rỗng")
+
+
 class PlainMeterTests(unittest.TestCase):
     """SPEC UI v2 §M1: plain_meter — fallback ▰▱ KHÔNG màu (non-TTY/hẹp)."""
 
@@ -155,6 +173,18 @@ class MeterMarkupTests(unittest.TestCase):
         m = meter_markup(100, 8, RUBY_RAMP)
         self.assertIn("#e5534b", m)
         self.assertIn("#ff2e63", m)
+
+    def test_zero_or_negative_width_returns_empty_string(self):
+        self.assertEqual(meter_markup(50, 0, self.RAMP), "")
+        self.assertEqual(meter_markup(50, -2, self.RAMP), "")
+
+    def test_invert_flips_gradient_end(self):
+        normal = meter_markup(100, 4, self.RAMP)
+        inv = meter_markup(100, 4, self.RAMP, invert=True)
+        self.assertNotEqual(normal, inv)
+        # invert lấy màu từ đầu kia của ramp: cell đầu = ramp[75] (#969696).
+        self.assertTrue(normal.startswith("[#323232]"))
+        self.assertTrue(inv.startswith("[#969696]"))
 
 
 class RampConstantTests(unittest.TestCase):

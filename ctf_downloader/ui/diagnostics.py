@@ -13,6 +13,8 @@ Example output::
 - The message body is bold but *uncolored*.
 - An optional ``cause`` hangs off a ``├─`` branch (div_line connector,
   cause text ``fg.base``); wrapped cause lines continue with ``│``.
+  When no hints follow, the cause is the terminal node: its connector
+  becomes ``└─`` and wrapped lines continue with a plain indent.
 - When hints exist, the tree terminates in a bold-accent
   ``└─ ACTION REQUIRED`` node and each hint becomes a muted ``·`` leaf.
 - All text word-wraps to the target console width; continuation lines
@@ -83,6 +85,8 @@ def warning(
 
 
 def _wrap(text: str, width: int) -> list[str]:
+    """Word-wrap *text*; rỗng → ``[]``. Lưu ý: clamp ``max(width, 20)`` với
+    width nhỏ bất thường sẽ lặng lẽ tràn ra ngoài width cho trước."""
     if not text:
         return []
     effective = max(width, 20)
@@ -101,7 +105,8 @@ def build_lines(diag: Diagnostic, width: int = 80) -> list[Text]:
     label_pad = len(glyph_prefix) + len(label) + 1
 
     # --- headline body: glyph + colored label + bold uncolored message --
-    chunks = _wrap(diag.message, width - label_pad)
+    # message="" → _wrap trả [] → giữ 1 chunk rỗng để headline vẫn hiện.
+    chunks = _wrap(diag.message, width - label_pad) or [""]
     first = Text()
     first.append(glyph_prefix, style=label_style)
     first.append(label, style=label_style)
@@ -115,22 +120,30 @@ def build_lines(diag: Diagnostic, width: int = 80) -> list[Text]:
         lines.append(cont)
 
     tee_pad = len(TREE_INDENT) + len(TREE_TEE)
+    # Hint rỗng bỏ qua hẳn — không in leaf dòng trắng; khi toàn bộ hint
+    # rỗng coi như không có hints (không treo node kết ACTION REQUIRED).
+    hints = [hint for hint in diag.hints if hint]
 
     # --- optional cause branch: ├─ cause (wrap nối bằng │) ---------------
+    # Không hints phía sau → cause là node cuối → connector └─ và dòng
+    # wrap nối tiếp bằng khoảng trắng thay vì │ (không có gì bên dưới).
     if diag.cause:
-        cchunks = _wrap(diag.cause, width - tee_pad)
+        cchunks = _wrap(diag.cause, width - tee_pad) or [""]
+        terminal = not hints
+        tee = TREE_ELL if terminal else TREE_TEE
+        bar = "   " if terminal else TREE_BAR
         line = Text(TREE_INDENT)
-        line.append(TREE_TEE, style=ACCENT_DEEP)
+        line.append(tee, style=ACCENT_DEEP)
         line.append(cchunks[0], style=FG_BASE)
         lines.append(line)
         for cchunk in cchunks[1:]:
             cont = Text(TREE_INDENT)
-            cont.append(TREE_BAR, style=ACCENT_DEEP)
+            cont.append(bar, style=ACCENT_DEEP)
             cont.append(cchunk, style=FG_BASE)
             lines.append(cont)
 
     # --- terminal node └─ ACTION REQUIRED + muted · leaves ---------------
-    if diag.hints:
+    if hints:
         ell_line = Text(TREE_INDENT)
         ell_line.append(TREE_ELL, style=ACCENT_DEEP)
         ell_line.append("ACTION REQUIRED", style=f"bold {ACCENT}")
@@ -138,7 +151,7 @@ def build_lines(diag: Diagnostic, width: int = 80) -> list[Text]:
 
         leaf_indent = " " * tee_pad
         leaf_pad = tee_pad + len(LEAF_DOT)
-        for hint in diag.hints:
+        for hint in hints:
             hchunks = _wrap(hint, width - leaf_pad)
             line = Text(leaf_indent)
             line.append(LEAF_DOT, style=FG_MUTED)
