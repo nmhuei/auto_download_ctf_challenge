@@ -425,6 +425,13 @@ class CTFInteractiveConsole:
             return
         if saved_state is not None:
             self.config = saved_state
+        else:
+            # Review 536364d (LOW): _mut luôn trả state nên None chỉ có thể
+            # là thư mục global config biến mất giữa chừng (không raise
+            # OSError). Log cùng mức nhánh OSError thay vì im lặng; cache
+            # nội bộ giữ nguyên — không refresh từ None.
+            Logger.warning('Không lưu được config: thư mục global config '
+                           'đã biến mất.')
 
     def _menu_view_tree(self):
         dash = CTFDashboard(self.workspace_path)

@@ -1373,12 +1373,21 @@ def handle_config(args):
         return state
 
     try:
-        update_global_config(_set_key)
+        saved_state = update_global_config(_set_key)
     except OSError as exc:
         # Lỗi persist không được nuốt im lặng rồi báo success — exit code
         # phải phản ánh đúng thất bại.
         Logger.error(f"Không ghi được global config "
                      f"({GLOBAL_CONFIG_FILE}): {exc}")
+        sys.exit(1)
+    if saved_state is None:
+        # Review 536364d (LOW): _set_key luôn trả state nên None chỉ có thể
+        # là thư mục global config biến mất giữa chừng (locked_update_json
+        # không hồi sinh dir). Không persist gì thì KHÔNG được báo success:
+        # warning rõ + exit 1 như nhánh OSError (pattern register c18-2).
+        Logger.warning(f"Không ghi được global config ({GLOBAL_CONFIG_FILE}): "
+                       f"thư mục chứa file đã biến mất — cấu hình mới "
+                       f"không được persist.")
         sys.exit(1)
     Logger.success(f"Đã lưu {key} = {_config_render(spec, new_val)} "
                    f"({GLOBAL_CONFIG_FILE}).")
