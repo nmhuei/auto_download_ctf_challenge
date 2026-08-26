@@ -58,8 +58,19 @@ def make_menu_app(monkeypatch, script, tmp_home=None, dash_stats_total=3):
     con = FakeMenuConsole(script)
     monkeypatch.setattr(im, "_menu_console", lambda: con)
     saved = {}
-    monkeypatch.setattr(im, "save_global_config",
-                        lambda cfg: saved.update(default_workspace=cfg.get("default_workspace")))
+
+    def _fake_update(mutator):
+        # Review c18-2: menu ghi global config qua update_global_config
+        # (RMW trong khóa) thay vì save_global_config. Mirror đúng ngữ nghĩa
+        # — chạy mutator trên state fresh và trả state sau ghi — nhưng
+        # NHẬN DIỆN: không bao giờ chạm config.json thật của user.
+        state = {}
+        result = mutator(state)
+        if result is not None:
+            saved.update(default_workspace=result.get("default_workspace"))
+        return result
+
+    monkeypatch.setattr(im, "update_global_config", _fake_update)
 
     class StubDash:
         def __init__(self, p):

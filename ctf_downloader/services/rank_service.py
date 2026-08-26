@@ -4,6 +4,7 @@ chỉ là facade mỏng delegate về đây.
 """
 import datetime
 import os
+import re
 from typing import Any, Dict, Optional
 
 from rich import box
@@ -58,6 +59,29 @@ def _score_int(value) -> int:
         return int(float(value))
     except (TypeError, ValueError, OverflowError):
         return 0
+
+
+#: Run backtick trong dữ liệu server — dùng tính delimiter code-span.
+_MD_BACKTICK_RUN_RE = re.compile(r"`+")
+
+
+def _md_code_span(text) -> str:
+    """[review-c18-2 LOW] Bọc giá trị ĐÃ sanitize (qua :func:`md_cell`) vào
+    MỘT code-span GFM không vỡ khi text chứa backtick — tên team
+    ``we`rt`eam`` từng đóng span sớm tại `` `rt` `` làm hỏng dòng bullet
+    RANKING.md / badge SUMMARY.md.
+
+    CommonMark: delimiter N backtick chỉ bị đóng bởi run >= N backtick ->
+    chọn N = run dài nhất trong text + 1; khi mép là backtick, pad một
+    space hai bên (CommonMark strip đúng một space mỗi mép khi render).
+    Text sạch giữ nguyên dạng `` `text` `` như trước (byte-identical với
+    template legacy — test_rank_repo chốt bytes)."""
+    text = str(text)
+    longest = max((len(m.group(0))
+                   for m in _MD_BACKTICK_RUN_RE.finditer(text)), default=0)
+    delim = "`" * (longest + 1)
+    pad = " " if (text.startswith("`") or text.endswith("`")) else ""
+    return f"{delim}{pad}{text}{pad}{delim}"
 
 
 class RankService:
@@ -204,7 +228,11 @@ class RankService:
             top_score = max((_score_int(s.get("score")) for s in standings),
                             default=0)
             for idx, s in enumerate(standings[:top_n], 1):
-                pos = s.get("pos") or idx
+                # Review c18-2 (MED): ``pos`` CŨNG do server trả — vào Rich
+                # Table NGUYÊN thì OSC/CSI injection đi thẳng terminal
+                # (``pos="\x1b]0;pwned\x07\x1b[31m9"`` đổi title/màu), cùng
+                # họ BUG-C14-1 với title/name/my_rank đã strip ở footer.
+                pos = strip_ansi(s.get("pos")) or idx
                 name = strip_ansi(s.get("name") or "") or "Unknown"
                 score = _score_int(s.get("score"))
 
@@ -267,19 +295,26 @@ class RankService:
         # sánh đúng; mọi giá trị in ra đi qua md_cell NGAY TẠI SINK.
         raw_rank = data.get("my_rank")
         raw_score = data.get("my_score")
+        # Review c18-2 (LOW): mọi giá trị nhúng vào CODE-SPAN đi qua
+        # _md_code_span — md_cell không xử lý backtick, tên team chứa `` ` ``
+        # đóng span sớm vỡ bullet/badge. Ô bảng (không nằm trong code-span)
+        # giữ md_cell như trước.
         rank_cell = md_cell(raw_rank) or "-"
         points_cell = md_cell(raw_score) if raw_score is not None else "-"
         teams_cell = md_cell(total_teams)
+        team_cell = md_cell(my_team)
+        user_cell = md_cell(my_user)
 
         # 1. Write RANKING.md — qua WorkspaceRepo (atomic + flock), KHÔNG
         #    open() thô (spec-audit: mọi writer state đi qua storage layer).
         lines = [
             f"# 🏆 Live Ranking & Scoreboard: {title}\n",
             f"- **Last Updated**: `{now_str}`",
-            f"- **Team**: `{md_cell(my_team)}`",
-            f"- **User**: `{md_cell(my_user)}`",
-            f"- **Current Rank**: `#{rank_cell}` / `{teams_cell} teams`",
-            f"- **Total Points**: `{points_cell} pts`\n",
+            f"- **Team**: {_md_code_span(team_cell)}",
+            f"- **User**: {_md_code_span(user_cell)}",
+            f"- **Current Rank**: {_md_code_span('#' + rank_cell)} / "
+            f"{_md_code_span(teams_cell + ' teams')}",
+            f"- **Total Points**: {_md_code_span(points_cell + ' pts')}\n",
             "## 📊 Top Standings\n",
             "| Rank | Team / Player | Points |",
             "| :---: | :--- | :---: |"
@@ -313,7 +348,8 @@ class RankService:
         # ngoặc vuông từ tên team không được lọt qua đường badge. Với dữ
         # liệu hợp lệ (số nguyên/tên sạch) md_cell là no-op.
         rank_badge = (
-            f"{LIVE_RANK_PREFIX} `#{md_cell(raw_rank)}` / `{md_cell(total_teams)}`"
-            f" (Team: `{md_cell(my_team)}`)"
+            f"{LIVE_RANK_PREFIX} {_md_code_span('#' + rank_cell)}"
+            f" / {_md_code_span(teams_cell)}"
+            f" (Team: {_md_code_span(team_cell)})"
         )
         self.repo.patch_summary_live_rank(rank_badge)

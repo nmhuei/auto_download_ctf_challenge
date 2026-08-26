@@ -1266,10 +1266,10 @@ def handle_config(args):
     - Không đối số: liệt kê mọi key biết được + giá trị hiện tại.
     - ``ctf config <key>``: xem giá trị hiện tại của một key.
     - ``ctf config <key> <value>``: đặt giá trị mới + persist global config.
-    Exit code: 0 thành công | 2 key lạ hoặc giá trị lạ.
+    Exit code: 0 thành công | 1 lỗi ghi | 2 key lạ hoặc giá trị lạ.
     """
     from .storage.global_config import (
-        GLOBAL_CONFIG_FILE, load_global_config, save_global_config,
+        GLOBAL_CONFIG_FILE, load_global_config, update_global_config,
     )
 
     key = getattr(args, 'key', None)
@@ -1322,17 +1322,33 @@ def handle_config(args):
             _emit_wrapped(segments, indent=" " * 15)
         return
 
-    # Chế độ ĐẶT: ghi đúng path của key, giữ nguyên mọi dữ liệu khác
-    # (workspaces/auth/…) đang có trong global config.
+    # Chế độ ĐẶT: đọc-mutate-ghi TRONG CÙNG khóa flock qua
+    # update_global_config (review c18-2, MED) — ghi đúng path của key trên
+    # state HIỆN HÀNH trên đĩa, giữ nguyên mọi dữ liệu khác
+    # (workspaces/auth/register_state…) kể cả những gì tiến trình khác vừa
+    # ghi giữa chừng. Code cũ load-stale-save tin dùng snapshot đầu phiên:
+    # lần ĐẶT đè mất register_state/auth do tiến trình khác ghi trong lúc
+    # này. Mutator chỉ mutate dict hiện hành, không giữ reference cũ.
     new_val = spec['values'][normalized]
-    node = cfg
-    for part in spec['path'][:-1]:
-        child = node.get(part) if isinstance(node, dict) else None
-        if not isinstance(child, dict):
-            child = {}
-            node[part] = child
-        node = child
-    node[spec['path'][-1]] = new_val
-    save_global_config(cfg)
+
+    def _set_key(state):
+        node = state
+        for part in spec['path'][:-1]:
+            child = node.get(part) if isinstance(node, dict) else None
+            if not isinstance(child, dict):
+                child = {}
+                node[part] = child
+            node = child
+        node[spec['path'][-1]] = new_val
+        return state
+
+    try:
+        update_global_config(_set_key)
+    except OSError as exc:
+        # Lỗi persist không được nuốt im lặng rồi báo success — exit code
+        # phải phản ánh đúng thất bại.
+        Logger.error(f"Không ghi được global config "
+                     f"({GLOBAL_CONFIG_FILE}): {exc}")
+        sys.exit(1)
     Logger.success(f"Đã lưu {key} = {_config_render(spec, new_val)} "
                    f"({GLOBAL_CONFIG_FILE}).")

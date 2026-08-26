@@ -19,6 +19,7 @@ from .storage.global_config import (  # noqa: F401 — re-export để giữ tư
     GLOBAL_CONFIG_FILE,
     load_global_config,
     save_global_config,
+    update_global_config,
 )
 
 # PHOSPHOR FIELD KIT (design-system spec §2/§3) — AppHeader radar + tokens.
@@ -394,15 +395,36 @@ class CTFInteractiveConsole:
                 Logger.error('Lựa chọn không hợp lệ.')
 
     def _save_current_workspace(self):
-        self.config['default_workspace'] = self.workspace_path
-        if self.cookie or self.token:
-            if 'auth' not in self.config:
-                self.config['auth'] = {}
-            self.config['auth'][self.workspace_path] = {
-                'cookie': self.cookie,
-                'token': self.token
-            }
-        save_global_config(self.config)
+        """Persist workspace mặc định (+auth nếu có) NGUYÊN TỬ qua khóa
+        flock — đọc-mutate-ghi trên state HIỆN HÀNH trên đĩa qua
+        ``update_global_config`` (review c18-2, MED).
+
+        Trước đây: ``save_global_config(self.config)`` với self.config là
+        snapshot chụp LÚC MỞ MENU — cửa sổ RMW dài nhất repo (menu mở cả
+        phiên): register_state/auth do tiến trình khác (vd ``ctf register``)
+        ghi giữa chừng bị bản stale đè MẤT. Mutator chỉ chép giá trị của
+        phiên này vào dict fresh, không giữ reference cũ; cache nội bộ được
+        refresh từ state sau ghi."""
+        ws = self.workspace_path
+        cookie, token = self.cookie, self.token
+
+        def _mut(fresh):
+            fresh['default_workspace'] = ws
+            if cookie or token:
+                fresh.setdefault('auth', {})[ws] = {
+                    'cookie': cookie,
+                    'token': token
+                }
+            return fresh
+
+        try:
+            saved_state = update_global_config(_mut)
+        except OSError as e:
+            # Storage hỏng (PermissionError...) — menu không crash, log rõ.
+            Logger.warning(f'Không lưu được config: {e}')
+            return
+        if saved_state is not None:
+            self.config = saved_state
 
     def _menu_view_tree(self):
         dash = CTFDashboard(self.workspace_path)

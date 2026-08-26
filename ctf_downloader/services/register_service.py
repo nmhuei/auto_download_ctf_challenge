@@ -31,6 +31,13 @@ _PW_DIGIT = "23456789"
 _PW_SPECIAL = "!@#$%^&*-_+?"
 _USERNAME_ALPHABET = string.ascii_lowercase + string.digits
 
+#: Kết quả :meth:`RegisterService._commit_attempt` (review c18-2, LOW):
+#: phân biệt rõ BA trạng thái — caller cũ chỉ nhìn bool nên case "thư mục
+#: config biến mất / storage hỏng" vẫn bị báo thành công như case ghi được.
+COMMIT_OK = "ok"                    # attempt (+ auth) đã persist
+COMMIT_PREEMPTED = "preempted"      # thua cuộc TOCTOU: không ghi gì
+COMMIT_UNPERSISTED = "unpersisted"  # mutator chạy nhưng KHÔNG persist được
+
 
 def generate_credentials(prefix: str = "player",
                          password_length: int = 16,
@@ -105,7 +112,7 @@ class RegisterService:
 
     def _commit_attempt(self, url_key: str,
                         auth_key: Optional[str] = None,
-                        auth_entry: Optional[Dict[str, Any]] = None) -> bool:
+                        auth_entry: Optional[Dict[str, Any]] = None) -> str:
         """[hunt-c18 BUG-2, MED] Ghi nhận attempt (+ auth entry tùy chọn)
         NGUYÊN TỬ chống TOCTOU: đọc-mutate-ghi TRONG CÙNG khóa flock của
         global config, và re-check rate limit trên state MỚI NHẤT TRÊN ĐĨA
@@ -113,10 +120,17 @@ class RegisterService:
         có thể kéo dài hàng phút, hai CLI song song cùng URL đều pass check
         ban đầu).
 
-        Trả True nếu đã ghi; False khi một tiến trình khác vừa ghi attempt
-        cùng URL trong lúc mình chạy (thua cuộc): KHÔNG ghi gì để không đè
-        timestamp của tiến trình thắng cuộc hay lost-update phần còn lại
-        của config."""
+        Trả về (review c18-2, LOW — tách ba trạng thái thay vì bool):
+          - ``COMMIT_OK``         — attempt đã ghi thành công;
+          - ``COMMIT_PREEMPTED``  — một tiến trình khác vừa ghi attempt cùng
+            URL trong lúc mình chạy (thua cuộc): KHÔNG ghi gì để không đè
+            timestamp của tiến trình thắng cuộc hay lost-update phần còn
+            lại của config;
+          - ``COMMIT_UNPERSISTED`` — mutator chạy bình thường nhưng updater
+            vẫn không trả state (thư mục config biến mất) HOẶC OSError
+            (PermissionError... khi đọc/ghi file) — warning được log rõ,
+            exception KHÔNG lan qua run() che exit-code mapping.
+        """
         preempted = {"wait": 0.0}
 
         def _mut(fresh: Dict[str, Any]):
@@ -129,19 +143,48 @@ class RegisterService:
                 fresh.setdefault("auth", {})[auth_key] = auth_entry
             return fresh
 
-        self._update_cfg(_mut)
-        return preempted["wait"] <= 0.0
+        try:
+            result = self._update_cfg(_mut)
+        except OSError as exc:
+            Logger.warning(
+                "Không ghi được register_state vào global config "
+                f"({exc.__class__.__name__}: {exc}) — rate-limit giữa các "
+                f"lần chạy có thể không còn hiệu lực cho URL này.")
+            return COMMIT_UNPERSISTED
+        if preempted["wait"] > 0:
+            return COMMIT_PREEMPTED
+        if result is None:
+            # Review c18-2 (LOW): mutator KHÔNG trả SKIP mà updater vẫn trả
+            # None -> thư mục chứa config biến mất (locked_update_json
+            # không hồi sinh dir). Phân biệt rõ với thua cuộc ở trên thay
+            # vì báo thành công.
+            Logger.warning(
+                "Không ghi được register_state: thư mục global config đã "
+                "biến mất — rate-limit giữa các lần chạy có thể không còn "
+                f"hiệu lực cho URL này.")
+            return COMMIT_UNPERSISTED
+        return COMMIT_OK
 
     def _set_auth_entry(self, key: str, entry: Dict[str, Any]) -> None:
         """Merge auth entry vào global config NGUYÊN TỬ qua khóa flock
         (trước đây load-stale-save — cửa sổ RMW gây lost update với process
         khác). Không re-check rate limit: attempt của chính mình đã được
-        commit ngay sau register rồi."""
+        commit ngay sau register rồi.
+
+        Review c18-2 (LOW): OSError từ storage KHÔNG lan qua run() — account
+        ĐÃ tạo phía server nên credentials (đã in) là tài sản quan trọng
+        nhất; lỗi persist auth chỉ cần log rõ để user backup thủ công."""
         def _mut(fresh: Dict[str, Any]) -> Dict[str, Any]:
             fresh.setdefault("auth", {})[key] = entry
             return fresh
 
-        self._update_cfg(_mut)
+        try:
+            self._update_cfg(_mut)
+        except OSError as exc:
+            Logger.warning(
+                f"Không lưu được auth[{key}] vào global config "
+                f"({exc.__class__.__name__}: {exc}) — hãy backup credentials "
+                f"đã in ở trên thủ công.")
 
     @staticmethod
     def _print_warnings(url: str) -> None:
@@ -321,11 +364,12 @@ class RegisterService:
             # trước đây re-raise KHÔNG ghi nhận nên chạy lại liền nhau bypass
             # rate limit. Ghi NGAY (atomic anti-TOCTOU) trước khi re-raise;
             # thua cuộc race thì giữ nguyên attempt của tiến trình thắng.
-            if not self._commit_attempt(url):
+            if self._commit_attempt(url) == COMMIT_PREEMPTED:
                 Logger.warning(
                     "Một tiến trình khác vừa ghi nhận register cùng URL khi "
                     "lần chạy này đang diễn ra — giữ nguyên attempt của "
                     "tiến trình đó.")
+            # COMMIT_UNPERSISTED: warning đã log tại _commit_attempt.
             # Diagnostic-style (spec §4.6): ✗ kết quả → ╰─▶ hướng dẫn thủ công.
             console.print(
                 f"[bold {ERROR}]✗[/bold {ERROR}] "
@@ -343,11 +387,12 @@ class RegisterService:
             # nên credentials KHÔNG được mất, và attempt vẫn phải được ghi
             # nhận để rate-limit không bị bypass.
             Logger.error(f"Register lỗi giữa chừng: {str(exc)[:200]}")
-            if not self._commit_attempt(url):
+            if self._commit_attempt(url) == COMMIT_PREEMPTED:
                 Logger.warning(
                     "Một tiến trình khác vừa ghi nhận register cùng URL khi "
                     "lần chạy này đang diễn ra — giữ nguyên attempt của "
                     "tiến trình đó.")
+            # COMMIT_UNPERSISTED: warning đã log tại _commit_attempt.
             self._print_credentials({**creds, "url": url, "email": reg_email},
                                     created=False)
             raise
@@ -356,11 +401,15 @@ class RegisterService:
         # atomic: re-check trên state mới nhất TRONG khóa (hunt-c18 BUG-2);
         # thua cuộc race nghĩa là một CLI song song vừa tạo tài khoản cùng
         # URL → dừng sạch thay vì tạo trùng.
-        if not self._commit_attempt(url):
+        if self._commit_attempt(url) == COMMIT_PREEMPTED:
             raise RuntimeError(
                 "Rate limit: một tiến trình khác vừa đăng ký cùng URL trong "
                 "khi lần chạy này đang diễn ra — dừng để tránh tạo trùng "
                 "tài khoản.")
+        # COMMIT_UNPERSISTED (review c18-2, LOW): account ĐÃ tạo phía server
+        # — KHÔNG chặn flow ở đây (trước đây OSError lan qua run() che
+        # exit-code mapping và nuốt mất credentials); warning đã log rõ,
+        # credentials vẫn được in + auth vẫn thử lưu bên dưới.
 
         if not result.get("ok"):
             Logger.error(f"Register thất bại: {result.get('message')}")
