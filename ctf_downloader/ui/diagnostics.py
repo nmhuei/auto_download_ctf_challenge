@@ -9,7 +9,8 @@ Example output::
          · pass --retry 5 to increase attempts
 
 - The headline carries a severity glyph: ``✗`` for errors, ``!`` for
-  warnings; ``error:`` is red bold, ``warning:`` yellow bold.
+  warnings; ``error:`` is bold ERROR token (#E5534B), ``warning:``
+  bold WARN token (#EAC54F) — hằng hex, không phụ thuộc theme terminal.
 - The message body is bold but *uncolored*.
 - An optional ``cause`` hangs off a ``├─`` branch (div_line connector,
   cause text ``fg.base``); wrapped cause lines continue with ``│``.
@@ -34,7 +35,7 @@ from rich.console import Console
 from rich.text import Text
 
 from .console import err_console
-from .theme import ACCENT, ACCENT_DEEP, FG_BASE, FG_MUTED
+from .theme import ACCENT, ACCENT_DEEP, ERROR, FG_BASE, FG_MUTED, WARN
 
 TREE_TEE = "├─ "  # nhánh cause
 TREE_ELL = "└─ "  # node kết ACTION REQUIRED
@@ -42,9 +43,13 @@ LEAF_DOT = "· "   # lá hint dưới node kết
 TREE_BAR = "│  "  # connector nối tiếp khi cause wrap
 TREE_INDENT = "  "
 
+# F1 sign-off UIv2: severity → token Amber Refit (hằng hex như ACCENT_DEEP
+# phía dưới), KHÔNG tên màu chuẩn terminal — "red bold"/"yellow bold" phát
+# basic ANSI 1;31/1;33 phụ thuộc theme người dùng (err_console không gắn
+# Theme nên token name không resolve được; hex thì luôn đúng vai trò).
 _SEVERITY_STYLE = {
-    "error": "red bold",
-    "warning": "yellow bold",
+    "error": f"bold {ERROR}",
+    "warning": f"bold {WARN}",
 }
 
 _SEVERITY_GLYPH = {

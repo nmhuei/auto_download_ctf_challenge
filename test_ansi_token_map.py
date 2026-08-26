@@ -10,13 +10,21 @@ surface submit/wizard. File này khóa 3 module sở hữu
 - title wizard   → ``[title]`` (amber lead), phím chọn menu → ``[hi_fg]``
 - dữ liệu (tên challenge, path, flag, regex literal) → ``[info]``/``[literal]``
   neutral — không còn tag màu legacy nào trong nguồn.
+
+F1 sign-off v2 mở rộng phủ TOÀN BỘ ``ctf_downloader/ui/*.py``: lớp lỗi
+style chuẩn terminal ("red bold"/"yellow bold" → basic ANSI 1;31/1;33)
+từng sweep e4ae2fa nhưng sót ``ui/diagnostics.py`` vì khóa cũ chỉ phủ
+3 module. Lần sau không còn chỗ trốn.
 """
 
+import ast
 import io
 import re
+import tokenize
 import unittest
 import urllib.parse
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
 from rich.console import Console
@@ -136,6 +144,94 @@ class TestNoLegacyColorTagsInOwnedModules(unittest.TestCase):
         # hunt-c18: +1 là dòng "challenge đã solved — bỏ qua candidate còn
         # lại" trong auto_scan_and_submit (tên challenge = dữ liệu → [info]).
         self.assertEqual(src.count("[info]"), 6)
+
+
+class TestUiPackageFreeOfLegacyTerminalStyles(unittest.TestCase):
+    """F1 sign-off: toàn bộ ``ui/*.py`` hết style chuẩn terminal ngoài
+    comment/docstring.
+
+    Quét nguồn sau khi tách trắng COMMENT token (tokenize) và docstring
+    module/class/hàm (ast — ví dụ TOML trong docstring theme.py được phép
+    nhắc tên màu). Riêng bảng alias ``PALETTE`` của style.py là dữ liệu
+    ghi đè có chủ đích → được miễn trừ và được khóa riêng ở test dưới:
+    mọi key màu của nó phải bị DEFAULT_STYLES map lại bằng token hex.
+    """
+
+    UI_DIR = "ctf_downloader/ui"
+    LEGACY = re.compile(r"\b(red|green|yellow|blue|magenta|cyan|white)\b")
+
+    DOCSTRING_NODES = (ast.Module, ast.ClassDef, ast.FunctionDef,
+                       ast.AsyncFunctionDef)
+
+    @classmethod
+    def _masked(cls, rel):
+        """Nguồn đã xóa trắng comment + docstring để quét màu legacy."""
+        src = Path(rel).read_text(encoding="utf-8")
+        lines = src.splitlines(keepends=True)
+
+        def mask(r1, c1, r2, c2):
+            for row in range(r1, r2 + 1):
+                line = lines[row - 1]
+                start = c1 if row == r1 else 0
+                end = c2 if row == r2 else len(line)
+                pad = max(0, end - start)
+                lines[row - 1] = line[:start] + " " * pad + line[end:]
+
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            if tok.type == tokenize.COMMENT:
+                mask(tok.start[0], tok.start[1], tok.end[0], tok.end[1])
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, cls.DOCSTRING_NODES) and node.body:
+                first = node.body[0]
+                if (isinstance(first, ast.Expr)
+                        and isinstance(first.value, ast.Constant)
+                        and isinstance(first.value.value, str)):
+                    mask(first.lineno, first.col_offset,
+                         first.end_lineno, first.end_col_offset)
+        return "".join(lines)
+
+    def test_ui_sources_free_of_legacy_terminal_colors(self):
+        offenders = []
+        for path in sorted(Path(self.UI_DIR).glob("*.py")):
+            if path.name == "style.py":  # PALETTE → test miễn trừ riêng
+                continue
+            hit = self.LEGACY.search(self._masked(str(path)))
+            if hit:
+                offenders.append(f"{path}: {hit.group(0)}")
+        self.assertEqual(offenders, [])
+
+    def test_style_palette_legacy_values_are_overridden_by_theme(self):
+        from ctf_downloader.ui.style import PALETTE
+        from ctf_downloader.ui.theme import DEFAULT_STYLES
+
+        legacy_keys = [k for k, v in PALETTE.items()
+                       if self.LEGACY.search(v)]
+        # Bảng alias phải còn nguyên thiết kế "đẩy trước để bị ghi đè".
+        self.assertEqual(legacy_keys,
+                         ["success", "error", "warning", "hint", "path",
+                          "literal", "title"])
+        for key in legacy_keys:
+            self.assertIn(key, DEFAULT_STYLES)
+            self.assertFalse(
+                self.LEGACY.search(DEFAULT_STYLES[key]),
+                f"{key} -> {DEFAULT_STYLES[key]!r} còn màu legacy")
+
+    def test_diagnostics_severity_uses_token_hex_constants(self):
+        from ctf_downloader.ui.diagnostics import _SEVERITY_STYLE
+        from ctf_downloader.ui.theme import ERROR as TOKEN_ERROR
+        from ctf_downloader.ui.theme import WARN as TOKEN_WARN
+
+        self.assertIn('f"bold {ERROR}"',
+                      Path("ctf_downloader/ui/diagnostics.py")
+                      .read_text(encoding="utf-8"))
+        self.assertIn('f"bold {WARN}"',
+                      Path("ctf_downloader/ui/diagnostics.py")
+                      .read_text(encoding="utf-8"))
+        self.assertEqual(_SEVERITY_STYLE["error"], f"bold {TOKEN_ERROR}")
+        self.assertEqual(_SEVERITY_STYLE["warning"], f"bold {TOKEN_WARN}")
+        # Token đúng vai trò Amber Refit (khóa cả giá trị hex).
+        self.assertEqual(TOKEN_ERROR, "#E5534B")
+        self.assertEqual(TOKEN_WARN, "#EAC54F")
 
 
 if __name__ == "__main__":

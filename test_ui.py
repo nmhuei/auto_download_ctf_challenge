@@ -31,7 +31,14 @@ from ctf_downloader.ui.diagnostics import (
     TREE_ELL,
     TREE_TEE,
 )
-from ctf_downloader.ui.theme import ACCENT, ACCENT_DEEP, FG_BASE, FG_MUTED
+from ctf_downloader.ui.theme import (
+    ACCENT,
+    ACCENT_DEEP,
+    ERROR,
+    FG_BASE,
+    FG_MUTED,
+    WARN,
+)
 
 
 def ansi_console(width: int = 100) -> Console:
@@ -132,8 +139,12 @@ def test_render_error_labels_with_ansi_colors():
     assert "\x1b[" in out
     assert "error:" in out
     assert "ACTION REQUIRED" in out
-    # red label (31/91/truecolor-red) and muted hint leaf (#99917E)
-    assert re.search(r"\x1b\[[0-9;]*(?:31|91)m", out), out
+    # F1 sign-off: label error → token hex #E5534B (bold truecolor), hết
+    # basic ANSI 1;31/31 phụ thuộc theme terminal.
+    r, g, b = (int(ERROR[i : i + 2], 16) for i in (1, 3, 5))
+    assert f"\x1b[1;38;2;{r};{g};{b}m" in out, out
+    assert not re.search(r"\x1b\[(?:1;)?31m", out), out
+    assert not re.search(r"\x1b\[[0-9;]*(?:91)m", out), out
     # rich render hex fg.muted thành SGR 38;2;r;g;b — không bao giờ literal hex
     r, g, b = (int(FG_MUTED[i : i + 2], 16) for i in (1, 3, 5))
     assert f"\x1b[38;2;{r};{g};{b}m" in out, out
@@ -147,7 +158,11 @@ def test_render_warning_label_yellow():
         render(warning("stale cache"), console=con)
     out = cap.get()
     assert "warning:" in out
-    assert re.search(r"\x1b\[[0-9;]*(?:33|93)m", out), out
+    # F1 sign-off: label warning → token hex #EAC54F, hết yellow legacy.
+    r, g, b = (int(WARN[i : i + 2], 16) for i in (1, 3, 5))
+    assert f"\x1b[1;38;2;{r};{g};{b}m" in out, out
+    assert not re.search(r"\x1b\[(?:1;)?33m", out), out
+    assert not re.search(r"\x1b\[[0-9;]*(?:93)m", out), out
 
 
 def test_build_lines_cause_branch_connector_and_indent():
@@ -308,11 +323,11 @@ def test_body_bold_but_uncolored():
     # Span.style is the raw style string passed to Text.append.
     body = next(s for s in spans if plain[s.start : s.end] == "plain body")
     assert body.style == "bold"  # bold, never colored
-    # label carries the color instead
+    # label carries the color instead — token hex, không tên màu terminal
     label_style = next(
         s.style for s in spans if plain[s.start : s.end] == "error:"
     )
-    assert "red" in label_style and "bold" in label_style
+    assert label_style == f"bold {ERROR}"
 
 
 def test_label_styles_by_severity():
@@ -325,8 +340,9 @@ def test_label_styles_by_severity():
                 return s.style
         return ""
 
-    assert "red" in label_style(err_line)
-    assert "yellow" in label_style(warn_line)
+    # F1 sign-off: severity headline đi qua token Amber Refit đúng vai trò.
+    assert label_style(err_line) == f"bold {ERROR}"
+    assert label_style(warn_line) == f"bold {WARN}"
 
 
 # ---------------------------------------------------------------- style.py
