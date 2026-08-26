@@ -26,6 +26,12 @@ from ctf_downloader.ui import (
     warning,
 )
 from ctf_downloader.ui.console import err_console, out_console
+from ctf_downloader.ui.diagnostics import (
+    LEAF_DOT,
+    TREE_ELL,
+    TREE_TEE,
+)
+from ctf_downloader.ui.theme import ACCENT, ACCENT_DEEP, FG_BASE, FG_MUTED
 
 
 def ansi_console(width: int = 100) -> Console:
@@ -125,10 +131,14 @@ def test_render_error_labels_with_ansi_colors():
     out = cap.get()
     assert "\x1b[" in out
     assert "error:" in out
-    assert "hint:" in out
-    # red label (31/91/truecolor-red) and cyan hint (36/96/truecolor-cyan)
+    assert "ACTION REQUIRED" in out
+    # red label (31/91/truecolor-red) and muted hint leaf (#8A958C)
     assert re.search(r"\x1b\[[0-9;]*(?:31|91)m", out), out
-    assert re.search(r"\x1b\[[0-9;]*(?:36|96)m", out), out
+    # rich render hex fg.muted thành SGR 38;2;r;g;b — không bao giờ literal hex
+    r, g, b = (int(FG_MUTED[i : i + 2], 16) for i in (1, 3, 5))
+    assert f"\x1b[38;2;{r};{g};{b}m" in out, out
+    # cyan hint label đã bỏ theo SPEC E1 — hint giờ là leaf fg.muted
+    assert not re.search(r"\x1b\[[0-9;]*(?:36|96)m", out), out
 
 
 def test_render_warning_label_yellow():
@@ -143,11 +153,91 @@ def test_render_warning_label_yellow():
 def test_build_lines_cause_branch_connector_and_indent():
     diag = error("top level", cause="root cause here")
     lines = build_lines(diag, width=80)
-    cause_line = next(ln for ln in lines if BRANCH in ln.plain)
+    cause_line = next(ln for ln in lines if TREE_TEE in ln.plain)
     # branch connector starts indented under the label column
-    assert cause_line.plain.index(BRANCH) == 2
+    assert cause_line.plain.index(TREE_TEE) == 2
     # cause text present after the connector
     assert "root cause here" in cause_line.plain
+
+
+def test_e1_error_tree_full_layout_cause_then_action_required():
+    """SPEC E1: headline glyph ✗ → ├─ cause → └─ ACTION REQUIRED → · hints."""
+    diag = error(
+        "failed to download set",
+        cause="network unreachable after 3 retries",
+        hints=["check your VPN connection", "pass --retry 5 to increase"],
+    )
+    lines = build_lines(diag, width=80)
+    plain = [ln.plain for ln in lines]
+
+    assert plain[0].startswith("✗ error: failed to download set")
+
+    tee_idx = next(i for i, p in enumerate(plain) if "network unreachable" in p)
+    assert plain[tee_idx].startswith("  ├─ ")  # "  ├─ "
+
+    ell_lines = [i for i, p in enumerate(plain) if "ACTION REQUIRED" in p]
+    assert len(ell_lines) == 1  # nhãn Action Required xuất hiện đúng 1 lần
+    ell_idx = ell_lines[0]
+    assert plain[ell_idx].startswith("  └─ ACTION REQUIRED")  # "  └─ "
+    assert tee_idx < ell_idx  # cause nhánh ├─ đứng trước node kết └─
+
+    assert plain[ell_idx + 1] == f"     {LEAF_DOT}check your VPN connection"
+    assert plain[ell_idx + 2] == f"     {LEAF_DOT}pass --retry 5 to increase"
+
+
+def test_e1_tree_node_styles_theme_tokens():
+    diag = error(
+        "m", cause="why",
+        hints=["fix a"],
+    )
+    lines = build_lines(diag, width=80)
+
+    def span_style(line: Text, needle: str) -> str:
+        for s in line.spans:
+            if needle in line.plain[s.start : s.end]:
+                return s.style or ""
+        return ""
+
+    tee_line = next(ln for ln in lines if TREE_TEE in ln.plain)
+    assert ACCENT_DEEP in span_style(tee_line, "├─")      # div_line connector
+    assert FG_BASE in span_style(tee_line, "why")          # cause fg.base
+
+    ell_line = next(ln for ln in lines if "ACTION REQUIRED" in ln.plain)
+    act_style = span_style(ell_line, "ACTION REQUIRED")
+    assert ACCENT in act_style and "bold" in act_style
+
+    leaf_line = next(ln for ln in lines if LEAF_DOT in ln.plain)
+    assert FG_MUTED in span_style(leaf_line, "·")          # leaf dot muted
+    assert FG_MUTED in span_style(leaf_line, "fix a")      # leaf text muted
+
+
+def test_e1_wrapped_cause_continuation_uses_vertical_connector():
+    cause = "network unreachable after " + "many ".rstrip() + "retries " * 12
+    diag = error("failed", cause=cause, hints=["do something"])
+    lines = build_lines(diag, width=60)
+    conts = [ln for ln in lines if ln.plain.startswith("  │  ")]  # "  │  "
+    assert conts, "cause wrap phải nối tiếp bằng '│  '"
+
+
+def test_e1_no_hints_skips_action_required_node():
+    diag = error("boom")
+    lines = build_lines(diag, width=80)
+    assert len(lines) == 1  # không in cây rỗng khi trống cause+hints
+
+    diag2 = error("boom", cause="root cause")
+    plain = [ln.plain for ln in build_lines(diag2, width=80)]
+    assert any(TREE_TEE in p for p in plain)
+    assert not any("ACTION REQUIRED" in p for p in plain)
+    assert not any(TREE_ELL in p for p in plain)
+
+
+def test_e1_warning_uses_bang_glyph_and_same_tree():
+    diag = warning("auth failed", cause="cookie expired", hints=["ctf doctor -u URL"])
+    lines = build_lines(diag, width=80)
+    plain = [ln.plain for ln in lines]
+    assert plain[0].startswith("! warning: auth failed")
+    assert any(p.startswith("  ├─ ") for p in plain)
+    assert any(p.startswith("  └─ ACTION REQUIRED") for p in plain)
 
 
 def test_build_lines_wrap_multiline_aligns_continuation_after_label():
@@ -155,15 +245,17 @@ def test_build_lines_wrap_multiline_aligns_continuation_after_label():
     lines = build_lines(error(long_msg), width=80)
     plain = [ln.plain for ln in lines]
     assert len(lines) > 1
-    col = len("error:") + 1
+    col = len("✗ ") + len("error:") + 1  # sau glyph ✗ + nhãn + space
     for cont in plain[1:]:
+        if "ACTION" in cont or "├" in cont or "└" in cont:
+            continue
         assert cont.startswith(" " * col)
 
 
 def test_hints_one_per_line():
     diag = error("boom", hints=["first hint", "second hint"])
     lines = build_lines(diag, width=80)
-    hint_lines = [ln for ln in lines if "hint:" in ln.plain]
+    hint_lines = [ln for ln in lines if LEAF_DOT.strip() in ln.plain and "ACTION" not in ln.plain]
     assert len(hint_lines) == 2
     assert "first hint" in hint_lines[0].plain
     assert "second hint" in hint_lines[1].plain

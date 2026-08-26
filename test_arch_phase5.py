@@ -1194,7 +1194,7 @@ class TestPullServiceUIDiscipline(unittest.TestCase):
         self.assertFalse(result["ok"])
         out = self.stderr_buf.getvalue()
         self.assertIn("error:", out)
-        self.assertIn("hint:", out)
+        self.assertIn("ACTION REQUIRED", out)  # E1: hint giờ là leaf dưới node kết
         self.assertIn("ctf doctor -u <url>", out)
 
     def test_detect_failure_renders_diagnostic(self):
@@ -1210,7 +1210,7 @@ class TestPullServiceUIDiscipline(unittest.TestCase):
         self.assertIn("error:", out)
         self.assertIn("Không phát hiện được nền tảng CTF", out)
         self.assertIn("unrecognized url", out)          # cause
-        self.assertIn("hint:", out)
+        self.assertIn("ACTION REQUIRED", out)  # E1: hint giờ là leaf dưới node kết
         self.assertIn("ctf doctor -u <url>", out)       # hint cụ thể
 
     def test_auth_failure_renders_warning_diagnostic_and_proceeds(self):
@@ -1226,7 +1226,7 @@ class TestPullServiceUIDiscipline(unittest.TestCase):
         self.assertTrue(result["ok"])
         out = self.stderr_buf.getvalue()
         self.assertIn("warning:", out)
-        self.assertIn("hint:", out)
+        self.assertIn("ACTION REQUIRED", out)  # E1: hint giờ là leaf dưới node kết
         self.assertIn("ctf doctor -u <url>", out)
 
     # ---- 1b. Diagnostic sweep: workspace không ghi được / fail tổng ----
@@ -1245,7 +1245,7 @@ class TestPullServiceUIDiscipline(unittest.TestCase):
         out = self.stderr_buf.getvalue()
         self.assertIn("error:", out)
         self.assertIn("Không ghi được workspace", out)
-        self.assertIn("hint:", out)
+        self.assertIn("ACTION REQUIRED", out)  # E1: hint giờ là leaf dưới node kết
         self.assertIn("quyền ghi", out)          # hint hành động
 
     def test_total_download_failure_renders_diagnostic_and_proceeds(self):
