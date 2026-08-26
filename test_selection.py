@@ -9,6 +9,7 @@ Khóa contract:
   không glyph; done → tên mang token ``done``.
 """
 
+import re
 import unittest
 
 from rich.cells import cell_len
@@ -16,7 +17,7 @@ from rich.text import Text
 
 from ctf_downloader import interactive_menu as im
 from ctf_downloader.ui import theme
-from ctf_downloader.ui.selection import MENU_CURSOR, selected_row
+from ctf_downloader.ui.selection import MENU_CURSOR, fit_cells, selected_row
 
 
 def _span_text(t: Text, span) -> str:
@@ -107,6 +108,116 @@ class WorkspaceSwitcherRowsTests(unittest.TestCase):
         covered = "".join(_span_text(rows[1], s) for s in done_spans)
         self.assertIn("PTIT CTF 2026", covered)
         self.assertNotIn(MENU_CURSOR, rows[1].plain)
+
+
+class FitCellsTests(unittest.TestCase):
+    """fit_cells — lưới cell-width dùng chung cho cột switcher (MUST uiv2 #4)."""
+
+    def test_noop_when_fits(self):
+        self.assertEqual(fit_cells("CTFD", 8), "CTFD")
+
+    def test_pad_to_width_by_display_cells(self):
+        out = fit_cells("ab", 6, pad=True)
+        self.assertEqual(out, "ab    ")
+        self.assertEqual(cell_len(out), 6)
+
+    def test_truncate_ascii_with_ellipsis_exact_width(self):
+        out = fit_cells("x" * 13, 8)
+        self.assertTrue(out.endswith("…"))
+        self.assertEqual(cell_len(out), 8)
+
+    def test_truncate_counts_wide_chars_by_cell_width(self):
+        out = fit_cells("あ" * 10, 5)
+        self.assertEqual(cell_len(out), 5)
+        self.assertTrue(out.endswith("…"))
+
+    def test_empty_padded_fills_full_width(self):
+        self.assertEqual(fit_cells("", 4, pad=True), "    ")
+
+
+class SwitcherColumnWidthTests(unittest.TestCase):
+    """§S1.2 + MUST uiv2 #4 — switcher không bao giờ tràn cột dữ liệu.
+
+    Capture trước-fix: platform ``{:<8}`` không cắt → ``CUSTOM_REST0/12
+    solved`` (dính vào số solved); title ``[:30]`` cắt cứng theo len() →
+    ``Hostile Tak`` + ``CTFD`` dính nhau, không ellipsis. Layout mới:
+    ``[nn] TITLE(30 cell) PLATFORM(8 cell) n/m solved`` — title/platform cắt
+    theo display width kèm ``…``, ít nhất 1 space ngăn cách các trường.
+    """
+
+    WS_LONG = [(
+        "/demo/ws-long",
+        {"title": "TallDwarf Hosting: Hostile Takeover of the Grid",  # 49 ký tự > 30
+         "platform": "custom_restricted",  # 16 ký tự > 8
+         "solved_challenges": 6, "total_challenges": 22},
+    )]
+
+    #: offset lưới: prefix(2) + '[nn]'(4) + ' '(1) = title bắt đầu cell 7,
+    #: rộng đúng 30 cell; sau đó 1 space ngăn cách rồi meta.
+    TITLE_AT, TITLE_W = 7, 30
+
+    def _row_plain(self, *, active: bool = False) -> str:
+        act = "/demo/ws-long" if active else "/demo/other"
+        return im._workspace_rows(self.WS_LONG, active=act)[0].plain
+
+    def test_title_field_never_exceeds_column_and_gets_ellipsis(self):
+        for active in (False, True):
+            plain = self._row_plain(active=active)
+            field = plain[self.TITLE_AT:self.TITLE_AT + self.TITLE_W]
+            self.assertEqual(cell_len(field), 30, plain)
+            self.assertTrue(field.rstrip().endswith("…"), plain)
+            self.assertNotIn("Takeover", field)  # đã cắt, không tràn
+
+    def test_platform_field_fixed_8_cells_then_space_before_solved(self):
+        for active in (False, True):
+            plain = self._row_plain(active=active)
+            meta_at = self.TITLE_AT + self.TITLE_W + 1  # +1 space ngăn cách
+            meta = plain[meta_at:]
+            plat_field = meta[:im.SWITCHER_PLATFORM_W]
+            self.assertLessEqual(cell_len(plat_field), im.SWITCHER_PLATFORM_W)
+            self.assertNotIn("CUSTOM_REST6/22", plain)  # bug capture cũ
+            self.assertIsNotNone(re.search(r"\S\s+6/22 solved", plain),
+                                 f"thiếu space ngăn cách: {plain!r}")
+
+    def test_title_and_meta_never_glued(self):
+        # 'Tak' + 'CTFD' dính nhau trong capture trước-fix → giờ luôn có space.
+        for active in (False, True):
+            plain = self._row_plain(active=active)
+            self.assertFalse(re.search(r"\S[A-Z]{3,}\d+/\d+ solved", plain),
+                             f"title/platform dính meta: {plain!r}")
+
+    def test_short_fields_keep_grid_aligned_with_long_rows(self):
+        ws_short = [("/demo/s", {"title": "SECCON", "platform": "gzctf",
+                                 "solved_challenges": 1, "total_challenges": 2})]
+        short = im._workspace_rows(ws_short, active="/none")[0].plain
+        long_row = self._row_plain()
+        self.assertEqual(cell_len(short[:self.TITLE_AT]),
+                         cell_len(long_row[:self.TITLE_AT]))
+        self.assertIn("GZCTF   ", short)  # pad đủ 8 cell như hàng dài
+
+
+class MenuHeaderRadarTests(unittest.TestCase):
+    """MUST uiv2 #1 — menu dùng AppHeader Phosphor Radar như mọi surface."""
+
+    def test_print_header_renders_radar_not_banner_b(self):
+        from unittest.mock import patch
+
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = "/demo/ws"
+        app.cookie = None
+        app.token = None
+
+        with patch.object(im, "_menu_console") as mc:
+            mc.return_value.width = 120
+            with patch.object(mc.return_value, "print") as pr:
+                app._print_header()
+
+        rendered = "".join(str(c.plain) for c in pr.call_args_list[0].args[0].renderables) \
+            if hasattr(pr.call_args_list[0].args[0], "renderables") \
+            else str(pr.call_args_list[0].args[0])
+        self.assertIn("░░▒▒▓▓", rendered, "thiếu scanline radar")
+        self.assertIn("CTF·TOOLKIT", rendered)
+        self.assertNotIn("█▀▀", rendered, "vẫn còn Banner B half-block")
 
 
 class MenuWiringTests(unittest.TestCase):

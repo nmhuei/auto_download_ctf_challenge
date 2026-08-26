@@ -3,7 +3,6 @@ import sys
 import glob
 from typing import Optional
 
-from rich.console import Group
 from rich.prompt import Confirm
 from rich.text import Text
 
@@ -22,10 +21,9 @@ from .storage.global_config import (  # noqa: F401 — re-export để giữ tư
     save_global_config,
 )
 
-# PHOSPHOR FIELD KIT (design-system spec §2/§3) — banner + palette tokens.
-from . import __version__
-from .ui.banner import banner_b, tagline_text
-from .ui.selection import MENU_CURSOR, selected_row
+# PHOSPHOR FIELD KIT (design-system spec §2/§3) — AppHeader radar + tokens.
+from .ui.banner import app_header
+from .ui.selection import MENU_CURSOR, fit_cells, selected_row
 from .ui.theme import ACCENT, FG_BASE, FG_FAINT, FG_MUTED, INFO, WARN, load_theme
 from .ui.widgets import AMBER_RAMP, footer_bar, meter
 
@@ -33,7 +31,23 @@ from .ui.widgets import AMBER_RAMP, footer_bar, meter
 #: — ``ui.widgets.AMBER_RAMP`` canonical theo SPEC UI v2 §M1: mỗi ô nhận
 #: ĐÚNG một trong ba màu theo vị trí cột, không nội suy trung gian.
 
+#: Độ rộng cột switcher workspace (SPEC UI v2 §S1.2) — cắt theo display
+#: width kèm ``…`` (MUST uiv2 #4), không bao giờ để dữ liệu tràn cột.
+SWITCHER_TITLE_W = 30
+SWITCHER_PLATFORM_W = 8
+
 _MENU_CON = None
+
+
+def _frame_timestamp():
+    """Timestamp faint mép phải AppHeader — đồng bộ cli.py ``_frame_timestamp``."""
+    import datetime as _dt
+    try:
+        now = _dt.datetime.now().astimezone()
+        off_h = int(now.utcoffset().total_seconds() // 3600)
+        return f"{now:%H:%M} UTC{off_h:+d}"
+    except Exception:
+        return ""
 
 
 def _menu_console():
@@ -86,21 +100,29 @@ def _workspace_rows(workspaces, active: str):
     Workspace đang dùng → ``selected_row(..., selected=True)`` full
     reverse-highlight (thay suffix '❯ đang dùng' cũ); workspace giải xong
     100% liệt kê kèm token ``done`` (strike muted) trên tên.
+
+    MUST uiv2 #4: title/platform cắt theo display width kèm ``…``
+    (:func:`ui.selection.fit_cells`) về đúng cột 30/8 cell — platform dài
+    không còn tràn dính vào số solved, title dài không cắt cứng ``[:30]``
+    mất ellipsis; các trường cách nhau ít nhất 1 space.
     """
     rows = []
     for idx, (p, st) in enumerate(workspaces, 1):
-        title = str(st.get('title', os.path.basename(p)))[:30]
+        title = fit_cells(str(st.get('title', os.path.basename(p))),
+                          SWITCHER_TITLE_W, pad=True)
         solv = f"{st.get('solved_challenges', 0)}/{st.get('total_challenges', 0)}"
-        meta = f"{st.get('platform', 'generic').upper():<8}{solv} solved"
+        plat = fit_cells(str(st.get('platform', 'generic')).upper(),
+                         SWITCHER_PLATFORM_W, pad=True)
+        meta = f"{plat} {solv} solved"
         if os.path.abspath(p) == active:
-            rows.append(selected_row(f'[{idx:>2}] {title:<30}{meta}', selected=True))
+            rows.append(selected_row(f'[{idx:>2}] {title} {meta}', selected=True))
             continue
         total = st.get('total_challenges', 0)
         done = total > 0 and st.get('solved_challenges', 0) >= total
         row = Text('  ')
         row.append(f'[{idx:>2}]', style=ACCENT)
-        row.append(f' {title:<30}', style='done' if done else FG_BASE)
-        row.append(meta, style=FG_MUTED)
+        row.append(f' {title}', style='done' if done else FG_BASE)
+        row.append(f' {meta}', style=FG_MUTED)
         rows.append(row)
     return rows
 
@@ -149,13 +171,12 @@ class CTFInteractiveConsole:
     # ------------------------------------------------------------------
 
     def _print_header(self):
-        """Banner B + tagline italic muted + version dim, sau đó context workspace."""
+        """AppHeader Phosphor Radar (spec §4.1) — đồng bộ mọi surface framed
+        (MUST uiv2 #1: bỏ Banner B half-block gây chia hai nhận diện), sau đó
+        khối context WORKSPACE."""
         con = _menu_console()
-
-        tag = tagline_text()  # italic fg.muted (spec §2)
-        tag.append('  ·  ', style=FG_FAINT)
-        tag.append(f'v{__version__}', style='dim')
-        con.print(Group(banner_b(), tag))
+        con.print(app_header('menu', context=self.workspace_path,
+                             timestamp=_frame_timestamp()))
 
         ws_name = os.path.basename(self.workspace_path)
         dash = CTFDashboard(self.workspace_path)

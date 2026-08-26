@@ -19,6 +19,19 @@ from .theme import FG_BASE
 MENU_CURSOR = "❯"
 
 
+def fit_cells(text: str, width: int, *, pad: bool = False) -> str:
+    """Cắt/pad ``text`` về đúng lưới ``width`` cell (display width).
+
+    Đo bằng :func:`rich.cells.cell_len` nên an toàn với East-Asian wide
+    char; khi chuỗi tràn cột thì cắt và gắn ``…`` ở ô cuối — cùng quy ước
+    ellipsis của các bảng status/storage (MUST uiv2 #4). ``pad=True`` đệm
+    space phải tới đủ ``width`` cell để cột thẳng hàng dù dữ liệu ngắn.
+    """
+    t = Text(str(text), overflow="ellipsis")
+    t.truncate(max(1, int(width)), overflow="ellipsis", pad=pad)
+    return t.plain
+
+
 def selected_row(
     label: str,
     *,
@@ -48,4 +61,4 @@ def selected_row(
     return t
 
 
-__all__ = ["MENU_CURSOR", "selected_row"]
+__all__ = ["MENU_CURSOR", "fit_cells", "selected_row"]
