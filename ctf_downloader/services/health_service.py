@@ -43,8 +43,12 @@ _CAP_ITEMS = (
     ("rules_via_api", "rules qua API"),
 )
 
-#: FooterBar chuẩn cho lệnh thường (spec §4.7) — cùng bộ phím với cli.
-_FOOTER_BINDINGS = (("↑↓", "di chuyển"), ("?", "help"), ("q", "thoát"))
+#: FooterBar chuẩn cho lệnh thường (spec §4.7). Doctor render-một-lần-rồi-
+#: thoát (handle_doctor gọi report.render() rồi exit — KHÔNG có vòng đọc
+#: phím) → không gợi ý phím ảo; thay bằng các lệnh THẬT, cùng bộ với
+#: cli._FRAME_FOOTER (commit 03030b7).
+_FOOTER_BINDINGS = (("ctf sync", "đồng bộ"), ("ctf submit", "nộp flag"),
+                    ("ctf menu", "console tương tác"))
 
 #: Cột nội dung sau glyph kết quả: ``✔/✗`` + 5 spaces (layout bảng cũ).
 _LABEL_COL = 6
@@ -211,7 +215,8 @@ class DoctorReport:
     def _footer_text() -> Text:
         """FooterBar spec §4.7 dạng Text (token thuần — in được trên console
         nào, kể cả logger console không theme). Cùng hình dạng với
-        ``ui.widgets.footer_bar``: ``↑↓ di chuyển · ? help · q thoát``."""
+        ``ui.widgets.footer_bar``: ``ctf sync đồng bộ · ctf submit nộp flag
+        · ctf menu console tương tác``."""
         bar = Text()
         for i, (key, label) in enumerate(_FOOTER_BINDINGS):
             if i:

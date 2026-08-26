@@ -340,11 +340,16 @@ class TestDoctorChromeAndWrap(unittest.TestCase):
     cột nội dung (không về cột 1)."""
 
     def test_footer_bar_is_last_line(self):
+        # Doctor render-một-lần-rồi-thoát (không vòng đọc phím) → footer chỉ
+        # gợi lệnh THẬT, cùng bộ với cli._FRAME_FOOTER; phím ảo cũ
+        # ↑↓/?/q phải không bao giờ hồi sinh.
         out = capture_render(self._partial())
         lines = [ln for ln in out.splitlines() if ln.strip()]
-        self.assertIn("q thoát", lines[-1])
-        self.assertIn("di chuyển", lines[-1])
-        self.assertIn("?", lines[-1])
+        self.assertIn("ctf sync đồng bộ", lines[-1])
+        self.assertIn("ctf submit nộp flag", lines[-1])
+        self.assertIn("ctf menu console tương tác", lines[-1])
+        self.assertNotIn("q thoát", out)
+        self.assertNotIn("di chuyển", out)
 
     def _partial(self):
         report = DoctorReport(url=URL)
@@ -373,8 +378,9 @@ class TestDoctorChromeAndWrap(unittest.TestCase):
                               f"{buf.getvalue()}")
         # Mọi dòng không thuộc dạng dòng đầu khối đều phải được thụt lề.
         # (combo B: 4 dòng AppHeader radar — scanline / title dot-wing /
-        # ▍ lệnh / ▸ timestamp — đều hợp lệ mở đầu ở cột 1.)
-        allowed_prefixes = ("▐██", "CHECK", "KẾT QUẢ", "!", "✔", "✗", "↑↓",
+        # ▍ lệnh / ▸ timestamp — đều hợp lệ mở đầu ở cột 1. Footer gợi ý
+        # lệnh thật "ctf ..." cũng mở đầu ở cột 1.)
+        allowed_prefixes = ("▐██", "CHECK", "KẾT QUẢ", "!", "✔", "✗", "ctf ",
                             "░░", "·", "▍", "▸")
         for ln in lines:
             if not ln.strip() or ln.startswith(allowed_prefixes):
