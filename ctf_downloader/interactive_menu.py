@@ -24,6 +24,7 @@ from .storage.global_config import (  # noqa: F401 — re-export để giữ tư
 # PHOSPHOR FIELD KIT (design-system spec §2/§3) — AppHeader radar + tokens.
 from .ui.banner import app_header
 from .ui.selection import MENU_CURSOR, fit_cells, selected_row
+from .ui.splash import splash
 from .ui.theme import ACCENT, FG_BASE, FG_FAINT, FG_MUTED, INFO, WARN, load_theme
 from .ui.widgets import AMBER_RAMP, footer_bar, meter
 
@@ -640,6 +641,10 @@ def _pause():
 
 
 def launch_interactive_menu(workspace_path: Optional[str] = None, cookie: Optional[str] = None, token: Optional[str] = None):
+    # Splash logo dual-tier (DECISION_LOGO.md §4): cand_1 big ≥80 cols,
+    # cand_6 pagga <80 — in ĐÚNG MỘT LẦN khi vào menu, TRƯỚC radar AppHeader
+    # đầu tiên của vòng lặp; các lệnh framed không đổi (vẫn radar 4 dòng).
+    _menu_console().print(splash())
     # Banner PHOSPHOR FIELD KIT phương án B (spec §2) — human-facing → stderr.
     app = CTFInteractiveConsole(workspace_path=workspace_path, cookie=cookie, token=token)
     app.run()
