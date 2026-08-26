@@ -21,6 +21,10 @@ from rich.text import Text
 from ..config import DownloaderConfig
 from ..utils.logger import Logger
 from ..ui import SPINNER, err_console, ok_summary
+# err_console (ui/console.py) KHÔNG gắn theme → tag token như [solved] không
+# resolve được ở đây; dòng diff +/- render qua err_console phải dùng HẰNG HEX
+# từ ui.theme (pattern _SOLVED_COLOR của cli_commands).
+from ..ui.theme import ERROR as _ERROR_COLOR, SOLVED as _SOLVED_COLOR
 from ..ui.diagnostics import Diagnostic, render as render_diagnostic
 from ..platforms.detector import PlatformDetector
 from ..platforms.base import Challenge
@@ -149,7 +153,7 @@ class PullService:
         config.validate()
         start_time = time.time()
         Logger.banner()
-        Logger.info(f"Target URL: [bold blue]{escape(config.url)}[/bold blue]", markup=True)
+        Logger.info(f"Target URL: [literal]{escape(config.url)}[/literal]", markup=True)
 
         # Session master: chỉ main thread dùng (detect platform + authenticate)
         master = session or create_session(
@@ -191,7 +195,7 @@ class PullService:
             base_ctf_dir = os.path.expanduser("~/Workspace/CTF")
             config.output_dir = os.path.abspath(os.path.join(base_ctf_dir, folder_name))
 
-        Logger.info(f"Output Directory: [bold yellow]{escape(config.output_dir)}[/bold yellow]", markup=True)
+        Logger.info(f"Output Directory: [path]{escape(config.output_dir)}[/path]", markup=True)
 
         # Filter categories if specified
         if config.categories:
@@ -284,10 +288,10 @@ class PullService:
         except Exception:
             pass
 
-        Logger.success(f"[bold green]✨ ALL DONE in {elapsed:.2f}s! ✨[/bold green]", markup=True)
-        Logger.info(f"📁 Workspace: [bold yellow]{escape(config.output_dir)}[/bold yellow]", markup=True)
-        Logger.info(f"📊 Summary: [bold cyan]{escape(str(summary_file))}[/bold cyan]", markup=True)
-        Logger.info(f"📦 Total files downloaded: [bold green]{total_files}[/bold green]", markup=True)
+        Logger.success(f"[accent]✨ ALL DONE in {elapsed:.2f}s! ✨[/accent]", markup=True)
+        Logger.info(f"📁 Workspace: [path]{escape(config.output_dir)}[/path]", markup=True)
+        Logger.info(f"📊 Summary: [info]{escape(str(summary_file))}[/info]", markup=True)
+        Logger.info(f"📦 Total files downloaded: [fg.base]{total_files}[/fg.base]", markup=True)
 
         # Event Window (spec event-window §4/§6): lần đầu pull thành công mà
         # workspace chưa có .ctf/config.json → chạy wizard 3 câu hỏi (chỉ khi
@@ -485,7 +489,7 @@ class PullService:
         Logger.banner()
         mode_label = "--refresh-meta" if refresh_meta else "--update"
         Logger.info(f"Incremental pull ({mode_label}): "
-                    f"[bold blue]{escape(config.url)}[/bold blue]", markup=True)
+                    f"[literal]{escape(config.url)}[/literal]", markup=True)
 
         master = session or create_session(
             cookie=config.cookie,
@@ -645,13 +649,14 @@ class PullService:
         for _cid, mp, _name in missing_items:
             PullService._mark_removed_from_server(repo, mp)
 
-        # Tổng kết diff (alphabetical): ` + name` green — bài mới,
-        # ` - name` red — bài biến mất khỏi server (removed_from_server).
+        # Tổng kết diff (alphabetical): ` + name` solved-green — bài mới,
+        # ` - name` error-red — bài biến mất khỏi server (removed_from_server).
+        # Glyph +/- giữ nguyên; màu qua HẰNG HEX vì err_console không có theme.
         diff_entries = [(c.name or str(c.id), "+") for c in new_challs] \
             + [(_name, "-") for _cid, _mp, _name in missing_items]
         for name, sign in sorted(diff_entries, key=lambda e: (e[0].lower(), e[1])):
-            style = "green" if sign == "+" else "red"
-            err_console.print(f"[{style}]{sign} {name}[/{style}]")
+            color = _SOLVED_COLOR if sign == "+" else _ERROR_COLOR
+            err_console.print(f"[{color}]{sign} {name}[/{color}]")
 
         # 6. Regenerate SUMMARY.md + challenges.json phản ánh danh sách mới
         Logger.info("Regenerating global SUMMARY.md and challenges.json...")

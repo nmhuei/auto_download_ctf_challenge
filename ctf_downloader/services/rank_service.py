@@ -267,7 +267,7 @@ class RankService:
         self.repo.write_ranking_md("\n".join(lines))
         ranking_md_path = str(self.repo.ranking_md_path)
 
-        Logger.info(f"Đã cập nhật bảng xếp hạng live: [bold cyan]{os.path.relpath(ranking_md_path, self.workspace_path)}[/bold cyan]", markup=True)
+        Logger.info(f"Đã cập nhật bảng xếp hạng live: [path]{os.path.relpath(ranking_md_path, self.workspace_path)}[/path]", markup=True)
 
         # 2. Update SUMMARY.md via WorkspaceRepo (chèn/thay dòng Live Rank)
         # Review-5 (M, follow-up BUG-C14-2): badge được patch_summary_live_rank

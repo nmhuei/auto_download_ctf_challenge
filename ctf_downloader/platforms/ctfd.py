@@ -85,7 +85,7 @@ def ctfd_register(platform, *, username: str, email: str, password: str,
                 "message": f"Register thất bại (final={getattr(resp, 'url', '?')}): {detail}"}
 
     Logger.success(f"CTFd: register OK — đang đăng nhập với user "
-                   f"[bold cyan]{escape(me_name or username)}[/bold cyan].",
+                   f"[info]{escape(me_name or username)}[/info].",
                    markup=True)
     result: Dict[str, Any] = {"ok": True, "message": "Đã register",
                               "user_name": me_name or username}
@@ -205,7 +205,7 @@ class CTFdPlatform(BasePlatform):
                 if data.get("success") and data.get("data"):
                     user_data = data["data"]
                     self.ctf_info.user_name = user_data.get("name")
-                    Logger.success(f"Đã xác thực CTFd với User: [bold cyan]{escape(str(self.ctf_info.user_name))}[/bold cyan]", markup=True)
+                    Logger.success(f"Đã xác thực CTFd với User: [info]{escape(str(self.ctf_info.user_name))}[/info]", markup=True)
                     return True
         except Exception:
             pass
@@ -389,7 +389,7 @@ class CTFdPlatform(BasePlatform):
                 continue
             if len(html.strip()) < 50 or self._looks_like_404(html):
                 continue
-            Logger.info(f"Đã tải trang rules tiềm năng: [bold cyan]/{slug}[/bold cyan]", markup=True)
+            Logger.info(f"Đã tải trang rules tiềm năng: [info]/{slug}[/info]", markup=True)
             return html
         return None
 
