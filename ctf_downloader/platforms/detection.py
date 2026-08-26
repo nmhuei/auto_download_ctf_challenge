@@ -191,9 +191,14 @@ def detect_platform_info(base_url: str, session,
     platform.info = info
 
     if not quiet:
+        # AMBER REFIT (synthesis uiv2 #3): màu semantic chỉ qua token theme
+        # kèm glyph vai trò (✔ solved / ! warn) — bold green/yellow legacy
+        # phụ thuộc theme terminal người dùng đã bị bỏ.
+        conf_style, conf_glyph = (
+            ("solved", "✔") if confidence == "high" else ("warn", "!"))
         Logger.info(
-            f"Nhận diện platform: [bold green]{spec.label}[/bold green] "
-            f"(độ tin cậy: [bold yellow]{confidence}[/bold yellow])",
+            f"Nhận diện platform: [solved]✔ {spec.label}[/solved] "
+            f"(độ tin cậy: [{conf_style}]{conf_glyph} {confidence}[/{conf_style}])",
             markup=True
         )
     return platform, info

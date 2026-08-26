@@ -68,13 +68,16 @@ def _submit_interactive_wizard(flag_format: str = None):
     from rich.prompt import Prompt
 
     Logger.banner()
-    console.print("[bold yellow]🚩 Interactive Flag Submitter[/bold yellow]\n")
+    # AMBER Refit: tiêu đề wizard qua token title (amber lead) — hết vàng legacy.
+    console.print("[title]🚩 Interactive Flag Submitter[/title]\n")
 
     # Look for existing workspace
     default_workspace = os.path.expanduser("~/Workspace/CTF/PTIT_CTF_2026")
     if not os.path.exists(default_workspace):
         default_workspace = "./PTIT_CTF_2026" if os.path.exists("./PTIT_CTF_2026") else os.path.expanduser("~/Workspace/CTF")
-    workspace = Prompt.ask("[bold cyan]Workspace directory (or press enter to skip)[/bold cyan]", default=default_workspace).strip()
+    # Nhãn prompt là chrome trung tính (quy ước watch_service) — không còn
+    # bold cyan phụ thuộc theme terminal.
+    workspace = Prompt.ask("Workspace directory (or press enter to skip)", default=default_workspace).strip()
 
     # Try reading URL from challenges.json if available (qua WorkspaceRepo —
     # file thiếu/hỏng trả rỗng như khối try/except cũ)
@@ -82,8 +85,8 @@ def _submit_interactive_wizard(flag_format: str = None):
     ctf_info = WorkspaceRepo(workspace).read_challenges().get("ctf_info") or {}
     default_url = ctf_info.get("url", "")
 
-    url = Prompt.ask("[bold cyan]Enter CTF Platform URL[/bold cyan]", default=default_url or "https://jeo.infosecptit.org/games/6/challenges").strip()
-    cookie = Prompt.ask("[bold cyan]Paste Cookie (or path to cookie file)[/bold cyan]").strip()
+    url = Prompt.ask("Enter CTF Platform URL", default=default_url or "https://jeo.infosecptit.org/games/6/challenges").strip()
+    cookie = Prompt.ask("Paste Cookie (or path to cookie file)").strip()
     if os.path.isfile(cookie):
         with open(cookie, "r", encoding="utf-8") as f:
             cookie = f.read().strip()
@@ -91,14 +94,15 @@ def _submit_interactive_wizard(flag_format: str = None):
     svc = SubmitService(url=url, cookie=cookie, workspace_dir=workspace, flag_format=flag_format)
 
     console.print("\n[dim]Choose Action:[/dim]")
-    console.print(" [bold green]1[/bold green]. Submit flag for a specific challenge")
-    console.print(" [bold green]2[/bold green]. Auto-scan workspace and submit all filled flags")
+    # Phím chọn dùng hi_fg amber — cùng quy ước shortcut FooterBar/ui.widgets.
+    console.print(" [hi_fg]1[/hi_fg]. Submit flag for a specific challenge")
+    console.print(" [hi_fg]2[/hi_fg]. Auto-scan workspace and submit all filled flags")
 
-    choice = Prompt.ask("[bold cyan]Select action[/bold cyan]", choices=["1", "2"], default="1")
+    choice = Prompt.ask("Select action", choices=["1", "2"], default="1")
 
     if choice == "1":
-        chall_input = Prompt.ask("[bold cyan]Enter Challenge Name or ID[/bold cyan]").strip()
-        flag_input = Prompt.ask("[bold cyan]Enter Flag string[/bold cyan]").strip()
+        chall_input = Prompt.ask("Enter Challenge Name or ID").strip()
+        flag_input = Prompt.ask("Enter Flag string").strip()
         svc.submit(chall_input, flag_input)
     else:
         svc.auto_scan_and_submit()

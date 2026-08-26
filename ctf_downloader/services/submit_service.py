@@ -280,7 +280,8 @@ class SubmitService:
         if rules_text:
             fmt = extract_flag_format(rules_text)
             if fmt:
-                Logger.success(f"Đã suy ra flag format từ rules: [bold yellow]{escape(fmt)}[/bold yellow]", markup=True)
+                # Regex format là dữ liệu literal → token neutral (không vàng legacy).
+                Logger.success(f"Đã suy ra flag format từ rules: [literal]{escape(fmt)}[/literal]", markup=True)
                 self._save_flag_format_to_cache(fmt, "rules")
                 return fmt, "rules"
 
@@ -414,8 +415,9 @@ class SubmitService:
                 render_diagnostic(diag_blacklisted(prev_cid))
                 return False, f"🚫 Bị blacklist: flag này đã submit SAI trước đó (challenge {prev_cid})."
 
-        Logger.info(f"Đang submit flag cho [bold cyan]{escape(str(name))}[/bold cyan] (ID: {cid})...", markup=True)
-        Logger.info(f"Flag: [bold yellow]{escape(str(flag))}[/bold yellow]", markup=True)
+        # Tên challenge / giá trị flag là DỮ LIỆU → token neutral fg.base.
+        Logger.info(f"Đang submit flag cho [info]{escape(str(name))}[/info] (ID: {cid})...", markup=True)
+        Logger.info(f"Flag: [info]{escape(str(flag))}[/info]", markup=True)
 
         # Authenticate if needed
         try:
@@ -520,7 +522,7 @@ class SubmitService:
                 return st
 
             self.repo.update_status(meta_path, _mut)
-            Logger.success(f"🏴 Đã hoard flag cho [bold cyan]{escape(str(name))}[/bold cyan] (chưa submit).", markup=True)
+            Logger.success(f"🏴 Đã hoard flag cho [info]{escape(str(name))}[/info] (chưa submit).", markup=True)
             return True, "Đã lưu flag vào kho."
         except Exception as e:
             Logger.warning(f"Không thể hoard flag: {e}")
@@ -576,7 +578,7 @@ class SubmitService:
             Logger.error("Không tìm thấy thư mục workspace để auto-scan.")
             return []
 
-        Logger.info(f"Đang quét workspace tìm flag chưa nộp: [bold cyan]{escape(self.workspace_dir)}[/bold cyan]", markup=True)
+        Logger.info(f"Đang quét workspace tìm flag chưa nộp: [info]{escape(self.workspace_dir)}[/info]", markup=True)
 
         stats = {
             "submitted_ok": 0,
@@ -692,7 +694,7 @@ class SubmitService:
                         with open(r_candidate, "w", encoding="utf-8") as f:
                             f.write(r_text.replace("FLAG{...}", flag))
 
-                Logger.success(f"Đã cập nhật tài liệu local cho [bold cyan]{escape(str(challenge_name))}[/bold cyan] -> Solved ✅", markup=True)
+                Logger.success(f"Đã cập nhật tài liệu local cho [info]{escape(str(challenge_name))}[/info] -> Solved ✅", markup=True)
                 break
             except Exception:
                 pass
