@@ -617,9 +617,10 @@ class TestRenderIcons(TempWorkspaceCase):
         # nghĩa spec §4.3 — ✔ solved, ✎ draft; hoarded/drafts về dashboard sub.
         self.assertIn("✔", out)
         self.assertIn("✎", out)
-        # Dashboard header (spec §4.2): nhãn UPPERCASE faint + sub muted
+        # SPEC UI v2 §L1: 2 panel overview — TIẾN ĐỘ + GIẢI; hoarded/drafts
+        # về dòng sub điểm của panel TIẾN ĐỘ.
         self.assertIn("TIẾN ĐỘ", out)
-        self.assertIn("ĐIỂM", out)
+        self.assertIn("GIẢI", out)
         self.assertIn("hoarded 1 · drafts 1", out)
         # Dòng note (cột cuối, giữ ngoặc kép)
         self.assertIn('"SSTI sandbox escape — đang bypass"', out)
@@ -1294,13 +1295,14 @@ class TestChallengeRowSchemaWholeScreen(TempWorkspaceCase):
         pts_cols = set()
         for ln in out.splitlines():
             stripped = ln.rstrip()
-            if stripped.strip().endswith(("pts", "giải")) or " pts" in stripped:
-                idx = stripped.find(" pts ")
-                if idx >= 0:
-                    pts_cols.add(idx)
-                elif "pts" in stripped:
-                    pts_cols.add(stripped.find("pts"))
+            if " giải" not in stripped:
+                continue   # chỉ soi ROW challenge (panel overview có "pts" riêng)
+            idx = stripped.find(" pts ")
+            if idx >= 0:
+                pts_cols.add(idx)
         # TẤT CẢ các dòng challenge dùng CÙNG một vị trí cột pts.
+        # (SPEC §L1: chỉ soi ROW challenge — dòng có cột "giải"; panel
+        # overview giờ cũng chứa chữ "pts" trên dòng điểm riêng.)
         self.assertLessEqual(len(pts_cols), 1,
                              f"cột pts lệch giữa các category: {pts_cols}")
 
@@ -1308,7 +1310,8 @@ class TestChallengeRowSchemaWholeScreen(TempWorkspaceCase):
         _add_challenge(self.root, 2, "B", "Crypto", points=5000, solves=1234)
         _add_challenge(self.root, 3, "C", "Pwn", points=7, solves=1)
         out = self._render_plain()
-        lines = [ln for ln in out.splitlines() if " pts" in ln]
+        # chỉ ROW challenge (có cột "giải") — panel overview có dòng "pts" riêng
+        lines = [ln for ln in out.splitlines() if " pts" in ln and "giải" in ln]
         self.assertTrue(lines)
         for ln in lines:
             # số pts đứng sát chữ " pts" (right-align): không có space giữa
@@ -1316,9 +1319,17 @@ class TestChallengeRowSchemaWholeScreen(TempWorkspaceCase):
             self.assertRegex(ln, r"\S+ giải")
 
 
-class TestHeaderPanelResponsive(TempWorkspaceCase):
-    """codex-r2 P1b: panel responsive — ≥92 cols đủ NHỊP GIẢI; <92 bỏ cột;
-    không có flag 24h → sparkline là baseline braille visible, không ô trống."""
+class TestOverviewShellLayout(TempWorkspaceCase):
+    """SPEC UI v2 §L1 shell layout — 2 panel overview + category tile vuông.
+
+    - ≥96 cols: panel TIẾN ĐỘ + GIẢI xếp NGANG trên cùng một dòng (trái
+      tối thiểu 38 cell, phải phần còn lại).
+    - <96 cols: 2 panel XẾP DỌC — mỗi panel một khung riêng.
+    - Sparkline nhịp 24h LUÔN render trong panel GIẢI (không còn hack
+      responsive bỏ cột); không có lịch sử submit → baseline braille ⣀
+      visible kèm "+0 flags 24h".
+    - Category heading là tile corner-glyph ``┌┐ NAME ─── d/d [meter] pts``.
+    """
 
     def _render_with_cols(self, cols) -> str:
         buf = io.StringIO()
@@ -1327,23 +1338,46 @@ class TestHeaderPanelResponsive(TempWorkspaceCase):
             StatusService.render_tree(self.repo)
         return buf.getvalue()
 
-    def test_wide_terminal_shows_sparkline_column(self):
+    def test_wide_terminal_pairs_panels_on_one_line(self):
         out = self._render_with_cols(120)
-        self.assertIn("NHỊP GIẢI · 24H", out)
+        title_line = next(ln for ln in out.splitlines() if "TIẾN ĐỘ" in ln)
+        self.assertIn("GIẢI", title_line)      # 2 panel NGANG cùng dòng
+        self.assertIn("╭", title_line)         # khung ROUNDED viền accent.deep
 
-    def test_narrow_terminal_drops_sparkline_column(self):
+    def test_narrow_terminal_stacks_panels(self):
         out = self._render_with_cols(80)
-        self.assertNotIn("NHỊP GIẢI", out)
-        # variant responsive vẫn giữ TIẾN ĐỘ + ĐIỂM
-        self.assertIn("TIẾN ĐỘ", out)
-        self.assertIn("ĐIỂM", out)
+        ti_line = next(ln for ln in out.splitlines() if "TIẾN ĐỘ" in ln)
+        self.assertNotIn("GIẢI", ti_line)      # XẾP DỌC: khác khối
+        self.assertIn("GIẢI", out)
 
-    def test_empty_pulse_renders_visible_baseline_not_blank(self):
+    def test_solve_pulse_always_rendered_both_widths(self):
+        for cols in (120, 80):
+            out = self._render_with_cols(cols)
+            # Workspace không có submit history → đếm 0 nhưng vẫn visible.
+            self.assertIn("+0 flags 24h", out)
+            self.assertIn("⣀", out)
+
+    def test_category_tile_corner_frame(self):
+        _add_challenge(self.root, 2, "B", "Crypto", points=500)
         out = self._render_with_cols(120)
-        # Không có submit history → sparkline phải có glyph braille visible
-        line = next(ln for ln in out.splitlines() if "NHỊP GIẢI" in ln)
-        spark_line = out.splitlines()[out.splitlines().index(line) + 1]
-        self.assertIn("⣀", spark_line)
+        web_line = next(ln for ln in out.splitlines() if "WEB" in ln)
+        self.assertIn("┌┐ WEB", web_line)      # corner-glyph tile
+        self.assertIn("─", web_line)           # divider fill tới cột tail
+        self.assertIn("0/1", web_line)         # tail d/d
+        crypto_line = next(ln for ln in out.splitlines() if "CRYPTO" in ln)
+        self.assertIn("┌┐ CRYPTO", crypto_line)
+
+    def test_progress_panel_reports_points_hoard_drafts(self):
+        _add_challenge(self.root, 2, "B", "Web", points=500)
+        self.repo.update_status(
+            self.root / "Web" / "chall_a" / "metadata.json",
+            lambda st: {**st, "solve": "solved_by_me",
+                        "writeup": "draft",
+                        "flag": {"value": "FLAG{x}", "state": "hoarded"}})
+        out = self._render_with_cols(120)
+        pts_line = next(ln for ln in out.splitlines() if "hoarded" in ln)
+        self.assertIn("100/600 pts", pts_line)     # earned accent.hi / total
+        self.assertIn("hoarded 1 · drafts 1", pts_line)
 
 
 # ----------------------------------------------------------------------
