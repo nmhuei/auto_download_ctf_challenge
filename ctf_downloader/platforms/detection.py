@@ -50,6 +50,25 @@ _COOKIE_SIGNALS = {
 }
 
 
+def _parse_cookie_hint_names(cookie_hint: str) -> Optional[set]:
+    """Trích TÊN cookie từ chuỗi hint (kiểu chuỗi ``-c 'a=1; b=2'``).
+
+    Tách theo ``;`` và xuống dòng; mỗi cặp lấy phần trước ``=`` làm tên,
+    chuẩn hoá lowercase và bỏ quote bao quanh. Trả ``None`` khi KHÔNG parse
+    được cặp name=value nào -> caller fallback hành vi cũ (substring nguyên
+    blob). Task 6/7 deferred: khớp substring cả blob từng false-match khi
+    tên cookie xuất hiện giữa giá trị của cookie khác."""
+    names: set = set()
+    for chunk in re.split(r"[;\r\n]+", cookie_hint or ""):
+        chunk = chunk.strip()
+        if "=" not in chunk:
+            continue          # token trần không phải cặp name=value
+        name = chunk.split("=", 1)[0].strip().strip("'\"").strip()
+        if name:
+            names.add(name.lower())
+    return names or None
+
+
 def _match_html_markers(spec, html: str, low: str) -> bool:
     """Khớp một marker của spec trên HTML. Marker tiền tố 'regex:' là mẫu regex."""
     for marker in spec.html_markers:
@@ -107,6 +126,19 @@ def detect_platform_info(base_url: str, session,
 
     # ---------------- Tầng 2: Cookies (registry) ---------------- #
     if confidence != "high":
+        # Hint dạng chuỗi được parse thành TÊN cookie (cặp name=value tách
+        # theo ';' / newline) — chỉ khớp khi TÊN trùng hint, không còn
+        # substring nguyên blob; không parse được cặp nào -> hành vi cũ.
+        hint_names = _parse_cookie_hint_names(cookie_hint) \
+            if cookie_hint else None
+
+        def _hint_matches(hint: str) -> bool:
+            if not cookie_hint:
+                return False
+            if hint_names is not None:
+                return hint.lower() in hint_names
+            return hint.lower() in cookie_hint.lower()
+
         try:
             cookie_names = set(session.cookies.keys())
         except Exception:
@@ -117,8 +149,7 @@ def detect_platform_info(base_url: str, session,
             if key not in PLATFORMS:
                 continue
             for hint in PLATFORMS[key].cookie_hints:
-                if hint in cookie_names or (
-                        cookie_hint and hint.lower() in cookie_hint.lower()):
+                if hint in cookie_names or _hint_matches(hint):
                     ptype, confidence = key, "medium"
                     info.add_signal(_COOKIE_SIGNALS.get(
                         key, f"Cookie {hint} trong cookie jar/hint -> nghi {PLATFORMS[key].label}"))

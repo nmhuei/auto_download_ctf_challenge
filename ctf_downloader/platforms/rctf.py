@@ -5,7 +5,7 @@ import requests
 from typing import List, Dict, Any, Optional, Tuple
 from bs4 import BeautifulSoup
 from rich.markup import escape
-from .base import (BasePlatform, Challenge, CTFInfo, EventTimes,
+from .base import (BasePlatform, Challenge, CTFInfo, EventTimes, Verdict,
                    SolveAttribution, epoch_ms, normalize_epoch_to_utc, safe_get_json)
 from ..utils.logger import Logger
 from .registry import register
@@ -40,15 +40,17 @@ class RCTFPlatform(BasePlatform):
     # tạo platform 1 lần/process, không TTL thì by_team/by_other đóng băng.
     SOLVE_ATTR_TTL: float = 300.0
 
-    _last_verdict: str = "unknown"
+    # Verdict là Literal (models.Verdict) — mọi giá trị gán phải thuộc
+    # {correct, incorrect, unknown, ratelimited}, không còn str tự do.
+    _last_verdict: Verdict = "unknown"
 
     @property
-    def last_verdict(self) -> str:
+    def last_verdict(self) -> Verdict:
         """Verdict lần submit gần nhất (correct|incorrect|unknown|ratelimited)."""
         return self._last_verdict
 
     @last_verdict.setter
-    def last_verdict(self, value: str) -> None:
+    def last_verdict(self, value: Verdict) -> None:
         self._last_verdict = value
 
     def __init__(self, base_url: str, session: requests.Session):
