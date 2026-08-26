@@ -216,6 +216,75 @@ class TestC17LockStealRace(_TempWsCase):
 
 
 # ----------------------------------------------------------------------
+# Reviewer-c17 residual (DEFERRED_TRIAGE OPEN-CODE #9) — cửa sổ TOCTOU µs
+# giữa re-read pid và unlink được thu hẹp bằng so sánh inode.
+# ----------------------------------------------------------------------
+
+class TestC17LockInodeWindow(_TempWsCase):
+    STALE_PID = 4194300
+
+    def _seed_stale_lock(self, store):
+        os.makedirs(store.dir, exist_ok=True)
+        with open(store.lock_path, "w") as f:
+            f.write(str(self.STALE_PID))
+
+    def test_helper_accepts_intact_lock(self):
+        store = WatchStateStore(str(self.ws))
+        self._seed_stale_lock(store)
+        self.assertTrue(store._lock_still_records(self.STALE_PID))
+
+    def test_helper_rejects_changed_content_same_inode(self):
+        store = WatchStateStore(str(self.ws))
+        self._seed_stale_lock(store)
+        with open(store.lock_path, "w") as f:
+            f.write(str(os.getpid()))
+        self.assertFalse(store._lock_still_records(self.STALE_PID))
+
+    def test_replace_between_snapshot_and_recheck_bails_out(self):
+        """Replace inode GIỮA hai phép stat của verifier (seam mock):
+        file bị xoá/tạo lại Y HỆT nội dung cũ (chỉ khác inode) giữa lúc
+        chụp inode trước và đối chiếu sau → acquire phải bỏ lượt, không
+        xoá nhầm file vừa được tạo lại."""
+        store = WatchStateStore(str(self.ws))
+        self._seed_stale_lock(store)
+
+        orig_stat_ino = WatchStateStore._stat_ino
+        calls = {"n": 0}
+
+        def replace_same_content_on_second_call(path):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                # "process B": xoá stale-lock và tạo lại giống hệt nội dung
+                # cũ — chỉ so NỘI DUNG thì không phát hiện được, chỉ inode.
+                os.unlink(path)
+                with open(path, "w") as f:
+                    f.write(str(self.STALE_PID))
+            return orig_stat_ino(path)
+
+        with patch.object(WatchStateStore, "_pid_alive",
+                          return_value=False), \
+                patch.object(WatchStateStore, "_stat_ino",
+                             staticmethod(replace_same_content_on_second_call)):
+            ok = store.acquire_lock()
+        self.assertFalse(ok, "inode đã đổi tay giữa chừng mà vẫn unlink")
+        self.assertGreaterEqual(calls["n"], 2,
+                                "verifier phải stat cả TRƯỚC và SAU khi đọc")
+        with open(store.lock_path) as f:
+            self.assertEqual(
+                int(f.read()), self.STALE_PID,
+                "file tại path là bản tạo lại — acquire KHÔNG được đụng tới")
+
+    def test_takeover_still_works_when_nothing_interferes(self):
+        """Control: stale-lock đứng yên → takeover vẫn thành công như cũ."""
+        store = WatchStateStore(str(self.ws))
+        self._seed_stale_lock(store)
+        with patch.object(WatchStateStore, "_pid_alive", return_value=False):
+            self.assertTrue(store.acquire_lock())
+        with open(store.lock_path) as f:
+            self.assertEqual(int(f.read()), os.getpid())
+
+
+# ----------------------------------------------------------------------
 # F-3 [MED] — adaptive scoreboard ratchet hai chiều
 # ----------------------------------------------------------------------
 

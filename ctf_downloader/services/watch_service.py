@@ -498,7 +498,11 @@ class WatchStateStore:
         hunt-c17 F-2: trước unlink, verify nội dung file VẪN ghi đúng pid
         vừa đọc — 2 process cùng đọc stale-pid rồi lần lượt unlink/create
         từng XOÁ SẠCH lock tươi của nhau và cùng "thành công". Nội dung đã
-        đổi tay ⇒ người khác vừa chiếm ⇒ bỏ lượt (kỳ sau thử lại)."""
+        đổi tay ⇒ người khác vừa chiếm ⇒ bỏ lượt (kỳ sau thử lại).
+
+        reviewer-c17 residual (DEFERRED_TRIAGE): cửa sổ µs giữa re-read pid
+        và ``unlink`` còn lại được thu hẹp bằng so sánh INODE — xem
+        ``_lock_still_records``."""
         os.makedirs(self.dir, exist_ok=True)
 
         def _try_create() -> "int | None":
@@ -523,8 +527,9 @@ class WatchStateStore:
             if pid != os.getpid() and self._pid_alive(pid):
                 return False     # watch đang chạy
             # stale / của chính process này → chỉ giành lại khi file VẪN
-            # ghi đúng pid vừa đọc; đã đổi tay thì thua sạch sẽ.
-            if pid != os.getpid() and self._read_lock_pid() != pid:
+            # ghi đúng pid vừa đọc và CHƯA bị thay thế bởi file khác;
+            # đã đổi tay thì thua sạch sẽ (bỏ lượt, kỳ sau thử lại).
+            if pid != os.getpid() and not self._lock_still_records(pid):
                 return False
             try:
                 os.unlink(self.lock_path)
@@ -536,6 +541,28 @@ class WatchStateStore:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(str(os.getpid()))
         return True
+
+    @staticmethod
+    def _stat_ino(path: str) -> Optional[int]:
+        """Inode hiện tại của ``path``; None khi không stat được (file mất)."""
+        try:
+            return os.stat(path).st_ino
+        except OSError:
+            return None
+
+    def _lock_still_records(self, pid: int) -> bool:
+        """Lần chót trước khi caller ``unlink``: lockfile VẪN ghi đúng
+        ``pid`` VÀ chưa bị thay thế bởi file khác.
+
+        Chốt cửa sổ TOCTOU µs reviewer-c17 giữa re-read pid ↔ unlink:
+        chụp inode TRƯỚC khi đọc pid, đối chiếu ngay TRƯỚC khi trả True
+        (caller unlink liền sau đó). Lệch inode ⇒ ai đó vừa xoá/tạo lại
+        file dù nội dung có như cũ ⇒ bỏ lượt, kỳ sau thử lại."""
+        ino_before = self._stat_ino(self.lock_path)
+        if ino_before is None or self._read_lock_pid() != pid:
+            return False
+        ino_after = self._stat_ino(self.lock_path)
+        return ino_after == ino_before
 
     def _read_lock_pid(self) -> int:
         try:
