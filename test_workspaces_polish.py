@@ -8,9 +8,12 @@ monkeypatch. Các case:
   title duy nhất KHÔNG bị gắn suffix.
 - N2: PLATFORM không lộ key nội bộ (``custom_res``) — render qua
   ``display_label`` (spec.label), key lạ giữ nguyên literal.
+- UIv2 synthesis MUST-FIX #2: workspace 100% solved → tên mang token
+  ``done`` (strike + FG_MUTED) nhất quán menu switcher; 0/0 không tính.
 """
 import contextlib
 import io
+import re
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -106,6 +109,71 @@ class TestWorkspacesDupTitle(unittest.TestCase):
         ])
         self.assertNotIn('custom_res', out)
         self.assertIn('Custom', out)
+
+
+class TestWorkspacesDoneStrike(unittest.TestCase):
+    """UIv2 synthesis MUST-FIX #2 — đồng bộ strike-done giữa 2 surface.
+
+    Workspace 100% solved (solved == total > 0) phải mang token ``done``
+    (strike + FG_MUTED) trên tên trong bảng `ctf workspaces`, nhất quán
+    với menu switcher (_workspace_rows). Workspace chưa giải hết hoặc
+    rỗng (0/0) thì KHÔNG.
+    """
+
+    # Rich gộp ``strike FG_MUTED`` thành 1 SGR: ESC[9;38;2;153;145;126m.
+    _STRIKE_MUTED = re.compile(r'\x1b\[9(?:;38;2;153;145;126)?m')
+
+    def _render_ansi(self, rows) -> str:
+        buf = io.StringIO()
+        args = SimpleNamespace(dir='/tmp/does-not-matter')
+        real_console = Console
+
+        def forced_console(*a, **kw):
+            kw.setdefault('force_terminal', True)
+            kw.setdefault('color_system', 'truecolor')
+            kw.setdefault('width', 120)
+            return real_console(*a, **kw)
+
+        with patch('ctf_downloader.cli_commands.Console', forced_console), \
+             patch('ctf_downloader.services.status_service.StatusService.'
+                   'scan_all_workspaces', return_value=list(rows)):
+            with contextlib.redirect_stdout(buf), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                handle_workspaces(args)
+        return buf.getvalue()
+
+    def test_done_row_strike_normal_row_not(self):
+        out = self._render_ansi([
+            fake_row('DoneCTF', 'ctfd', 'done_ctf', solved=3, total=3),
+            fake_row('WipCTF', 'ctfd', 'wip_ctf', solved=1, total=3),
+        ])
+        done_lines = [ln for ln in out.splitlines() if 'DoneCTF' in ln]
+        wip_lines = [ln for ln in out.splitlines() if 'WipCTF' in ln]
+        self.assertEqual(len(done_lines), 1)
+        self.assertEqual(len(wip_lines), 1)
+        # SGR strike (ESC[9…) + FG_MUTED trên hàng done.
+        self.assertRegex(done_lines[0], self._STRIKE_MUTED)
+        self.assertIn('38;2;153;145;126', done_lines[0])
+        # Hàng thường: không strike.
+        self.assertNotRegex(wip_lines[0], self._STRIKE_MUTED)
+
+    def test_empty_workspace_zero_over_zero_not_done(self):
+        out = self._render_ansi([
+            fake_row('EmptyCTF', 'gzctf', 'empty_ctf', solved=0, total=0),
+            fake_row('WipCTF', 'gzctf', 'wip_ctf', solved=2, total=5),
+        ])
+        empty_lines = [ln for ln in out.splitlines() if 'EmptyCTF' in ln]
+        self.assertEqual(len(empty_lines), 1)
+        self.assertNotRegex(empty_lines[0], self._STRIKE_MUTED)
+
+    def test_partial_progress_never_done(self):
+        # solved < total (kể cả solved > 0) → không bao giờ done.
+        out = self._render_ansi([
+            fake_row('HalfCTF', 'rctf', 'half_ctf', solved=4, total=8),
+        ])
+        half_lines = [ln for ln in out.splitlines() if 'HalfCTF' in ln]
+        self.assertEqual(len(half_lines), 1)
+        self.assertNotRegex(half_lines[0], self._STRIKE_MUTED)
 
 
 if __name__ == '__main__':

@@ -214,7 +214,14 @@ def handle_workspaces(args):
         total_solved += stats['solved_challenges']
         total_challs += stats['total_challenges']
 
-        name_cell = _Text(str(stats['title'])[:35], style="fg.base")
+        # UIv2 synthesis MUST-FIX #2: workspace giải 100% → token ``done``
+        # (strike + FG_MUTED) nhất quán với menu switcher (_workspace_rows);
+        # 0/0 (rỗng) KHÔNG tính là done.
+        is_done = (stats['total_challenges'] > 0
+                   and stats['solved_challenges'] >= stats['total_challenges'])
+        name_cell = _Text(
+            str(stats['title'])[:35],
+            style="done" if is_done else "fg.base")
         if stats.get('_ended'):
             name_cell.append(" · kết thúc", style=_MUTED_COLOR)
         if title_counts[str(stats['title'])] > 1 and stats.get('_dir'):
