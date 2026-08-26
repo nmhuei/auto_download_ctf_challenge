@@ -49,6 +49,22 @@ def _points_display(value) -> str:
     return "-" if num is None else str(num)
 
 
+def _points_total_display(num) -> str:
+    """TỔNG điểm hiển thị trong SUMMARY (dòng Total Points Available + cột
+    Total Points của bảng category): khử artefact cộng float nhị phân —
+    ``0.1 + 0.2`` ra ``0.30000000000000004``, không được in nguyên văn.
+    round về 6 chữ số thập phân là trần an toàn cho sai số tích luỹ của
+    điểm CTF (dynamic scoring ≤ 2 số lẻ); tổng nguyên vẫn in kiểu int
+    (``100`` chứ không ``100.0``). None -> '-'."""
+    value = _points_value(num)
+    if value is None:
+        return "-"
+    rounded = round(value, 6)
+    if isinstance(rounded, float) and rounded.is_integer():
+        rounded = int(rounded)
+    return str(rounded)
+
+
 def _json_safe(obj):
     """Đệ quy thay float NaN/Inf bằng None: json.dump mặc định allow_nan=True
     tạo literal ``NaN``/``Infinity`` mà parser strict JSON (jq...) không đọc được."""
@@ -106,7 +122,7 @@ class SummaryGenerator:
             
         lines.append(f"- **Total Challenges**: {len(challenges)}")
         lines.append(f"- **Total Categories**: {len(by_category)}")
-        lines.append(f"- **Total Points Available**: {total_points}")
+        lines.append(f"- **Total Points Available**: {_points_total_display(total_points)}")
         lines.append(SUMMARY_FILES_LINE.format(total_files=total_files))
 
         # Category Breakdown Table
@@ -116,8 +132,9 @@ class SummaryGenerator:
         for cat, challs in sorted(by_category.items(), key=lambda kv: str(kv[0])):
             cat_pts = sum(_points_value(c.points) or 0 for c in challs)
             # md_cell: category do server kiểm soát — '|' sinh cột ảo,
-            # newline sinh hàng giả (hunter-c14 BUG-C14-3).
-            lines.append(f"| **{md_cell(cat)}** | {len(challs)} | {cat_pts} |")
+            # newline sinh hàng giả (hunter-c14 BUG-C14-3); cat_pts qua
+            # _points_total_display khử artefact float (review-5).
+            lines.append(f"| **{md_cell(cat)}** | {len(challs)} | {_points_total_display(cat_pts)} |")
         lines.append("")
 
         # Detailed Table per Category

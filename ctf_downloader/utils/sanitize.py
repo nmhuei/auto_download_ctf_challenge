@@ -49,6 +49,29 @@ def strip_ansi(value) -> str:
     return _CTRL_RE.sub("", text)
 
 
+# review-5 follow-up: MỘT bảng escape markdown dùng chung cho mọi đường
+# nhúng dữ liệu ngoài (tên challenge/team/category...) vào file .md —
+# trước đây writeup_exporter._md_escape và sanitize.md_cell mỗi bên giữ
+# một chiến lược escape song song.
+_MD_SPECIALS = "\\`*_[]|"
+
+
+def escape_markdown(value, chars=_MD_SPECIALS) -> str:
+    r"""Backslash-escape các ký tự markdown đặc biệt của ``value`` — chống
+    markdown injection: tên chứa ``[bold]`` / ``[x](http://evil)`` không
+    sinh format/link ngoài ý muốn khi render.
+
+    ``chars`` cho phép caller thu hẹp tập escape: md_cell chỉ cần ``[]``
+    (``|`` xử lý riêng bằng thực thể HTML vì backslash-escape KHÔNG đủ
+    trong ô bảng GFM), đường INDEX.md của writeup_exporter dùng trọn bộ
+    mặc định. None -> chuỗi rỗng; kiểu khác được ép str."""
+    text = str(value) if value is not None else ""
+    if not text or not chars:
+        return text
+    return re.sub("[" + re.escape(chars) + "]", lambda m: "\\" + m.group(0),
+                  text)
+
+
 def md_cell(value) -> str:
     r"""Sanitize một giá trị dữ liệu ngoài để nhúng vào MỘT ô của bảng
     markdown (RANKING.md / SUMMARY.md):
@@ -57,10 +80,17 @@ def md_cell(value) -> str:
       - strip_ansi: ESC không được vào file .md;
       - thay ``|`` bằng thực thể HTML &#124; — pipe sinh cột ảo vỡ bảng.
     Backslash-escape (``\|``) KHÔNG đủ: pipe vẫn còn trong text thô nên bộ
-    đếm cell vẫn thấy bảng vỡ. Văn bản sạch đi qua nguyên vẹn (no-op)."""
+    đếm cell vẫn thấy bảng vỡ.
+      - escape ``[``/``]`` qua BẢNG ESCAPE CHUNG :func:`escape_markdown`
+        (review-5): ngoặc vuông trong link-text ``[tên](path)`` vỡ cấu trúc
+        link / markdown injection.
+    Văn bản sạch đi qua nguyên vẹn (no-op)."""
     text = str(value) if value is not None else ""
     text = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
-    return strip_ansi(text).replace("|", "&#124;")
+    text = strip_ansi(text)
+    # Escape SAU khi pipe đã thành thực thể — entity không chứa ký tự đặc
+    # biệt nên không bị escape đè.
+    return escape_markdown(text.replace("|", "&#124;"), chars="[]")
 
 
 def sanitize_folder_name(name: str, max_length: int = 80, default: str = "challenge") -> str:

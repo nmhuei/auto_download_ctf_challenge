@@ -48,21 +48,22 @@ from ..ui.console import err_console
 from ..ui.style import OK, WARN as WARN_GLYPH
 from ..ui.theme import INFO, SOLVED, WARN
 from ..utils.logger import Logger
-from ..utils.sanitize import sanitize_folder_name
+from ..utils.sanitize import escape_markdown, sanitize_folder_name
 
 # Trục solve được tính là "đã giải bởi mình/team" — đủ điều kiện đưa vào pack.
 SOLVED_EXPORT_VALUES = ("solved_by_me", "solved_by_team")
 
-# Ký tự markdown đặc biệt cần backslash-escape khi nhúng dữ liệu user
-# (tên challenge/category) vào INDEX.md — chống markdown injection: tên
-# chứa ``[bold]`` / ``[x](http://evil)`` / ``|`` không được vỡ bảng hay
-# sinh link/format ngoài ý muốn.
-_MD_SPECIAL_RE = re.compile(r"([\\`*_\[\]|])")
-
 
 def _md_escape(value) -> str:
-    """Backslash-escape các ký tự markdown đặc biệt của ``value``."""
-    return _MD_SPECIAL_RE.sub(r"\\\1", str(value if value is not None else ""))
+    """Backslash-escape các ký tự markdown đặc biệt của ``value``.
+
+    Review-5 (unify): delegate về bảng escape DÙNG CHUNG
+    :func:`ctf_downloader.utils.sanitize.escape_markdown` — trước đây
+    module này tự giữ một regex song song với ``sanitize.md_cell``, hai
+    bảng trôi dần khỏi nhau. Hành vi output KHÔNG ĐỔI (trọn bộ
+    ``\\ ` * _ [ ] | `` backslash-escape, test_writeup_exporter +
+    test_ui_gaps chốt)."""
+    return escape_markdown(value)
 
 # Regex flag generic (giống writeup_assessor.GENERIC_FLAG_RE): PREFIX{body}
 # với body đủ dài để loại nhiễu, không chứa {} hay newline.

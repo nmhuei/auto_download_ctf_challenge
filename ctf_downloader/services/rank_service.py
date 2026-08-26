@@ -270,5 +270,13 @@ class RankService:
         Logger.info(f"Đã cập nhật bảng xếp hạng live: [bold cyan]{os.path.relpath(ranking_md_path, self.workspace_path)}[/bold cyan]", markup=True)
 
         # 2. Update SUMMARY.md via WorkspaceRepo (chèn/thay dòng Live Rank)
-        rank_badge = f"{LIVE_RANK_PREFIX} `#{my_rank}` / `{total_teams}` (Team: `{my_team}`)"
+        # Review-5 (M, follow-up BUG-C14-2): badge được patch_summary_live_rank
+        # chèn NGUYÊN VĂN vào SUMMARY.md nên mọi giá trị server-control trên
+        # dòng này phải qua md_cell như đường RANKING.md — ANSI/newline/pipe/
+        # ngoặc vuông từ tên team không được lọt qua đường badge. Với dữ
+        # liệu hợp lệ (số nguyên/tên sạch) md_cell là no-op.
+        rank_badge = (
+            f"{LIVE_RANK_PREFIX} `#{md_cell(my_rank)}` / `{md_cell(total_teams)}`"
+            f" (Team: `{md_cell(my_team)}`)"
+        )
         self.repo.patch_summary_live_rank(rank_badge)
