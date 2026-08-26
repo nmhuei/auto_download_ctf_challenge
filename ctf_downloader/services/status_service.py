@@ -365,21 +365,21 @@ class StatusService:
                 # không coi là lỗi.
                 Logger.info(
                     f"Không có gì thay đổi — note của "
-                    f"[bold cyan]{escape(str(name))}[/bold cyan] giữ nguyên.",
+                    f"[bold][info]{escape(str(name))}[/info][/bold] giữ nguyên.",
                     markup=True)
             elif not getattr(res, "persisted", True):
                 # Ghi bị SKIP (thư mục/metadata biến mất trên đĩa — chống
                 # zombie BUG-C16-1): KHÔNG được in ✔ success.
                 Logger.error(
                     f"Không lưu được note cho "
-                    f"[bold cyan]{escape(str(name))}[/bold cyan]: thư mục "
+                    f"[bold][info]{escape(str(name))}[/info][/bold]: thư mục "
                     f"workspace không còn trên đĩa ({meta_path}) — ghi bị "
                     f"bỏ qua.")
                 return False
             elif remove:
-                Logger.success(f"🗑️ Removed note from [bold cyan]{escape(str(name))}[/bold cyan].", markup=True)
+                Logger.success(f"🗑️ Removed note from [bold][info]{escape(str(name))}[/info][/bold].", markup=True)
             else:
-                Logger.success(f"📝 Note saved for [bold cyan]{escape(str(name))}[/bold cyan].", markup=True)
+                Logger.success(f"📝 Note saved for [bold][info]{escape(str(name))}[/info][/bold].", markup=True)
             return True
         except Exception as e:
             Logger.warning(f"Không thể lưu note: {e}")
@@ -445,20 +445,20 @@ class StatusService:
                 # Review 3e0fbcc-F2: giá trị cũ == giá trị mới — trung tính.
                 Logger.info(
                     f"Không có gì thay đổi — tags của "
-                    f"[bold cyan]{escape(str(name))}[/bold cyan] giữ nguyên: "
+                    f"[bold][info]{escape(str(name))}[/info][/bold] giữ nguyên: "
                     f"{escape(labels_str)}", markup=True)
             elif not getattr(final, "persisted", True):
                 # Ghi bị SKIP (thư mục/metadata biến mất trên đĩa): KHÔNG
                 # in 🏷️ success.
                 Logger.error(
                     f"Không cập nhật được tags cho "
-                    f"[bold cyan]{escape(str(name))}[/bold cyan]: thư mục "
+                    f"[bold][info]{escape(str(name))}[/info][/bold]: thư mục "
                     f"workspace không còn trên đĩa ({meta_path}) — ghi bị "
                     f"bỏ qua.")
                 return False, rejected
             else:
                 Logger.success(
-                    f"🏷️ {action} tag(s) for [bold cyan]{escape(str(name))}[/bold cyan]: {escape(labels_str)}", markup=True)
+                    f"🏷️ {action} tag(s) for [bold][info]{escape(str(name))}[/info][/bold]: {escape(labels_str)}", markup=True)
             return True, rejected
         except Exception as e:
             Logger.warning(f"Không thể cập nhật tags: {e}")

@@ -30,6 +30,7 @@ from .ui.theme import FG_FAINT as _FAINT_COLOR
 from .ui.theme import FG_MUTED as _MUTED_COLOR
 from .ui.theme import INFO as _INFO_COLOR
 from .ui.theme import SOLVED as _SOLVED_COLOR
+from .ui.theme import WARN as _WARN_COLOR
 from .utils.logger import Logger, console
 
 
@@ -80,7 +81,9 @@ def handle_pull(args):
         if not result.get('ok'):
             sys.exit(1)
     except KeyboardInterrupt:
-        console.print("[bold red][!] Download đã bị huỷ bởi người dùng.[/bold red]")
+        # Audit màu SEMANTIC: [bold red][!] legacy → Logger.error (token
+        # error đỏ semantic, cùng pattern báo lỗi của handle_pull dưới đây).
+        Logger.error('Download đã bị huỷ bởi người dùng.')
         sys.exit(130)
     except Exception as e:
         Logger.error(f'Lỗi nghiêm trọng khi pull: {e}')
@@ -543,19 +546,19 @@ def _handle_hoard_remove(args):
         # Review 3e0fbcc-F2: giá trị cũ == giá trị mới — không có flag nào
         # để gỡ. Thông điệp trung tính, không phải lỗi.
         Logger.info("Không có gì thay đổi — "
-                    f"[bold cyan]{shown_name}[/bold cyan] không có flag "
+                    f"[bold][info]{shown_name}[/info][/bold] không có flag "
                     f"trong kho.", markup=True)
     elif not getattr(result, "persisted", True):
         # Ghi bị SKIP (thư mục/metadata biến mất trên đĩa): KHÔNG in
         # 🗑 success — thất bại rõ để CLI exit nonzero.
         Logger.error("Không gỡ được flag của "
-                     f"[bold cyan]{shown_name}[/bold cyan]: thư mục "
+                     f"[bold][info]{shown_name}[/info][/bold]: thư mục "
                      f"workspace không còn trên đĩa ({meta_path}) — ghi "
                      f"bị bỏ qua.")
         sys.exit(1)
     else:
         Logger.success("🗑 Đã gỡ flag khỏi kho cho "
-                       f"[bold cyan]{shown_name}[/bold cyan].", markup=True)
+                       f"[bold][info]{shown_name}[/info][/bold].", markup=True)
 
 
 def handle_hoard(args):
@@ -1161,7 +1164,7 @@ def _render_suggestions(items):
     for s in items:
         glyph, gstyle, body = '', '', s
         if s.startswith('! '):
-            glyph, gstyle, body = '!', '#EAC54F', s[2:]
+            glyph, gstyle, body = '!', _WARN_COLOR, s[2:]
         elif s.startswith('ℹ '):
             glyph, gstyle, body = 'ℹ', _INFO_COLOR, s[2:]
         chunks = textwrap.wrap(
