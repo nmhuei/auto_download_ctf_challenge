@@ -132,7 +132,7 @@ def test_render_error_labels_with_ansi_colors():
     assert "\x1b[" in out
     assert "error:" in out
     assert "ACTION REQUIRED" in out
-    # red label (31/91/truecolor-red) and muted hint leaf (#8A958C)
+    # red label (31/91/truecolor-red) and muted hint leaf (#99917E)
     assert re.search(r"\x1b\[[0-9;]*(?:31|91)m", out), out
     # rich render hex fg.muted thành SGR 38;2;r;g;b — không bao giờ literal hex
     r, g, b = (int(FG_MUTED[i : i + 2], 16) for i in (1, 3, 5))
@@ -327,7 +327,7 @@ def test_theme_defaults_have_ctf_semantic_keys():
         assert key in theme.styles
     # PHOSPHOR chuẩn hoá codex-r3 #1: success = solved-green semantic,
     # div_line = accent.deep trùng mốc đầu meter (#6B4300).
-    assert theme.styles["success"] == Style.parse("#5CC878")   # = solved
+    assert theme.styles["success"] == Style.parse("#62C97E")   # = solved
     assert theme.styles["div_line"] == Style.parse("#6B4300")  # = accent.deep
 
 
@@ -344,7 +344,7 @@ def test_theme_toml_override(tmp_path):
     assert theme.styles["firstblood"] == Style.parse("#ff004f")
     # untouched defaults remain (info/path/literal → neutral fg.base,
     # codex-r3 #1: đã bỏ cyan #62C8CE)
-    assert theme.styles["hint"] == Style.parse("#D8DFD9")
+    assert theme.styles["hint"] == Style.parse("#E6E1D3")
 
 
 def test_loaded_theme_applies_to_console(tmp_path):

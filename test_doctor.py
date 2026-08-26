@@ -250,12 +250,13 @@ def capture_render_ansi(report) -> str:
 
 
 class TestDoctorPhosphorRoles(unittest.TestCase):
-    FG_MUTED_ANSI = "\x1b[38;2;138;149;140m"
+    FG_MUTED_ANSI = "\x1b[38;2;153;145;126m"
     # codex-r3 #1: error-red/solved-green hex mới (bỏ #FF5C57/#46C46B).
+    # Amber Refit (palette C1): fg/muted/solved retune, accent giữ #FFB000.
     ERROR_ANSI = "\x1b[38;2;229;83;75m"      # ERROR  = #E5534B
     WARN_ANSI = "\x1b[38;2;234;197;79m"
     ACCENT_ANSI = "\x1b[38;2;255;176;0m"
-    SOLVED_ANSI = "\x1b[38;2;92;200;120m"    # SOLVED = #5CC878
+    SOLVED_ANSI = "\x1b[38;2;98;201;126m"    # SOLVED = #62C97E
 
     def _partial_report(self):
         report = DoctorReport(url=URL)
@@ -330,7 +331,7 @@ class TestDoctorPhosphorRoles(unittest.TestCase):
         # glyph ✔/✗ tô semantic riêng từng giá trị; nhãn muted
         self.assertIn(self.SOLVED_ANSI + "✔", out)
         self.assertIn(self.ERROR_ANSI + "✗", out)
-        self.assertIn("\x1b[38;2;138;149;140m container động", out)
+        self.assertIn("\x1b[38;2;153;145;126m container động", out)
 
 
 class TestDoctorChromeAndWrap(unittest.TestCase):

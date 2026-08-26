@@ -1,8 +1,9 @@
 """Rich theme built from semantic palette tokens, with TOML override support.
 
-PHOSPHOR FIELD KIT (design-system spec v1.0 §3): một accent duy nhất
-amber ``#FFB000`` trên nền tối; mọi màu khác trung tính hoặc gắn ngữ nghĩa
-glyph (✔ solved / ◆ firstblood / ✗ error / ! warn). Users can override any
+AMBER REFIT (palette C1, combo B): lineage PHOSPHOR FIELD KIT — accent
+amber ``#FFB000`` duy nhất trên nền tối; fg/muted/solved retune theo C1,
+mọi màu khác trung tính hoặc gắn ngữ nghĩa glyph
+(✔ solved / ◆ firstblood / ✗ error / ! warn). Users can override any
 style with a TOML file::
 
     [styles]
@@ -21,22 +22,25 @@ from rich.theme import Theme
 
 from .style import PALETTE
 
-# PHOSPHOR FIELD KIT token set (spec §3, chuẩn hoá codex-r3 #1). Dotted keys
+# AMBER REFIT (palette C1 "Phosphor Amber Refit", combo B) trên nền token set
+# PHOSPHOR FIELD KIT (spec §3). Dotted keys
 # are resolved verbatim by rich's theme stack before any color parsing, so
 # they are safe in markup.
 #
 # Palette kỷ luật: neutral fg.* + MỘT accent amber ``#FFB000`` family
-# (#6B4300 → #FFB000 → #FFE49A — trùng đúng 3 mốc meter §3.3). Semantic chỉ
-# còn 3 glyph vai trò: ✔ solved-green / ✗ error-red / ! warn. Cyan/green/red
-# trang trí và vàng ngoài token đã bị bỏ — path/literal/lệnh dùng neutral.
-FG_BASE = "#D8DFD9"       # nội dung chính
-FG_MUTED = "#8A958C"      # thông tin phụ
-FG_FAINT = "#4A534C"      # chrome: nhãn cột, đường nối, glyph trống
+# (#6B4300 → #FFB000 → #FFE49A — trùng đúng 3 mốc meter §3.3; bg tham chiếu
+# ``#171209`` do terminal tự quản). Semantic chỉ còn 3 glyph vai trò:
+# ✔ solved-green / ✗ error-red / ! warn. Cyan/green/red trang trí và vàng
+# ngoài token đã bị bỏ — path/literal/lệnh dùng neutral.
+FG_BASE = "#E6E1D3"       # nội dung chính (fg C1)
+FG_MUTED = "#99917E"      # thông tin phụ (muted C1)
+FG_FAINT = "#595246"      # chrome: nhãn cột, đường nối, glyph trống
+                          # (derive C1: cùng bậc L/S như faint cũ, hue ấm)
 ACCENT = "#FFB000"        # amber phosphor — giọng nói duy nhất
 ACCENT_HI = "#FFE49A"     # đỉnh nhấn amber — trùng mốc cuối meter §3.3
 ACCENT_DEEP = "#6B4300"   # amber tắt đèn — trùng mốc đầu meter §3.3
 INFO = FG_BASE            # path/literal/lệnh → neutral (đã bỏ cyan)
-SOLVED = "#5CC878"        # ✔ solved-green (semantic duy nhất cùng ✗/!)
+SOLVED = "#62C97E"        # ✔ solved-green (semantic duy nhất cùng ✗/!)
 FIRSTBLOOD = "#FF2E63"    # ◆ + bold
 ERROR = "#E5534B"         # ✗ đỏ
 WARN = "#EAC54F"          # !
