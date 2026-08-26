@@ -572,7 +572,8 @@ class TestStoresAndWizard(TempWorkspaceCase):
     def test_wizard_answers_write_config_once(self):
         store = EventWindowConfigStore(str(self.ws))
         self.assertFalse(store.exists())
-        confirm_answers = iter([True, False])       # Q1: Y · Q3 (notices): n
+        # Q1: Y · Q3 (notices): n · Q4 (scoreboard): n
+        confirm_answers = iter([True, False, False])
 
         def fake_confirm(msg, default=None):
             return next(confirm_answers)
@@ -591,10 +592,35 @@ class TestStoresAndWizard(TempWorkspaceCase):
         auto = cfg["auto_sync"]
         self.assertEqual(auto["mode"], "always")
         self.assertFalse(auto["policy"]["notices"])
+        self.assertFalse(auto["policy"]["scoreboard"])
         self.assertTrue(store.exists())
         # Lần 2 không hỏi lại (config đã có)
         again = run_event_window_wizard(str(self.ws), force_prompt=True)
         self.assertIsNone(again)
+
+    def test_wizard_scoreboard_independent_of_notices(self):
+        # EW M-4: scoreboard là khóa policy ĐỘC LẬP — bật notices không được
+        # âm thầm bật kèm theo dõi bảng điểm (tránh bật ngoài ý muốn).
+        EventWindowConfigStore(str(self.ws))
+        confirm_answers = iter([True, True, False])   # Q1 Y · notices Y · scoreboard N
+
+        def fake_confirm(msg, default=None):
+            return next(confirm_answers)
+
+        def fake_prompt(msg, default=None):
+            return "1"                              # mode window
+
+        with patch.object(sys.modules["ctf_downloader.services.watch_service"],
+                          "Confirm") as mc, \
+                patch.object(sys.modules["ctf_downloader.services.watch_service"],
+                             "Prompt") as mp:
+            mc.ask.side_effect = fake_confirm
+            mp.ask.side_effect = fake_prompt
+            cfg = run_event_window_wizard(str(self.ws), force_prompt=True)
+        self.assertIsNotNone(cfg)
+        policy = cfg["auto_sync"]["policy"]
+        self.assertTrue(policy["notices"])
+        self.assertFalse(policy["scoreboard"])
 
     def test_parse_time_arg(self):
         iso = parse_time_arg("2026-08-24T09:00:00")

@@ -13,8 +13,9 @@ from typing import List, Optional
 # thread chính join(timeout) vẫn phải đợi match kết thúc. Phòng thủ thực tế:
 #   1. Giới hạn độ dài pattern.
 #   2. Từ chối pattern có QUANTIFIER LỒNG NHAU ((a+)+$, (.*)*, (x{1,5})+ ...)
-#      — lớp catastrophic backtracking kinh điển — bằng phân tích cú pháp
-#      nhẹ (scan escape/class/group đúng cách).
+#      và ALTERNATION TRÙNG NHÁNH ((a|a)+$, ([ab]|[ab]) — cùng exponential)
+#      — hai lớp catastrophic backtracking kinh điển — bằng phân tích cú
+#      pháp nhẹ (scan escape/class/group đúng cách).
 #   3. Vẫn chạy match trong daemon thread với join timeout làm lớp phòng
 #      thủ thứ cấp (pattern chậm do lý do khác -> trả False sau timeout;
 #      daemon để process thoát được dù worker còn kẹt).
@@ -114,6 +115,127 @@ def _scan_nested_quantifier(pattern: str) -> bool:
             continue
         i += 1
     return False
+
+
+def _scan_dup_alternation(pattern: str) -> bool:
+    """True nếu pattern có nhóm alternation chứa HAI NHÁNH GIỐNG HỆT nhau
+    (vd ``(a|a)+``, ``([ab]|[ab])``, ``((x|y)|(x|y))``). Nhánh trùng nhân
+    đôi số đường backtracking theo cấp số mũ khi đứng dưới quantifier —
+    biến thể ReDoS mà _scan_nested_quantifier không thấy vì không có
+    quantifier nào lồng quantifier nào ((a|a)+$ vẫn exponential).
+
+    Heuristic thuần văn bản (KHÔNG phải regex-analyzer hoàn chỉnh): quét
+    một lượt O(n), bỏ qua đúng escape \\x và character class [...], so sánh
+    NHÁNH NGUYÊN VĂN trong cùng một mức nhóm; mỗi nhóm đóng được ghi nhận
+    như một "nguyên tử" nguyên văn của khung cha để bắt cả dup lồng nhau."""
+    n = len(pattern)
+    i = 0
+    in_class = False
+    class_start = -1
+    # Mỗi khung nhóm: buffer nhánh đang gom + tập nhánh đã thấy ở mức đó.
+    stack: List[dict] = [{"buf": [], "seen": set(), "start": 0}]
+
+    def _close_branch(frame: dict) -> bool:
+        branch = "".join(frame["buf"])
+        frame["buf"] = []
+        if not branch:
+            return False          # nhánh rỗng (`(a|)`) bỏ qua
+        if branch in frame["seen"]:
+            return True
+        frame["seen"].add(branch)
+        return False
+
+    while i < n:
+        c = pattern[i]
+        if in_class:
+            if c == "\\":
+                i += 2
+                continue
+            if c == "]":
+                # Cả class giữ nguyên văn như một nguyên tử của nhánh.
+                stack[-1]["buf"].append(pattern[class_start:i + 1])
+                in_class = False
+            i += 1
+            continue
+        if c == "\\":
+            stack[-1]["buf"].append(pattern[i:i + 2])
+            i += 2
+            continue
+        if c == "[":
+            in_class = True
+            class_start = i
+            i += 1
+            continue
+        if c == "(":
+            if i + 2 < n and pattern[i + 1] == "?" and pattern[i + 2] == "#":
+                # (?#comment) — không phải nhóm, bỏ qua trọn comment.
+                end = pattern.find(")", i + 3)
+                i = (end + 1) if end != -1 else n
+                continue
+            stack.append({"buf": [], "seen": set(), "start": i})
+            # Nhảy qua intro nhóm (?:, (?=, (?P<name>, (?i:, ...) — nếu không,
+            # nhánh đầu sẽ bị dính chữ khai báo và so nguyên văn sai lệch.
+            i = _group_body_start(pattern, i)
+            continue
+        if c == ")":
+            if len(stack) > 1:
+                frame = stack.pop()
+                if _close_branch(frame):
+                    return True
+                # Nhóm đóng -> ghi THÂN nhóm (đã bỏ intro và cặp ngoặc)
+                # vào khung cha để so nguyên văn đúng ngữ nghĩa:
+                # ``(?:ab)`` ≡ ``(ab)`` ≡ ``ab`` khi đứng trong nhánh.
+                body_start = _group_body_start(pattern, frame["start"])
+                stack[-1]["buf"].append(pattern[body_start:i])
+            i += 1
+            continue
+        if c == "|":
+            if _close_branch(stack[-1]):
+                return True
+            i += 1
+            continue
+        stack[-1]["buf"].append(c)
+        i += 1
+    return False
+
+
+def _is_risky_pattern(pattern: str) -> bool:
+    """Gate chung cho mọi bề mặt regex nhận pattern untrusted: rỗng / quá
+    dài / quantifier lồng nhau / alternation trùng nhánh -> từ chối TRƯỚC
+    khi chạm re (sre chạy trong C không nhả GIL, timeout thread không cứu
+    được một match catastrophic — lớp tĩnh này là phòng thủ chính)."""
+    return (not pattern
+            or len(pattern) > MAX_PATTERN_LENGTH
+            or _scan_nested_quantifier(pattern)
+            or _scan_dup_alternation(pattern))
+
+
+def _group_body_start(pattern: str, open_idx: int) -> int:
+    """Index ký tự đầu của THÂN nhóm mở tại ``open_idx`` — nhảy qua các
+    intro (?:, (?=, (?!, (?<=, (?<!, (?P<name>, (?<name>, (?flags:) để
+    nhánh alternation không bị dính chữ khai báo khi so nguyên văn."""
+    n = len(pattern)
+    j = open_idx + 1
+    if j >= n or pattern[j] != "?":
+        return j                       # nhóm thường (...)
+    k = j + 1
+    if k >= n:
+        return n
+    if pattern[k] == "<":
+        if k + 1 < n and pattern[k + 1] in ("=", "!"):
+            return k + 3               # (?<=  /  (?<!
+        gt = pattern.find(">", k + 1)
+        return (gt + 1) if gt != -1 else n      # (?<name>
+    if pattern[k] == "P" and k + 1 < n and pattern[k + 1] == "<":
+        gt = pattern.find(">", k + 2)
+        return (gt + 1) if gt != -1 else n      # (?P<name>
+    # ?: ?= ?! ?~ và (?flags: — ăn hết [A-Za-z-]* rồi nếu gặp ':' thì qua.
+    m = k
+    while m < n and (pattern[m].isalpha() or pattern[m] == "-"):
+        m += 1
+    if m < n and pattern[m] == ":":
+        return m + 1                # (?i:body / (?im-sx:body
+    return k + 1                    # ?: ?= ?! ?~ — thân bắt đầu sau intro
 
 
 def _regex_with_timeout(fn, timeout: float = MATCH_TIMEOUT_SECONDS):
@@ -234,13 +356,11 @@ def extract_flag_format(text: str) -> Optional[str]:
 
 def regex_search_with_timeout(pattern: str, text: str, timeout: float = MATCH_TIMEOUT_SECONDS):
     """re.search có ReDoS guard: trả match, hoặc None nếu không khớp /
-    pattern hỏng / quá phức tạp (nested quantifier). Dùng chung cho các bề
-    mặt chạy regex user-supplied (validate_flag, writeup_assessor)."""
-    if not pattern or len(pattern) > MAX_PATTERN_LENGTH:
+    pattern hỏng / quá phức tạp (nested quantifier, alternation trùng nhánh).
+    Dùng chung cho các bề mặt chạy regex user-supplied (validate_flag,
+    writeup_assessor)."""
+    if _is_risky_pattern(pattern):
         _log_redos_warning(pattern or "")
-        return None
-    if _scan_nested_quantifier(pattern):
-        _log_redos_warning(pattern)
         return None
     return _regex_with_timeout(lambda: re.search(pattern, text), timeout)
 
@@ -252,12 +372,10 @@ def regex_matches_with_timeout(
     timeout: float = MATCH_TIMEOUT_SECONDS,
 ):
     """re.finditer có ReDoS guard: trả LIST các match (tối đa ``limit``),
-    hoặc None nếu pattern hỏng / quá dài / nested quantifier / timeout."""
-    if not pattern or len(pattern) > MAX_PATTERN_LENGTH:
+    hoặc None nếu pattern hỏng / quá dài / nested quantifier / alternation
+    trùng nhánh / timeout."""
+    if _is_risky_pattern(pattern):
         _log_redos_warning(pattern or "")
-        return None
-    if _scan_nested_quantifier(pattern):
-        _log_redos_warning(pattern)
         return None
 
     def _find_all():
@@ -275,11 +393,12 @@ def validate_flag(flag: str, fmt_regex: str) -> bool:
     """
     Kiểm tra flag khớp hoàn toàn với regex định dạng.
     Mọi exception khi compile/match -> False.
-    Pattern quá dài hoặc có quantifier lồng nhau (ReDoS) -> False + warning.
+    Pattern quá dài, quantifier lồng nhau hoặc alternation trùng nhánh
+    (ReDoS) -> False + warning.
     """
     if not flag or not fmt_regex:
         return False
-    if len(fmt_regex) > MAX_PATTERN_LENGTH or _scan_nested_quantifier(fmt_regex):
+    if _is_risky_pattern(fmt_regex):
         _log_redos_warning(fmt_regex)
         return False
 

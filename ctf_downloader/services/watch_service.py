@@ -553,12 +553,15 @@ class WatchStateStore:
 
 
 # ---------------------------------------------------------------------- #
-# Wizard 3 câu hỏi (spec §4) — chạy ĐÚNG 1 LẦN sau pull thành công đầu tiên
+# Wizard SyncPolicy (spec §4) — hỏi ĐÚNG 1 LẦN sau pull thành công đầu tiên
 # ---------------------------------------------------------------------- #
 def run_event_window_wizard(workspace_root: str,
                             force_prompt: bool = False) -> Optional[dict]:
-    """3 câu hỏi SyncPolicy → ghi .ctf/config.json. Trả config hoặc None.
+    """Hỏi SyncPolicy → ghi .ctf/config.json. Trả config hoặc None.
 
+    4 prompt: auto-update → mode (chỉ khi enabled) → notices → scoreboard.
+    Scoreboard là khóa policy ĐỘC LẬP trong spec §4 nên có câu hỏi riêng,
+    KHÔNG ghép vào câu notices (tránh bật theo dõi bảng điểm ngoài ý muốn).
     Không tty (pipe/CI/test) → KHÔNG prompt, trả None.
     """
     store = EventWindowConfigStore(workspace_root)
@@ -580,11 +583,13 @@ def run_event_window_wizard(workspace_root: str,
             mode = "manual"
         notices = Confirm.ask("Nhận báo challenge mới/hint mới?",
                               default=True)
+        scoreboard = Confirm.ask("Theo dõi bảng điểm (scoreboard)?",
+                                 default=True)
     except Exception:
         return None
 
     cfg = default_auto_sync_config(mode=mode, notices=notices,
-                                   scoreboard=notices,
+                                   scoreboard=scoreboard,
                                    challenge_rescan=enabled)
     try:
         store.save(cfg)

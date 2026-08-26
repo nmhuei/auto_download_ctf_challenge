@@ -313,10 +313,16 @@ def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, Non
             if raw.strip():
                 try:
                     parsed = json.loads(raw)
-                    if isinstance(parsed, dict):
-                        data = parsed
-                except (json.JSONDecodeError, ValueError):
-                    # File hỏng: backup nội dung cũ sang .bak trước khi ghi đè
+                except ValueError:
+                    # JSONDecodeError ⊂ ValueError — một nhánh là đủ.
+                    parsed = None
+                if isinstance(parsed, dict):
+                    data = parsed
+                else:
+                    # JSON hỏng HOẶC hợp lệ nhưng sai kiểu (list/str/int...):
+                    # backup nội dung cũ sang .bak trước khi thay bằng {} cho
+                    # mutator làm việc — mirror read-path _load_json_object,
+                    # không nuốt dữ liệu người dùng im lặng.
                     try:
                         p.with_name(p.name + ".bak").write_text(raw, encoding="utf-8")
                     except OSError:

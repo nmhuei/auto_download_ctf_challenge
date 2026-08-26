@@ -843,6 +843,31 @@ class TestLockedUpdateDataSafety(unittest.TestCase):
         self.assertTrue(bak.exists())
         self.assertEqual(bak.read_text(encoding="utf-8"), original)
 
+    def test_valid_json_non_dict_list_backed_up_before_overwrite(self):
+        # Deferred open-code (Task-2 #3 write-path): metadata.json chứa JSON
+        # HỢP LỆ nhưng non-dict ([1, 2]) — trước đây bị nuốt im lặng KHÔNG
+        # .bak. Phải mirror read-path: backup nội dung gốc sang .bak trước
+        # khi thay bằng {} cho mutator làm việc.
+        original = json.dumps([1, 2])
+        p = self._write("metadata.json", original)
+        out = locked_update_json(p, lambda d: {**d, "name": "rebuilt"})
+        self.assertEqual(out, {"name": "rebuilt"})
+        bak = p.with_name(p.name + ".bak")
+        self.assertTrue(bak.exists())
+        self.assertEqual(bak.read_text(encoding="utf-8"), original)
+        self.assertEqual(json.loads(p.read_text(encoding="utf-8")),
+                         {"name": "rebuilt"})
+
+    def test_valid_json_non_dict_scalar_also_backed_up(self):
+        # Tương tự trên kiểu scalar (string/int) — mọi JSON hợp lệ sai kiểu
+        # đều phải đi qua .bak, không mất dữ liệu âm thầm.
+        original = json.dumps("just a string")
+        p = self._write("submit_history.json", original)
+        locked_update_json(p, lambda d: {**d, "entries": []})
+        bak = p.with_name(p.name + ".bak")
+        self.assertTrue(bak.exists())
+        self.assertEqual(bak.read_text(encoding="utf-8"), original)
+
     def test_repo_read_metadata_handles_bom_and_unreadable(self):
         from ctf_downloader.storage.workspace_repo import WorkspaceRepo
 
@@ -938,6 +963,67 @@ class TestValidateFlagReDoSGuard(unittest.TestCase):
         elapsed = time.monotonic() - t0
         self.assertIsNone(m)
         self.assertLess(elapsed, 3.0)
+
+
+class TestDupAlternationReDoSGuard(unittest.TestCase):
+    """Deferred open-code (cycle v3#4 residual): (a|a)+$ KHÔNG có quantifier
+    lồng nên _scan_nested_quantifier bỏ qua, nhưng nhánh trùng nội dung vẫn
+    backtrack theo cấp số mũ. Pattern đến từ trang challenge (untrusted)."""
+
+    def test_dup_alternation_scanner_variants(self):
+        from ctf_downloader.utils.flag_format import _scan_dup_alternation as dup
+
+        self.assertTrue(dup("(a|a)+$"))
+        self.assertTrue(dup("(?:x|x)+"))
+        self.assertTrue(dup("([ab]|[ab])+"))      # class trùng nguyên văn
+        self.assertTrue(dup("((a|a)|(a|a))+"))    # nhóm cha lặp nhóm con giống nhau
+        # alternation hợp lệ, các nhánh khác nhau -> không bị cấm
+        self.assertFalse(dup("(a|b)+$"))
+        self.assertFalse(dup("(cat|dog)s?"))
+        self.assertFalse(dup("(https?|ftp)://"))
+        self.assertFalse(dup("[ab]+"))            # không có alternation
+
+    def test_dup_alternation_redos_10k_a_completes_quickly(self):
+        from ctf_downloader.utils.flag_format import regex_search_with_timeout
+        import time
+
+        t0 = time.monotonic()
+        m = regex_search_with_timeout("(a|a)+$", "a" * 10000 + "B")
+        elapsed = time.monotonic() - t0
+        self.assertIsNone(m)
+        self.assertLess(elapsed, 2.0)
+
+    def test_nested_quantifier_redos_10k_a_completes_quickly(self):
+        from ctf_downloader.utils.flag_format import regex_search_with_timeout
+        import time
+
+        t0 = time.monotonic()
+        m = regex_search_with_timeout("(a+)+$", "a" * 10000 + "B")
+        elapsed = time.monotonic() - t0
+        self.assertIsNone(m)
+        self.assertLess(elapsed, 2.0)
+
+    def test_find_matches_helper_rejects_dup_alternation(self):
+        from ctf_downloader.utils.flag_format import regex_matches_with_timeout
+        import time
+
+        t0 = time.monotonic()
+        out = regex_matches_with_timeout("(?:x|x)+", "x" * 5000 + "y")
+        elapsed = time.monotonic() - t0
+        self.assertIsNone(out)
+        self.assertLess(elapsed, 2.0)
+
+    def test_legit_patterns_still_scan_after_dup_guard(self):
+        from ctf_downloader.utils.flag_format import (
+            regex_search_with_timeout,
+            validate_flag,
+        )
+
+        self.assertIsNotNone(
+            regex_search_with_timeout("(cat|dog)s?", "two dogs here"))
+        self.assertIsNotNone(
+            regex_search_with_timeout("^PTITCTF\\{.+\\}$", "PTITCTF{x}"))
+        self.assertTrue(validate_flag("PTITCTF{abc}", "^PTITCTF\\{.+\\}$"))
 
 
 # ----------------------------------------------------------------------
