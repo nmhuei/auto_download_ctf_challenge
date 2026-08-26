@@ -63,36 +63,61 @@ class WorkspaceBuilder:
         return None
 
     @staticmethod
-    def create_challenge_workspace(
-        base_output_dir: str,
-        challenge: Challenge,
-        extracted_links: List[ExtractedLink],
-        connections: List[ConnectionInfo],
-        download_results: List[Dict[str, Any]],
-        create_solve_template: bool = True
-    ) -> str:
-        """
-        Creates directory structure for a challenge and generates README.md, metadata.json, and solve.py.
-        Returns the created challenge folder path.
+    def resolve_challenge_dir(base_output_dir: str, challenge: Any) -> str:
+        """HÀM DUY NHẤT quyết định thư mục cuối của một challenge trong
+        workspace: ``sanitize(category)/sanitize(name)`` + guard tách
+        ``<name>-<id>`` khi thư mục đã thuộc về challenge khác id (C9-01).
+
+        C19-H1: hàm này phải dùng chung bởi ``PullService._full_process``
+        (tính ĐÍCH TẢI một lần TRƯỚC khi download) và
+        ``create_challenge_workspace``. Hai đường tự tính riêng thì nơi tải
+        attachment là thư mục CHƯA áp guard — hai challenge sanitize trùng
+        tên ('web:1' vs 'web/1') cùng ghi vào một ``challenge/`` và thread
+        sau đè mất attachment của chủ sở hữu im lặng (per-target lock của
+        downloader chỉ chống race .part trên CÙNG một URL, không chống việc
+        hai challenge quyết định chung một thư mục).
+
+        Thư mục chưa có metadata.json đọc được coi như KHÔNG có chủ (giữ
+        hành vi tái sử dụng); cùng id (pull lại/--update) tái sử dụng như cũ.
         """
         clean_category = sanitize_folder_name(
             WorkspaceBuilder._safe_category(challenge), default=DEFAULT_CATEGORY
         )
-        clean_name = sanitize_folder_name(challenge.name, default=f"chall_{challenge.id}")
-
+        clean_name = sanitize_folder_name(challenge.name,
+                                          default=f"chall_{challenge.id}")
         challenge_dir = os.path.join(base_output_dir, clean_category, clean_name)
 
-        # C9-01: hai challenge khác id có thể va vào cùng clean_name sau
-        # sanitize ('web/login' vs 'web:login' -> 'web_login') — chia sẻ một
-        # thư mục làm metadata.json ghi đè lẫn nhau. Nếu thư mục đích đã có
-        # chủ sở hữu KHÁC id thì tách sang thư mục hậu tố '-<id>'
-        # deterministic; cùng id (pull lại/--update) tái sử dụng như cũ.
         if os.path.isdir(challenge_dir):
             owner_id = WorkspaceBuilder._existing_owner_id(challenge_dir)
             if owner_id is not None and str(owner_id) != str(challenge.id):
                 challenge_dir = os.path.join(
                     base_output_dir, clean_category, f"{clean_name}-{challenge.id}"
                 )
+        return challenge_dir
+
+    @staticmethod
+    def create_challenge_workspace(
+        base_output_dir: str,
+        challenge: Challenge,
+        extracted_links: List[ExtractedLink],
+        connections: List[ConnectionInfo],
+        download_results: List[Dict[str, Any]],
+        create_solve_template: bool = True,
+        challenge_dir: Optional[str] = None
+    ) -> str:
+        """
+        Creates directory structure for a challenge and generates README.md, metadata.json, and solve.py.
+        Returns the created challenge folder path.
+
+        ``challenge_dir``: thư mục đã được tính TRƯỚC bằng
+        :meth:`resolve_challenge_dir` (C19-H1 — đích tải một lần trước khi
+        download). Bỏ trống thì tự resolve như cũ (tương thích caller cũ).
+        """
+        if challenge_dir is None:
+            challenge_dir = WorkspaceBuilder.resolve_challenge_dir(
+                base_output_dir, challenge
+            )
+
         os.makedirs(challenge_dir, exist_ok=True)
 
         # Create structured subdirectories for professional modularity
@@ -116,46 +141,85 @@ class WorkspaceBuilder:
                     except Exception:
                         pass
 
-        def _safe_generate(path: str, producer) -> None:
+        def _safe_generate(path: str, producer, *, refresh: bool = False) -> None:
             """
             Sinh 1 file section (README/writeup/solve.py): một challenge dị dạng
             làm producer raise thì ghi nội dung lỗi thay vì sập cả workspace.
+
+            C19-L7: ghi ATOMIC qua storage.fileio.locked_write_text (cùng khóa
+            fcntl + atomic replace với metadata.json) thay vì open('w') trần —
+            reader (watch/index) không bao giờ thấy file nửa chừng, không để
+            lại .tmp/.lock.
+            - refresh=True (nội dung THUẦN DERIVED từ platform —
+              challenge/README.md): LUÔN viết lại. Exists-guard cũ khiến file
+              này không bao giờ được viết lại sau lần đầu — --update đổi
+              description/points/files thì README stale vĩnh viễn trong khi
+              metadata.json đã mới.
+            - refresh=False (file USER-OWNED — writeup/README.md,
+              solver/solve.py): chỉ sinh LẦN ĐẦU; exists-guard giữ nguyên để
+              không xoá nội dung user đã viết (guard idempotent của đường
+              incremental).
+            Producer raise trên file ĐÃ CÓ nội dung tốt -> giữ nguyên bản cũ,
+            KHÔNG đè bằng trang lỗi.
             """
-            if os.path.exists(path):
+            # Thư mục cha biến mất giữa lúc dựng (bị xoá giữa chừng / skip
+            # chống zombie BUG-C16-1): bỏ qua section file một cách sạch sẽ —
+            # việc skip được metadata.json báo cáo rõ ràng ở cuối build.
+            if not os.path.isdir(os.path.dirname(path)):
+                return
+            exists = os.path.exists(path)
+            if exists and not refresh:
                 return
             try:
                 content = producer()
             except Exception as e:
+                if exists:
+                    Logger.warning(
+                        f"Không tái sinh {os.path.basename(path)}: "
+                        f"{type(e).__name__}: {str(e)[:200]} — giữ nguyên bản cũ."
+                    )
+                    return
                 Logger.warning(
-                    f"Không sinh được {os.path.basename(path)}: {type(e).__name__}: {str(e)[:200]}"
+                    f"Không sinh được {os.path.basename(path)}: "
+                    f"{type(e).__name__}: {str(e)[:200]}"
                 )
                 content = (
                     f"# Lỗi sinh nội dung tự động\n\n"
                     f"({type(e).__name__}: {str(e)[:200]})\n\n"
                     f"Dữ liệu challenge từ platform có thể dị dạng — kiểm tra `metadata.json`.\n"
                 )
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
+            if not locked_write_text(path, content):
+                Logger.warning(
+                    f"Không ghi được {os.path.basename(path)} tại {path} — "
+                    f"thư mục đã bị xoá giữa lúc dựng workspace."
+                )
 
         # 1. Generate challenge/README.md (Original Challenge Description & Resources)
+        # C19-L7: nội dung DERIVED — refresh=True để luôn phản ánh dữ liệu
+        # platform mới nhất sau --update (bỏ exists-guard stale vĩnh viễn).
         challenge_readme_path = os.path.join(challenge_sub_dir, "README.md")
         _safe_generate(challenge_readme_path, lambda: WorkspaceBuilder._generate_readme(
             challenge, extracted_links, connections, download_results
-        ))
+        ), refresh=True)
 
         # 2. Generate challenge/NOTE.md (Workspace Guidelines)
+        # C19-L7: boilerplate tĩnh — ghi atomic, không cần exists-guard.
         challenge_note_path = os.path.join(challenge_sub_dir, "NOTE.md")
-        if not os.path.exists(challenge_note_path):
-            note_content = """# 📌 Quy Tắc Tổ Chức Thư Mục (Workspace Guidelines)
+        note_content = """# 📌 Quy Tắc Tổ Chức Thư Mục (Workspace Guidelines)
 
 - **`script/`**: Thư mục workspace nháp. Hãy viết toàn bộ script test, payload thử nghiệm, fuzzing, giải mã linh tinh tại đây để tránh làm rác thư mục gốc.
 - **`solver/`**: Khi script giải bài hoàn thiện và lấy được flag thành công, hãy chuyển/lưu script chính thức vào thư mục `solver/` (ví dụ `solver/solve.py`).
 - **`writeup/`**: Thư mục viết báo cáo, phân tích kỹ thuật và ghi lại Flag sau khi giải xong bài.
 """
-            with open(challenge_note_path, "w", encoding="utf-8") as f:
-                f.write(note_content)
+        if os.path.isdir(challenge_sub_dir):
+            if not locked_write_text(challenge_note_path, note_content):
+                Logger.warning(
+                    f"Không ghi được NOTE.md tại {challenge_note_path} — "
+                    f"thư mục đã bị xoá giữa lúc dựng workspace."
+                )
 
         # 3. Generate writeup/README.md (Blank Writeup Template for after solving)
+        # USER-OWNED: chỉ sinh lần đầu (exists-guard), lần ghi đầu atomic.
         writeup_path = os.path.join(writeup_sub_dir, "README.md")
         _safe_generate(writeup_path, lambda: WorkspaceBuilder._generate_writeup_template(challenge))
 
