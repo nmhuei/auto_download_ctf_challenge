@@ -30,7 +30,7 @@ from ..platforms.detector import PlatformDetector
 from ..platforms.base import Challenge
 from ..storage.constants import SOLVE_RANK
 from ..extractors.link_extractor import LinkExtractor
-from ..downloaders.manager import DownloadManager
+from ..downloaders.manager import DownloadManager, ConsentState
 from ..generator.workspace_builder import WorkspaceBuilder
 from ..generator.summary_generator import SummaryGenerator
 from .session_factory import create_session, thread_local_sessions
@@ -227,6 +227,10 @@ class PullService:
         all_download_results: Dict[Any, List[Dict[str, Any]]] = {}
         failed_challenges = 0
 
+        # C19-M3: consent file lớn hỏi GỘP trên main thread TRƯỚC thread
+        # pool — worker không bao giờ input() chồng prompt lên nhau.
+        shared_consent = PullService._plan_consents(config, master, challenges)
+
         with thread_local_sessions(master) as get_session:
             with Progress(
                 _BrailleSpinnerColumn(),
@@ -243,7 +247,9 @@ class PullService:
                 def process_single_challenge(chall: Challenge) -> tuple:
                     # Session riêng của thread này (copy cookie/header từ master);
                     # DownloadManager gắn với session đó -> an toàn đa luồng.
-                    dl_results = PullService._full_process(config, get_session(), chall)
+                    dl_results = PullService._full_process(
+                        config, get_session(), chall,
+                        consent_state=shared_consent)
                     return (chall.id, dl_results)
 
                 # Use ThreadPoolExecutor for concurrent challenge downloads
@@ -318,11 +324,16 @@ class PullService:
     @staticmethod
     def _full_process(config: DownloaderConfig,
                       download_session: Any,
-                      chall: Challenge) -> List[Dict[str, Any]]:
+                      chall: Challenge,
+                      consent_state: Optional[ConsentState] = None
+                      ) -> List[Dict[str, Any]]:
         """Extract links → tải attachment → dựng workspace cho 1 challenge.
 
         ``download_session`` là session RIÊNG của thread gọi hàm này (xem
-        ``thread_local_sessions``). Trả về danh sách download result dict.
+        ``thread_local_sessions``). ``consent_state``: trạng thái consent
+        preflight dùng chung của lượt pull (C19-M3) — truyền từ caller để
+        worker tôn trọng quyết định đã hỏi gộp trên main thread.
+        Trả về danh sách download result dict.
         LƯU Ý: đường này đi qua ``WorkspaceBuilder.create_challenge_workspace``
         vốn GHI ĐÈ metadata.json — chỉ dùng cho challenge mới hoặc khi caller
         đã snapshot/phục hồi các field user-owned (status, submitted_flag, ...).
@@ -331,7 +342,8 @@ class PullService:
             session=download_session,
             timeout=config.timeout,
             force=config.force_redownload,
-            size_limit_bytes=config.size_limit_bytes
+            size_limit_bytes=config.size_limit_bytes,
+            consent_state=consent_state
         )
 
         # Extract links & connection info
@@ -339,11 +351,14 @@ class PullService:
         extracted_links = LinkExtractor.extract_links_and_files(combined_text, base_url=config.url)
         connections = LinkExtractor.extract_connection_info(combined_text)
 
-        # Determine challenge directory to place files
-        from ..utils.sanitize import sanitize_folder_name
-        clean_category = sanitize_folder_name(chall.category, default="Misc")
-        clean_name = sanitize_folder_name(chall.name, default=f"chall_{chall.id}")
-        chall_dest_dir = os.path.join(config.output_dir, clean_category, clean_name)
+        # C19-H1: đích tải quyết định MỘT LẦN TRƯỚC khi download bằng HÀM
+        # DUY NHẤT có guard owner/-id (resolve_challenge_dir). Tự tính
+        # sanitize() riêng ở đây (cách cũ) thì hai challenge sanitize trùng
+        # tên cùng rót attachment vào một challenge/ — thread sau đè mất
+        # attachment của chủ sở hữu im lặng, còn builder lại dựng workspace
+        # ở thư mục '-<id>' khác nơi file vừa tải.
+        chall_dest_dir = WorkspaceBuilder.resolve_challenge_dir(
+            config.output_dir, chall)
         challenge_sub_dir = os.path.join(chall_dest_dir, "challenge")
         os.makedirs(challenge_sub_dir, exist_ok=True)
 
@@ -355,17 +370,67 @@ class PullService:
             download_third_party=config.download_third_party
         )
 
-        # Build workspace
+        # Build workspace — dùng đúng thư mục đã tính ở trên
         WorkspaceBuilder.create_challenge_workspace(
             base_output_dir=config.output_dir,
             challenge=chall,
             extracted_links=extracted_links,
             connections=connections,
             download_results=dl_results,
-            create_solve_template=config.create_solve_template
+            create_solve_template=config.create_solve_template,
+            challenge_dir=chall_dest_dir
         )
 
         return dl_results
+
+    # ------------------------------------------------------------------ #
+    # Consent preflight (C19-M3): quét candidate URL trước thread pool
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _collect_consent_urls(config: DownloaderConfig,
+                              challenges: List[Any]) -> List[str]:
+        """Gom mọi URL sẽ tải của lượt pull (attachment platform + link
+        third-party downloadable) để planner probe/hỏi consent gộp trước
+        khi vào thread pool."""
+        urls: List[str] = []
+        for chall in challenges:
+            for url, _name in (getattr(chall, "files", None) or []):
+                if url:
+                    urls.append(url)
+            try:
+                combined = f"{chall.description}\n{chall.connection_info or ''}"
+                links = LinkExtractor.extract_links_and_files(
+                    combined, base_url=config.url)
+            except Exception:
+                links = []
+            for link in links:
+                if getattr(link, "is_downloadable", False) and link.url:
+                    urls.append(link.url)
+        return list(dict.fromkeys(urls))
+
+    @staticmethod
+    def _plan_consents(config: DownloaderConfig, session: Any,
+                       challenges: List[Any]) -> ConsentState:
+        """Chạy preflight consent trên MAIN thread trước pool; lỗi bất kỳ
+        (mạng/mock lạ) không bao giờ chặn pipeline."""
+        state = ConsentState()
+        urls = PullService._collect_consent_urls(config, challenges)
+        if not urls or not config.size_limit_bytes:
+            return state
+        try:
+            planner = DownloadManager(
+                session=session,
+                timeout=config.timeout,
+                force=config.force_redownload,
+                size_limit_bytes=config.size_limit_bytes,
+                consent_state=state,
+            )
+            planner.plan_consents(urls)
+        except Exception as exc:
+            Logger.warning(
+                f"Consent preflight bỏ qua (không chặn pipeline): "
+                f"{type(exc).__name__}: {str(exc)[:200]}")
+        return state
 
     # ------------------------------------------------------------------ #
     # Sync solve attribution (spec challenge-status-model §4)
@@ -391,7 +456,9 @@ class PullService:
         metas = []
         for meta_path in repo.iter_challenges():
             m = repo.read_metadata(meta_path)
-            if m and m.get("id") is not None:
+            # C19-M2: bản tombstone không còn đại diện cho id
+            if (m and m.get("id") is not None
+                    and not PullService._is_superseded(m)):
                 metas.append((meta_path, m))
         if not metas:
             return 0
@@ -556,7 +623,8 @@ class PullService:
         for meta_path in repo.iter_challenges():
             m = repo.read_metadata(meta_path)
             cid = m.get("id")
-            if cid is not None:
+            # C19-M2: bản tombstone superseded_by không còn đại diện cho id
+            if cid is not None and not PullService._is_superseded(m):
                 local_index.setdefault(str(cid), (meta_path, m))
 
         api_ids = {str(c.id) for c in scoped}
@@ -585,6 +653,9 @@ class PullService:
         to_download = [(c, "new") for c in new_challs] + \
                       [(c, "redownload") for c in redownload]
         fresh_ids: set = set()
+        # C19-M3: consent gộp trên main thread cho đúng các challenge sắp tải
+        shared_consent = PullService._plan_consents(
+            config, master, [c for c, _kind in to_download])
         if to_download:
             with thread_local_sessions(master) as get_session:
                 with Progress(
@@ -601,7 +672,9 @@ class PullService:
 
                     def _one(item):
                         chall, _kind = item
-                        return PullService._full_process(config, get_session(), chall)
+                        return PullService._full_process(
+                            config, get_session(), chall,
+                            consent_state=shared_consent)
 
                     with ThreadPoolExecutor(max_workers=max(1, config.threads)) as executor:
                         future_map = {executor.submit(_one, item): item
@@ -633,16 +706,27 @@ class PullService:
         updated = skipped = 0
         for chall, mp, old_meta in existing_pairs:
             was_fresh = str(chall.id) in fresh_ids
+            meta_target = mp
             if was_fresh:
-                # Tải lại: builder đã ghi metadata mới; khôi phục field user-owned.
-                PullService._restore_user_fields(repo, mp, old_meta)
-            changed = PullService._refresh_existing_metadata(repo, mp, chall, attr_map)
+                # C19-M2: category/tên có thể đã đổi -> builder vừa ghi
+                # metadata vào THƯ MỤC MỚI. Phục hồi field user-owned vào
+                # file MỚI (không phải file cũ như trước đây), rồi xử lý
+                # bản cũ an toàn qua repo helper: tombstone superseded_by
+                # có kiểm (atomic + flock), KHÔNG rm trực tiếp.
+                fresh_mp = PullService._find_fresh_meta_path(repo, chall.id, mp)
+                if fresh_mp is not None:
+                    meta_target = fresh_mp
+                PullService._restore_user_fields(repo, meta_target, old_meta)
+                if os.path.abspath(meta_target) != os.path.abspath(mp):
+                    PullService._tombstone_superseded(repo, mp, meta_target)
+            changed = PullService._refresh_existing_metadata(
+                repo, meta_target, chall, attr_map)
             updated += 1 if (changed or was_fresh) else 0
             skipped += 0 if (changed or was_fresh) else 1
             # all_results cho summary: kết quả tươi nếu vừa tải, nếu không giữ
             # downloaded_files hiện có trong metadata.
             if not was_fresh:
-                cur = repo.read_metadata(mp)
+                cur = repo.read_metadata(meta_target)
                 all_results[chall.id] = cur.get("downloaded_files") or []
 
         # 5. Challenge biến mất khỏi API: đánh dấu, KHÔNG xoá gì
@@ -832,6 +916,61 @@ class PullService:
         except Exception:
             pass
 
+    @staticmethod
+    def _is_superseded(meta: Any) -> bool:
+        """C19-M2: metadata đã bị tombstone (challenge đổi category/tên ->
+        thư mục mới) — không còn đại diện cho id trong mọi index."""
+        return bool(isinstance(meta, dict) and meta.get("superseded_by"))
+
+    @staticmethod
+    def _find_fresh_meta_path(repo: Any, cid: Any,
+                              previous_path: Any) -> Optional[Any]:
+        """Đường dẫn metadata MỚI của ``cid`` sau khi full-process vừa chạy —
+        loại trừ đường cũ; None nếu không có bản nào khác (category/tên
+        không đổi, builder tái sử dụng đúng thư mục cũ)."""
+        for meta_path in repo.iter_challenges():
+            if os.path.abspath(str(meta_path)) == os.path.abspath(str(previous_path)):
+                continue
+            m = repo.read_metadata(meta_path)
+            if (m and m.get("id") is not None
+                    and str(m.get("id")) == str(cid)
+                    and not PullService._is_superseded(m)):
+                return meta_path
+        return None
+
+    @staticmethod
+    def _tombstone_superseded(repo: Any, old_meta_path: Any,
+                              new_meta_path: Any) -> bool:
+        """C19-M2: sau khi challenge đổi category/tên (workspace mới), bản
+        metadata CŨ không được rm trực tiếp cũng không được để nguyên — một
+        id xuất hiện ở 2 nơi làm index/--update/solve-sync đếm đôi. Xử lý
+        CÓ KIỂM qua ``repo.update_metadata`` (atomic + flock): đánh dấu
+        ``superseded_by`` trỏ tới metadata mới (mirror cả trong block status
+        như removed_from_server — top-level là bản bền)."""
+        target = str(new_meta_path)
+
+        def _mut(meta: dict) -> dict:
+            meta = dict(meta or {})
+            if meta.get("superseded_by") != target:
+                meta["superseded_by"] = target
+                st = dict(meta.get("status") or {}) \
+                    if isinstance(meta.get("status"), dict) else {}
+                st["superseded_by"] = target
+                meta["status"] = st
+            return meta
+
+        try:
+            repo.update_metadata(old_meta_path, _mut)
+            Logger.info(
+                f"Metadata cũ {old_meta_path} đã tombstone "
+                f"(superseded_by={target}) sau khi challenge đổi category/tên.")
+            return True
+        except Exception as exc:
+            Logger.warning(
+                f"Không tombstone được metadata cũ {old_meta_path}: "
+                f"{type(exc).__name__}: {str(exc)[:200]}")
+            return False
+
     # ------------------------------------------------------------------ #
     # Sync 2 chiều (backlog P2-1): re-fetch metadata từ platform GIỮ NGUYÊN
     # local state + verify drift solve. KHÔNG wire CLI trong backlog này —
@@ -901,7 +1040,8 @@ class PullService:
                     corrupt_local.append({"path": str(meta_path)})
                 continue
             cid = m.get("id")
-            if cid is not None:
+            # C19-M2: bản tombstone không còn đại diện cho id
+            if cid is not None and not PullService._is_superseded(m):
                 local_index.setdefault(str(cid), (meta_path, m))
 
         now_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -1034,7 +1174,9 @@ class PullService:
         metas: List[tuple] = []
         for meta_path in repo.iter_challenges():
             m = repo.read_metadata(meta_path)
-            if m and m.get("id") is not None:
+            # C19-M2: bản tombstone không còn đại diện cho id
+            if (m and m.get("id") is not None
+                    and not PullService._is_superseded(m)):
                 metas.append((meta_path, m))
         if not metas:
             return empty
