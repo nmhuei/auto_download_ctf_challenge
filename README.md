@@ -97,15 +97,14 @@ ctf git finish -w ~/Workspace/CTF/Example_CTF_2026
 
 `finish` tạo final checkpoint, merge event branch vào `main` bằng `--no-ff`, push `main`, rồi mới xóa branch event local/remote. Nếu working tree có thay đổi ngoài workspace, merge conflict, hoặc push `main` thất bại thì branch event được giữ nguyên. Dùng `pull --no-git` để tắt workflow cho một lượt, hoặc `--no-git-push` để chỉ commit local.
 
-### Giao diện Amber Refit
+### Giao diện UCS_ExOdia
 
-Output TUI dùng theme **Amber Refit** (lineage Phosphor Field Kit) — accent `#FFB000`, meter `▰▱`, glyph trạng thái: ✔ solved · ◆ working · ⛁ container · ✎ draft writeup · ⎘ có file:
+Brand CLI dùng **UCS_ExOdia** theo hướng brutalist + cyber minimal. Màu brand chạy từ teal/cyan → blue → violet → fuchsia → amber; mỗi stage `detect / pull / workspace / submit / watch / sniper / rank / automate` có một micro-gradient riêng. Màu semantic của dữ liệu vẫn dùng theme Amber Refit (`#FFB000`, ✔ solved, ✗ error, ! warning), nên màu trang trí không làm lẫn nghĩa trạng thái.
 
 ```text
-░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒▓▓░░▒▒
-···································· CTF·TOOLKIT v3◢····································
-▍status  ·  PTIT_CTF_2026
-▸                                                                            22:05 UTC+7
+UCS_ExOdia // status                                                          v3
+                 ▰▰▰▰  ▰▰▰▰  ▰▰▰▰  ▰▰▰▰  ▰▰▰▰  ▰▰▰▰  ▰▰▰▰  ▰▰▰▰
+PTIT_CTF_2026                                                        22:05 UTC+7
 
 ╭─────────────  TIẾN ĐỘ  ─────────────╮╭───────────────────  GIẢI  ────────────────────╮
 │ ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 1/35         ││ +0 flags 24h ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀                     │
@@ -123,9 +122,9 @@ Output TUI dùng theme **Amber Refit** (lineage Phosphor Field Kit) — accent `
 [số] chọn · ❯ mục mặc định · ? help · q thoát
 ```
 
-AppHeader "Phosphor Radar" 4 dòng: scanline `░░▒▒▓▓` full-width · title `CTF·TOOLKIT v3◢` căn giữa · `▍` lệnh + context · `▸` timestamp mép phải. Hai panel overview TIẾN ĐỘ + GIẢI xếp ngang khi terminal ≥ 96 cột, xếp dọc khi hẹp hơn; nhịp giải 24h (sparkline braille) nằm trong panel GIẢI. Meter gradient amber chỉ bật trên TTY ≥ 60 cột — non-TTY/terminal hẹp fallback plain `▰▱` không màu. Chọn bằng phím số `[n]`; mục mặc định/đang dùng đánh dấu `❯`.
+AppHeader của lệnh thường chỉ còn 3 dòng: `UCS_ExOdia // <command>` + version, spectral rail 8 stage, rồi context + timestamp. Header tự co stage xuống khi terminal hẹp, truncate context bằng `…`, không wrap và không pad trắng cuối dòng. Hai panel overview TIẾN ĐỘ + GIẢI vẫn xếp ngang khi terminal ≥ 96 cột, xếp dọc khi hẹp hơn; meter trạng thái giữ gradient semantic hiện có và non-TTY vẫn render plain an toàn.
 
-Mở `ctf menu`, một splash logo lớn hiện đúng một lần trước radar đầu tiên của phiên: terminal ≥ 80 cột nhận bản `big` trong khung box-drawing, hẹp hơn tự rơi về bản pagga rail gọn. Các lệnh framed khác vẫn giữ radar 4 dòng như mẫu trên.
+Mở `ctf` hoặc `ctf menu`, full splash **UCS_ExOdia** xuất hiện đúng một lần: terminal ≥ 80 cột dùng logo brutalist 77 cột với chữ **O** rõ trong `ExOdia`, terminal < 80 tự rơi về compact 3 dòng. `ctf --help` dùng full brand một lần; các subcommand chỉ dùng compact header để không chiếm màn hình khi thao tác lặp lại.
 
 Chạy `ctf <lệnh> --help` để xem đầy đủ tuỳ chọn của từng lệnh.
 

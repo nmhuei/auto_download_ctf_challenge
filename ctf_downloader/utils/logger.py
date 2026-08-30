@@ -55,7 +55,7 @@ class Logger:
 
     @staticmethod
     def banner():
-        """Banner PHOSPHOR FIELD KIT — phương án B half-block (spec §2)."""
+        """Compact UCS_ExOdia identity block for action-oriented logs."""
         from rich.console import Group
 
         from ..ui.banner import banner_b, tagline_text

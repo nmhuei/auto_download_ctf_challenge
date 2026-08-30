@@ -62,7 +62,7 @@ class TestHelpSnapshot(unittest.TestCase):
     MARKERS = {
         # Đổi CÓ CHỦ ĐÍCH (fix finding codex 05_help): `ctf --help` giờ là
         # HelpScreen PHOSPHOR FIELD KIT §4.8 thay vì usage/options argparse.
-        ("main.py", "--help"): "bộ kit tác chiến capture-the-flag",
+        ("main.py", "--help"): "UCS_ExOdia",
         ("main.py", "pull", "--help"): "Target CTF platform URL",
         ("main.py", "status", "--help"): "Show only unsolved challenges",
         ("main.py", "workspaces", "--help"): "Base CTF directory to scan",
@@ -87,7 +87,7 @@ class TestHelpSnapshot(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         # Fix pre-existing (không liên quan UI redesign): __init__.py đã bump
         # lên 3.0.0 từ trước nhưng assertion này còn kẹt 2.0.0.
-        self.assertIn("ctf-toolkit 3.0.0", r.stdout + r.stderr)
+        self.assertIn("UCS_ExOdia 3.0.0", r.stdout + r.stderr)
 
 
 class TestLegacyExitCodes(unittest.TestCase):
@@ -798,7 +798,7 @@ class TestPhosphorHelpScreen(unittest.TestCase):
 
     def test_spec_markers_present(self):
         for marker in ("CÚ PHÁP", "LỆNH",
-                       "bộ kit tác chiến capture-the-flag",
+                       "UCS_ExOdia", "CTF OPERATIONS FRAMEWORK",
                        "ctf <lệnh> [tuỳ chọn]"):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.out)
@@ -807,19 +807,14 @@ class TestPhosphorHelpScreen(unittest.TestCase):
         # Non-tty → machine-readable, không chrome keybinding (uv-style).
         self.assertNotIn("q thoát", self.out)
 
-    def test_app_header_first_line(self):
-        # combo B: AppHeader → Phosphor Radar — dòng ĐẦU là dải scanline
-        # full-width, dòng 2 brand ``CTF·TOOLKIT v3◢`` căn giữa; lệnh `help`
-        # vẫn nằm trong khối header (dòng ▍); banner half-block vẫn giữ sau đó.
+    def test_full_ucs_exodia_brand_first(self):
         lines = self.out.splitlines()
-        self.assertIn("▓", lines[0])
-        self.assertIn("░", lines[0])
-        self.assertIn("CTF·TOOLKIT", lines[1])
-        self.assertIn("v3", lines[1])
-        header_block = "\n".join(lines[:4])
-        self.assertIn("help", header_block)
-        # Banner half-block vẫn có mặt sau header.
-        self.assertRegex(self.out, r"(?m)^█")
+        # Help landing surface dùng full banner, không lặp compact header.
+        self.assertIn("██╗   ██╗", lines[0])
+        self.assertIn("UCS_ExOdia", self.out)
+        self.assertIn("CTF OPERATIONS FRAMEWORK", self.out)
+        self.assertIn("▰▰▰▰", self.out)
+        self.assertNotIn("UCS_ExOdia // help", self.out)
 
     def test_no_emoji_chrome(self):
         # Glyph rule: emoji chrome bị cấm (⚡📝🏷️👀🩺💾🔄📦📜🎯🌐).
@@ -881,11 +876,11 @@ class TestAppHeaderFooterFrame(unittest.TestCase):
 
     def test_header_before_body_pipe_drops_footer(self):
         out = self._frame_output()
-        self.assertIn("CTF·TOOLKIT", out)
-        self.assertIn("▍status", out)
+        self.assertIn("UCS_ExOdia", out)
+        self.assertIn("// status", out)
         self.assertIn("wsA", out)
         self.assertIn("BODY", out)
-        self.assertLess(out.index("CTF·TOOLKIT"), out.index("BODY"))
+        self.assertLess(out.index("UCS_ExOdia"), out.index("BODY"))
         # Non-tty: không chrome footer (uv-style machine-readable) — kể cả
         # gợi ý lệnh thật mới lẫn phím ảo cũ (phải không bao giờ hồi sinh).
         self.assertNotIn("q thoát", out)
@@ -895,7 +890,7 @@ class TestAppHeaderFooterFrame(unittest.TestCase):
     def test_fake_tty_header_before_body_footer_after(self):
         out = self._strip_ansi(self._frame_output(_FakeTTY))
         self.assertIn("BODY", out)
-        self.assertLess(out.index("CTF·TOOLKIT"), out.index("BODY"))
+        self.assertLess(out.index("UCS_ExOdia"), out.index("BODY"))
         # Binding cuối ('ctf menu') luôn được giữ khi trim theo width.
         self.assertGreater(out.index("console tương tác"),
                            out.index("BODY"))

@@ -174,7 +174,7 @@ class CTFInteractiveConsole:
     # ------------------------------------------------------------------
 
     def _print_header(self):
-        """AppHeader Phosphor Radar (spec §4.1) — đồng bộ mọi surface framed
+        """Compact UCS_ExOdia AppHeader — đồng bộ mọi surface framed
         (MUST uiv2 #1: bỏ Banner B half-block gây chia hai nhận diện), sau đó
         khối context WORKSPACE."""
         con = _menu_console()
@@ -672,10 +672,9 @@ def _pause():
 
 
 def launch_interactive_menu(workspace_path: Optional[str] = None, cookie: Optional[str] = None, token: Optional[str] = None):
-    # Splash logo dual-tier (DECISION_LOGO.md §4): cand_1 big ≥80 cols,
-    # cand_6 pagga <80 — in ĐÚNG MỘT LẦN khi vào menu, TRƯỚC radar AppHeader
-    # đầu tiên của vòng lặp; các lệnh framed không đổi (vẫn radar 4 dòng).
+    # UCS_ExOdia splash: full brutalist ≥80 cols, compact <80 — in đúng
+    # một lần khi vào menu, trước compact AppHeader đầu tiên của vòng lặp.
     _menu_console().print(splash())
-    # Banner PHOSPHOR FIELD KIT phương án B (spec §2) — human-facing → stderr.
+    # Sau splash, menu chỉ dùng compact UCS_ExOdia header ở mỗi vòng lặp.
     app = CTFInteractiveConsole(workspace_path=workspace_path, cookie=cookie, token=token)
     app.run()

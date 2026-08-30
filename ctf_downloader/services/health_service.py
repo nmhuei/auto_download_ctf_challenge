@@ -176,7 +176,7 @@ class DoctorReport:
         width = getattr(out, "width", None) or 80
 
         # AppHeader chuẩn như các lệnh khác (spec §4.1):
-        # ▐██ CTF·TOOLKIT │ doctor · <url> ... timestamp mép phải.
+        # UCS_ExOdia // doctor + spectral rail + URL/timestamp context.
         out.print(app_header("doctor", context=self.url or "(chưa có URL)",
                              timestamp=DoctorReport._timestamp()))
         out.print(Text("CHECK", style=FG_FAINT))

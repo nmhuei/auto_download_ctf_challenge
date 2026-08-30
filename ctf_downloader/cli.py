@@ -50,7 +50,7 @@ class _PhosphorHelpParser(argparse.ArgumentParser):
         from rich.console import Console, Group
         from rich.text import Text
 
-        from .ui.banner import TAGLINE, app_header, banner_b, tagline_text
+        from .ui.banner import banner_a
         from .ui.theme import FG_BASE, FG_FAINT, FG_MUTED, INFO, load_theme
         from .ui.widgets import footer_bar
 
@@ -94,15 +94,11 @@ class _PhosphorHelpParser(argparse.ArgumentParser):
                              ('ctf menu', 'console tương tác')],
                             width=max(40, console.width))
 
-        # Nhịp theo spec §4.8: AppHeader (codex-r3 #2 — help là lệnh thường
-        # duy nhất còn thiếu) → 1 dòng trống → banner → 1 dòng trống (banner
-        # tự kết thúc bằng '\n') → tagline → 1 → CÚ PHÁP → syntax → 1 →
-        # LỆNH → bảng lệnh → footer.
+        # Help là landing surface: full UCS_ExOdia brand xuất hiện đúng
+        # một lần. Subcommands vẫn dùng compact AppHeader để không chiếm màn
+        # hình trong workflow lặp đi lặp lại.
         console.print(Group(
-            app_header('help', timestamp=_frame_timestamp()),
-            Text(),
-            banner_b(),
-            tagline_text(),
+            banner_a(width=console.width),
             Text(),
             Text('CÚ PHÁP', style=f'bold {FG_FAINT}'),
             syntax,
@@ -119,10 +115,10 @@ def build_unified_parser():
 
     parser = _PhosphorHelpParser(
         prog='ctf',
-        description='CTF Toolkit: Unified CTF Downloader, Submitter, Container Manager & Dashboard',
+        description='UCS_ExOdia: CTF operations framework',
     )
     from . import __version__ as _pkg_version
-    parser.add_argument('-v', '--version', action='version', version=f'ctf-toolkit {_pkg_version}')
+    parser.add_argument('-v', '--version', action='version', version=f'UCS_ExOdia {_pkg_version}')
     parser.add_argument('-i', '--interactive', action='store_true', help='Launch full interactive CTF console')
     parser.add_argument('-w', '--workspace', default=None, help='CTF workspace directory')
 

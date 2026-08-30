@@ -185,9 +185,9 @@ class TestDoctorNetworkDead(unittest.TestCase):
             self.assertFalse(chk.ok, f"{chk.name} không được pass khi mạng chết")
 
         # Report vẫn render đầy đủ 6 dòng + tổng kết, không raise.
-        # (codex-r2: header giờ là AppHeader — "CTF·TOOLKIT │ doctor · url")
+        # (codex-r2: header giờ là AppHeader — "UCS_ExOdia │ doctor · url")
         out = capture_render(report)
-        self.assertIn("CTF·TOOLKIT", out)
+        self.assertIn("UCS_ExOdia", out)
         self.assertIn("doctor", out)
         self.assertIn("Tổng kết: 0/6 checks pass", out)
         self.assertIn("Không kết nối được", out)
@@ -204,8 +204,8 @@ class TestDoctorRender(unittest.TestCase):
         out = capture_render(report)
 
         # codex-r2 P0b: surface doctor dùng AppHeader chuẩn như các lệnh khác
-        # (▐██ CTF·TOOLKIT │ doctor · <url>) thay vì title "ctf doctor" thuần.
-        self.assertIn("CTF·TOOLKIT", out)
+        # (▐██ UCS_ExOdia │ doctor · <url>) thay vì title "ctf doctor" thuần.
+        self.assertIn("UCS_ExOdia", out)
         self.assertIn("doctor", out)
         # Glyph semantic ✔ một lần mỗi dòng đạt; heading CHECK/KẾT QUẢ faint.
         self.assertIn("✔", out)
@@ -258,6 +258,8 @@ class TestDoctorPhosphorRoles(unittest.TestCase):
     ACCENT_ANSI = "\x1b[38;2;255;176;0m"
     SOLVED_ANSI = "\x1b[38;2;98;201;126m"    # SOLVED = #62C97E
     ACCENT_DEEP_ANSI = "\x1b[38;2;107;67;0m"  # ACCENT_DEEP = #6B4300
+    BRAND_CYAN_ANSI = "\x1b[38;2;94;234;212m"   # UCS_ExOdia brand start
+    BRAND_VIOLET_ANSI = "\x1b[38;2;192;132;252m"  # UCS_ExOdia brand end
 
     def _partial_report(self):
         report = DoctorReport(url=URL)
@@ -316,10 +318,10 @@ class TestDoctorPhosphorRoles(unittest.TestCase):
 
     def test_app_header_present_with_brand_block(self):
         out = capture_render_ansi(self._partial_report())
-        # combo B Phosphor Radar: dải scanline accent.deep mở đầu AppHeader,
-        # brand ``CTF·TOOLKIT`` bold amber ở dòng 2 (căn giữa).
-        self.assertIn(self.ACCENT_DEEP_ANSI + "░", out)
-        self.assertIn("\x1b[1;" + self.ACCENT_ANSI[2:] + " CTF·TOOLKIT ", out)
+        # UCS_ExOdia compact header: cyan brand + per-stage spectral rail.
+        self.assertIn("\x1b[1;" + self.BRAND_CYAN_ANSI[2:] + "UCS_ExOdia", out)
+        self.assertIn("\x1b[1;" + self.BRAND_CYAN_ANSI[2:] + "▰", out)
+        self.assertIn("\x1b[1;" + self.BRAND_VIOLET_ANSI[2:] + "▰", out)
         self.assertIn(URL, out)
 
     def test_capabilities_values_colored_individually(self):
@@ -377,11 +379,10 @@ class TestDoctorChromeAndWrap(unittest.TestCase):
         self.assertTrue(cont, f"không có continuation thụt cột nội dung:\n"
                               f"{buf.getvalue()}")
         # Mọi dòng không thuộc dạng dòng đầu khối đều phải được thụt lề.
-        # (combo B: 4 dòng AppHeader radar — scanline / title dot-wing /
-        # ▍ lệnh / ▸ timestamp — đều hợp lệ mở đầu ở cột 1. Footer gợi ý
-        # lệnh thật "ctf ..." cũng mở đầu ở cột 1.)
-        allowed_prefixes = ("▐██", "CHECK", "KẾT QUẢ", "!", "✔", "✗", "ctf ",
-                            "░░", "·", "▍", "▸")
+        # Compact UCS_ExOdia header có brand ở dòng 1, rail centered ở dòng 2
+        # và URL/context ở dòng 3; footer lệnh thật cũng mở đầu ở cột 1.
+        allowed_prefixes = ("UCS_ExOdia", "https://", "CHECK", "KẾT QUẢ",
+                            "!", "✔", "✗", "ctf ")
         for ln in lines:
             if not ln.strip() or ln.startswith(allowed_prefixes):
                 continue

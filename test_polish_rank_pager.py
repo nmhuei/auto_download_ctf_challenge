@@ -171,7 +171,7 @@ class FramedCommandGateTests(unittest.TestCase):
         # (_FRAME_FOOTER), không phím TUI ảo.
         out = self._strip_ansi(self._frame_output(FakeTTY))
         self.assertIn("BODY", out)
-        self.assertLess(out.index("CTF·TOOLKIT"), out.index("BODY"))
+        self.assertLess(out.index("UCS_ExOdia"), out.index("BODY"))
         self.assertGreater(out.index("console tương tác"), out.index("BODY"))
         for frag in ("ctf sync đồng bộ", "ctf submit nộp flag",
                      "ctf menu console tương tác"):

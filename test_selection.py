@@ -197,9 +197,9 @@ class SwitcherColumnWidthTests(unittest.TestCase):
 
 
 class MenuHeaderRadarTests(unittest.TestCase):
-    """MUST uiv2 #1 — menu dùng AppHeader Phosphor Radar như mọi surface."""
+    """Menu dùng compact UCS_ExOdia AppHeader, không lặp full splash."""
 
-    def test_print_header_renders_radar_not_banner_b(self):
+    def test_print_header_renders_compact_brand_not_full_logo(self):
         from unittest.mock import patch
 
         app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
@@ -215,9 +215,9 @@ class MenuHeaderRadarTests(unittest.TestCase):
         rendered = "".join(str(c.plain) for c in pr.call_args_list[0].args[0].renderables) \
             if hasattr(pr.call_args_list[0].args[0], "renderables") \
             else str(pr.call_args_list[0].args[0])
-        self.assertIn("░░▒▒▓▓", rendered, "thiếu scanline radar")
-        self.assertIn("CTF·TOOLKIT", rendered)
-        self.assertNotIn("█▀▀", rendered, "vẫn còn Banner B half-block")
+        self.assertIn("UCS_ExOdia // menu", rendered)
+        self.assertIn("▰▰▰▰", rendered)
+        self.assertNotIn("██╗   ██╗", rendered, "compact header không được lặp full splash")
 
 
 class MenuWiringTests(unittest.TestCase):
