@@ -1,8 +1,9 @@
 import os
 import sys
 import threading
+import time
 import requests
-from typing import List, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .http_downloader import HttpDownloader, DownloadFailed, LargeFileSkipped
 # Các import handler dưới đây giữ để kích hoạt @register_downloader khi nạp
@@ -18,6 +19,13 @@ from ..utils.sanitize import extract_filename_from_url
 
 # Mặc định 1 GB; 0 = tắt gate (không bao giờ hỏi)
 DEFAULT_SIZE_LIMIT_BYTES = 1073741824
+
+# Review-6 LOW: giãn cách giữa các HEAD probe TUẦN TỰ của preflight consent
+# — N probe bắn liên hoàn trên cùng một connection vào platform/filehost dễ
+# bị rate-limit ngay từ trước khi thread pool bắt đầu tải. Giá trị nhỏ cố
+# định (không dùng registry spec.throttle — đó là throttle SUBMIT theo
+# nền tảng, sai ngữ nghĩa và quá dài cho HEAD probe).
+PROBE_PACE_SECONDS = 0.15
 
 
 class ConsentState:
@@ -56,11 +64,17 @@ class DownloadManager:
         timeout: int = 30,
         force: bool = False,
         size_limit_bytes: int = DEFAULT_SIZE_LIMIT_BYTES,
-        consent_state: Optional[ConsentState] = None
+        consent_state: Optional[ConsentState] = None,
+        verify_mode: str = "fast",
+        allow_private_redirects: bool = False,
     ):
         self.session = session
         self.timeout = timeout
         self.force = force
+        self.verify_mode = str(verify_mode or "fast").strip().lower()
+        if self.verify_mode not in ("fast", "normal", "strict"):
+            raise ValueError(f"verify mode không hợp lệ: {self.verify_mode}")
+        self.allow_private_redirects = bool(allow_private_redirects)
         # Ngưỡng consent file lớn; 0 = vô hiệu hoá gate
         self.size_limit_bytes = size_limit_bytes or 0
         # C19-M3: quyết định consent + cache dung lượng dùng chung với
@@ -89,19 +103,24 @@ class DownloadManager:
         """
         limit = self.size_limit_bytes
         oversized: List[Tuple[str, Optional[int]]] = []
+        fresh_probes = 0
         for url in dict.fromkeys(urls):   # khử trùng lặp, giữ thứ tự
             if url in self.consent.sizes:
                 size = self.consent.sizes[url]
             else:
+                # Review-6 LOW: nghỉ nhẹ giữa hai probe tuần tự (không nghỉ
+                # trước probe ĐẦU TIÊN và không đếm URL đã có cache).
+                if fresh_probes:
+                    time.sleep(PROBE_PACE_SECONDS)
                 try:
-                    size = HttpDownloader.probe_content_length(
-                        url, session=self.session, timeout=self.timeout)
+                    size = self._probe_content_length(url)
                 except Exception as e:
                     Logger.warning(
                         f"Không xác định trước dung lượng của {url}: "
                         f"{type(e).__name__}: {str(e)[:120]}")
                     size = None
                 self.consent.sizes[url] = size
+                fresh_probes += 1
             if limit and size is not None and size > limit:
                 oversized.append((url, size))
         if not oversized:
@@ -228,6 +247,26 @@ class DownloadManager:
         except Exception:
             pass
 
+    def _probe_content_length(self, url: str) -> Optional[int]:
+        """Probe size while preserving the legacy callable signature.
+
+        Older plugins/tests monkeypatch ``probe_content_length(url, session,
+        timeout)``. The new redirect-policy keyword is passed only when the
+        user explicitly enables it, so default behavior remains compatible.
+        """
+        if self.allow_private_redirects:
+            return HttpDownloader.probe_content_length(
+                url,
+                session=self.session,
+                timeout=self.timeout,
+                allow_private_redirects=True,
+            )
+        return HttpDownloader.probe_content_length(
+            url,
+            session=self.session,
+            timeout=self.timeout,
+        )
+
     # ------------------------------------------------------------------ #
     # Single URL download
     # ------------------------------------------------------------------ #
@@ -262,6 +301,12 @@ class DownloadManager:
                     return False, None, self._skip_large_message(
                         url, mega_size, self.size_limit_bytes)
                 saved_path, msg = MegaDownloader.download(url, dest_dir, timeout=max(self.timeout * 10, 600))
+                if saved_path and os.path.isfile(saved_path):
+                    HttpDownloader._record_final_metadata(
+                        saved_path,
+                        url,
+                        verify_mode=self.verify_mode,
+                    )
                 return (saved_path is not None), saved_path, msg
 
             stream = None
@@ -294,7 +339,9 @@ class DownloadManager:
                 saved_path = HttpDownloader.save_response_stream(
                     stream, dest_dir, filename,
                     force=self.force,
-                    max_size=hard_gate
+                    max_size=hard_gate,
+                    source_url=url,
+                    verify_mode=self.verify_mode,
                 )
                 if saved_path:
                     return True, saved_path, f"Đã tải qua handler {link_type}"
@@ -308,8 +355,7 @@ class DownloadManager:
             if url in self.consent.sizes:
                 expected_size = self.consent.sizes[url]
             else:
-                expected_size = HttpDownloader.probe_content_length(
-                    url, session=self.session, timeout=self.timeout)
+                expected_size = self._probe_content_length(url)
             if not self._confirm_large_download(url, expected_size):
                 return False, None, self._skip_large_message(url, expected_size, self.size_limit_bytes)
 
@@ -318,7 +364,9 @@ class DownloadManager:
                 preferred_filename=preferred_name,
                 timeout=self.timeout,
                 force=self.force,
-                max_size=self._post_consent_gate(expected_size)
+                max_size=self._post_consent_gate(expected_size),
+                verify_mode=self.verify_mode,
+                allow_private_redirects=self.allow_private_redirects,
             )
             if saved_path:
                 return True, saved_path, "Đã tải trực tiếp thành công"
@@ -342,7 +390,7 @@ class DownloadManager:
         extracted_links: List[ExtractedLink],
         dest_dir: str,
         download_third_party: bool = True
-    ) -> List[Dict[str, any]]:
+    ) -> List[Dict[str, Any]]:
         """
         Downloads all platform files and 3rd party files for a single challenge.
         """
@@ -387,7 +435,11 @@ class DownloadManager:
                 "saved_path": path,
                 "success": success,
                 "source": item["source"],
-                "message": msg
+                "message": msg,
+                "verification": (
+                    HttpDownloader.load_final_metadata(path)
+                    if success and path else {}
+                ),
             })
 
         return results

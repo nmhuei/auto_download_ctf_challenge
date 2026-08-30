@@ -3,3 +3,5 @@ beautifulsoup4>=4.11.0
 rich>=13.0.0
 gdown>=4.7.0
 urllib3>=1.26.0
+cryptography>=41.0.0
+curl_cffi>=0.7.4

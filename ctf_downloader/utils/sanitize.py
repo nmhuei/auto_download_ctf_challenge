@@ -1,6 +1,5 @@
 import re
 import urllib.parse
-from typing import Optional
 
 import unicodedata
 
@@ -93,35 +92,46 @@ def md_cell(value) -> str:
     return escape_markdown(text.replace("|", "&#124;"), chars="[]")
 
 
+# review-6 MED: lone surrogate (\ud800-\udfff từ JSON platform hỏng —
+# json.loads chấp nhận escape \udXXX) làm str.encode('utf-8') nổ
+# UnicodeEncodeError TRƯỚC cả khi kịp cắt byte theo NAME_MAX -> crash cả
+# luồng tải bài đó. Encode qua 'surrogatepass' rồi decode 'ignore': byte
+# surrogate (không phải UTF-8 hợp lệ) bị loại sạch, chuỗi thường nguyên vẹn.
+def _utf8_clean(text: str, max_bytes: int) -> str:
+    """Khử lone surrogate + cắt ``text`` xuống tối đa ``max_bytes`` utf-8
+    (NAME_MAX của Linux tính theo BYTE); kết quả LUÔN encode được utf-8.
+    Phần cắt rơi giữa multi-byte sequence bị bỏ qua khi decode."""
+    raw = text.encode("utf-8", "surrogatepass")
+    return raw[:max_bytes].decode("utf-8", "ignore")
+
+
 def sanitize_folder_name(name: str, max_length: int = 80, default: str = "challenge") -> str:
     """
     Sanitize challenge or category name to be safe across Linux, macOS, and Windows.
     """
     if not name or not isinstance(name, str):
         return default
-    
+
     # Strip whitespace
     name = name.strip()
-    
+
     # Replace illegal filesystem characters: / \ : * ? " < > | \0
     clean = re.sub(r'[\\/*?:"<>|\x00-\x1f]', '_', name)
-    
+
     # Replace consecutive spaces or underscores
     clean = re.sub(r'[\s_]+', '_', clean)
-    
+
     # Remove leading/trailing dots, underscores, or spaces (Windows issues)
     clean = clean.strip(' ._')
-    
+
     if not clean:
         return default
 
     clean = clean[:max_length]
 
-    # C9-02: NAME_MAX của Linux là 255 BYTE UTF-8 chứ không phải số ký tự
-    # (80 emoji = 320 byte -> os.makedirs OSError, challenge rơi khỏi
-    # workspace). Ép trần 254 byte; phần cắt rơi giữa multi-byte sequence
-    # bị bỏ qua khi decode thay vì tạo byte lỗi.
-    return clean.encode("utf-8")[:254].decode("utf-8", "ignore")
+    # C9-02 + review-6: ép trần 254 byte (NAME_MAX), khử lone surrogate;
+    # rỗng sau khử (tên toàn surrogate) -> default.
+    return _utf8_clean(clean, 254) or default
 
 
 def sanitize_filename(name: str, max_length: int = 120, default: str = "attachment.bin") -> str:
@@ -152,10 +162,9 @@ def sanitize_filename(name: str, max_length: int = 120, default: str = "attachme
     if not clean:
         return default
 
-    raw = clean.encode("utf-8")
-    if len(raw) > max_length:
-        clean = raw[:max_length].decode("utf-8", "ignore")
-    return clean or default
+    # review-6 MED: cắt theo BYTE + khử lone surrogate (không nổ
+    # UnicodeEncodeError); rỗng sau khử/cắt -> default.
+    return _utf8_clean(clean, max_length) or default
 
 def extract_filename_from_url(url: str, default: str = "download.bin") -> str:
     """

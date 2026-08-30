@@ -132,7 +132,12 @@ def _norm_literal(ch: str, icase: bool) -> str:
     """Encode một ký tự literal thành token so sánh an toàn; fold lowercase
     khi IGNORECASE đang hiệu lực ('x' ≡ 'X' dưới (?i))."""
     if icase:
-        ch = ch.lower()
+        low = ch.lower()
+        if len(low) == 1:
+            # U+0130 'İ'.lower() dài 2 ký tự ('i' + U+0307) — codepoint
+            # duy nhất trên Unicode; giữ nguyên thay vì để ord() raise
+            # TypeError ngoài try/except ở call-site _is_risky_pattern.
+            ch = low
     return _LITERAL_MARK + format(ord(ch), "x") + ";"
 
 
@@ -192,12 +197,21 @@ def _norm_escape_token(pattern: str, i: int, n: int, in_class: bool,
             while k < n and k - (i + 2) < 2 and pattern[k] in "01234567":
                 k += 1
             return _norm_literal(chr(int(pattern[i + 1:k], 8)), icase), k
-        # \1..\9, \12... : theo luật sre, là backreference NẾU nhóm tương
-        # ứng đã mở; nếu không thì là octal (vd \101 trong (?:...) = 'A').
+        # \1..\9, \12... : theo luật sre, ĐỦ 3 chữ số octal là octal
+        # escape VÔ ĐIỀU KIỆN (docs "\\number": "number is 3 octal digits
+        # long" -> không bao giờ là group match) — kể cả khi nhóm tương
+        # ứng tồn tại. Luật này phải xét TRƯỚC vòng prefix-backref, nếu
+        # không pattern có >=101 nhóm sẽ coi \101 là backref giả và bỏ
+        # lỡ dup thật dạng (A|\101)+$.
         k = i + 1
         while k < n and pattern[k].isdigit():
             k += 1
         digits = pattern[i + 1:k]
+        if len(digits) == 3 and all(d in "01234567" for d in digits):
+            val = int(digits, 8)
+            if val <= 0o377:
+                return _norm_literal(chr(val), icase), k
+            return pattern[i:k], k          # >0o377 — re sẽ báo lỗi range
         ref_len = 0
         for ln in range(len(digits), 0, -1):
             if int(digits[:ln]) <= captures:

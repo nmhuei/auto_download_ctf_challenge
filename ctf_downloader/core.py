@@ -19,13 +19,16 @@ class CTFDownloader:
             cookie=config.cookie,
             token=config.token,
             custom_headers=config.custom_headers,
-            timeout=config.timeout
+            timeout=config.timeout,
+            base_url=config.url,
         )
         self.download_manager = DownloadManager(
             session=self.session,
             timeout=config.timeout,
             force=config.force_redownload,
-            size_limit_bytes=config.size_limit_bytes
+            size_limit_bytes=config.size_limit_bytes,
+            verify_mode=config.verify_downloads,
+            allow_private_redirects=config.allow_private_redirects,
         )
 
     @property

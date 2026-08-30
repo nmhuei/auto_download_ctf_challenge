@@ -91,7 +91,12 @@ class TestGlobalConfigMove(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             with mock.patch.object(gc, "GLOBAL_CONFIG_FILE", os.path.join(d, "config.json")):
                 cfg = gc.load_global_config()
-        self.assertEqual(cfg, {"workspaces": {}, "default_workspace": None, "auth": {}})
+        self.assertEqual(cfg, {
+            "workspaces": {},
+            "default_workspace": None,
+            "workspace_root": gc.DEFAULT_WORKSPACE_ROOT,
+            "auth": {},
+        })
 
     def test_save_then_load_roundtrip(self):
         from ctf_downloader.storage import global_config as gc

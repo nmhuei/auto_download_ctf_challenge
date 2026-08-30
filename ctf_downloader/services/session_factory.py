@@ -13,6 +13,10 @@ def create_session(
     token: Optional[str] = None,
     custom_headers: Optional[Dict[str, str]] = None,
     timeout: int = 30,
+    base_url: Optional[str] = None,
+    impersonate: str = "chrome",
+    use_browser_impersonation: bool = False,
+    cloudflare_fallback: bool = True,
 ) -> requests.Session:
     """Tạo session đã cấu hình headers/cookies/retry — mọi module phải đi qua đây."""
     return _http_create_session(
@@ -20,6 +24,10 @@ def create_session(
         token=token,
         custom_headers=custom_headers,
         timeout=timeout,
+        base_url=base_url,
+        impersonate=impersonate,
+        use_browser_impersonation=use_browser_impersonation,
+        cloudflare_fallback=cloudflare_fallback,
     )
 
 
@@ -32,9 +40,17 @@ def thread_local_sessions(master: requests.Session) -> Iterator[Callable[[], req
     def get() -> requests.Session:
         sess = getattr(local, 'session', None)
         if sess is None:
-            sess = create_session()
+            sess = create_session(base_url=getattr(master, '_credential_origin', None))
             sess.headers.update(master.headers)
             sess.cookies.update(master.cookies)
+            # If the main-thread platform probe already detected Cloudflare,
+            # arm each worker with browser transport before its first request.
+            # This keeps cf_clearance + TLS/UA fingerprint coherent and avoids
+            # every download worker independently hitting a challenge first.
+            if getattr(master, 'cloudflare_active', False) is True:
+                activate = getattr(sess, '_activate_browser_transport', None)
+                if callable(activate):
+                    activate()
             local.session = sess
         return sess
 

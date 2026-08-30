@@ -337,7 +337,10 @@ class TestResume(unittest.TestCase):
         self.assertEqual(second_kwargs.get("headers", {}).get("Range"), "bytes=200-")
 
         # Không còn file tạm sau khi hoàn tất
-        self.assertEqual(sorted(os.listdir(self.tmp_dir)), ["blob.bin"])
+        self.assertEqual(
+            sorted(os.listdir(self.tmp_dir)),
+            ["blob.bin", "blob.bin.ctfmeta.json"],
+        )
 
     def test_server_ignoring_range_200_restarts_from_scratch(self):
         partial_part_path = os.path.join(self.tmp_dir, "blob.bin.part")
@@ -1178,6 +1181,54 @@ class TestDeferredMinorsBatch3(unittest.TestCase):
         finally:
             registry.DOWNLOADERS.pop(key_s, None)
             registry.DOWNLOADERS.pop(key_p, None)
+
+    def test_optimal_chunk_size(self):
+        from ctf_downloader.downloaders.http_downloader import _get_optimal_chunk_size
+        self.assertEqual(_get_optimal_chunk_size(0), 131072)
+        self.assertEqual(_get_optimal_chunk_size(500 * 1024), 131072)
+        self.assertEqual(_get_optimal_chunk_size(5 * 1024 * 1024), 524288)
+        self.assertEqual(_get_optimal_chunk_size(50 * 1024 * 1024), 1048576)
+
+    def test_parallel_segments_download_success(self):
+        import tempfile
+        total_size = 10 * 1024 * 1024  # 10MB
+        raw_content = b"A" * total_size
+
+        def mock_get(url, stream=True, timeout=30, headers=None, allow_redirects=False):
+            if headers and "Range" in headers:
+                rng = headers["Range"].replace("bytes=", "").split("-")
+                start, end = int(rng[0]), int(rng[1])
+                slice_data = raw_content[start:end + 1]
+                return FakeResponse(
+                    status_code=206,
+                    headers={
+                        "Content-Length": str(len(slice_data)),
+                        "Content-Range": f"bytes {start}-{end}/{total_size}",
+                    },
+                    chunks=(slice_data,)
+                )
+            return FakeResponse(status_code=200, headers={"Content-Length": str(total_size)}, chunks=(raw_content,))
+
+        session = MagicMock()
+        session.get.side_effect = mock_get
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "large.bin")
+            part = target + ".part"
+            progress_calls = []
+
+            ok = HttpDownloader._download_parallel_segments(
+                url="https://example.com/large.bin",
+                target_path=target,
+                part_path=part,
+                total_size=total_size,
+                session=session,
+                progress_callback=lambda c, t: progress_calls.append(c)
+            )
+            self.assertTrue(ok)
+            self.assertTrue(os.path.exists(part))
+            self.assertEqual(os.path.getsize(part), total_size)
+            self.assertEqual(sum(progress_calls), total_size)
 
 
 if __name__ == "__main__":
