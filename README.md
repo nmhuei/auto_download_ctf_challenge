@@ -160,6 +160,7 @@ Chạy `ctf <lệnh> --help` để xem đầy đủ tuỳ chọn của từng l�
 | `ctf git push` | `--message` · `--no-push` · `--workspace` |
 | `ctf git finish` | `--base` · `--keep-remote` · `--no-push` · `--remote` · `--workspace` |
 | `ctf config` | — |
+| `ctf bridge` | — |
 <!-- END GENERATED CLI OPTIONS -->
 
 ## 4. Cây workspace output
