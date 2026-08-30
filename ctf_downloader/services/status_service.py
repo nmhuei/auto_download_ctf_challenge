@@ -21,7 +21,7 @@ from rich.table import Table
 from rich.text import Text
 
 from ..storage.constants import FLAG_PLACEHOLDER
-from ..storage.workspace_repo import WorkspaceRepo
+from ..storage.workspace_repo import WorkspaceRepo, is_superseded
 from ..platforms.registry import display_label
 from ..ui.theme import FG_BASE, FG_MUTED, load_theme
 from ..utils.logger import Logger
@@ -260,11 +260,13 @@ class StatusService:
     @staticmethod
     def _local_challenges(repo: WorkspaceRepo) -> List[Tuple[Any, dict]]:
         """(meta_path, metadata) của mọi challenge ĐÃ download (có metadata.json).
-        Note/tag ghi vào metadata.status nên chỉ challenge local resolve được."""
+        Note/tag ghi vào metadata.status nên chỉ challenge local resolve được.
+        Bản tombstone superseded_by bị loại — không resolve/note vào thư mục
+        chết (review-6 HIGH)."""
         out = []
         for meta_path in repo.iter_challenges():
             meta = repo.read_metadata(meta_path)
-            if meta:
+            if meta and not is_superseded(meta):
                 out.append((meta_path, meta))
         return out
 
@@ -494,7 +496,9 @@ class StatusService:
         for meta_path in repo.iter_challenges():
             try:
                 m = repo.read_metadata(meta_path)
-                if not m:
+                if not m or is_superseded(m):
+                    # Review-6 HIGH: tombstone không hiện trong scan/stats
+                    # (tránh đếm đôi + render thư mục chết).
                     continue
                 root = meta_path.parent
 
@@ -949,19 +953,19 @@ class StatusService:
                 # AND: challenge phải mang TẤT CẢ label chỉ định.
                 def _has_all_labels(c):
                     labels = {str(x) for x in ((c.get('_status') or {}).get('labels') or [])}
-                    return all(str(l) in labels for l in filter_labels)
+                    return all(str(lbl) in labels for lbl in filter_labels)
                 c_list = [c for c in c_list if _has_all_labels(c)]
 
             if search:
                 q_low = str(search).strip().lower()
                 if q_low:
-                    def _matches_search(c):
+                    def _matches_search(c, query=q_low):
                         st = c.get('_status') or {}
                         haystack = ' '.join([
                             str(c.get('name', '')),
                             str(st.get('notes') or ''),
                         ]).lower()
-                        return q_low in haystack
+                        return query in haystack
                     c_list = [c for c in c_list if _matches_search(c)]
 
             if not c_list:

@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Callable, Iterator, Union
 
@@ -371,3 +372,36 @@ def locked_update_json(path: PathLike, mutator: Callable[[dict], Union[dict, Non
         finally:
             fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
             lock_f.close()
+
+
+def cleanup_stale_locks(directory: PathLike, max_age_seconds: float = 3600.0) -> int:
+    """Quét và dọn các file `.lock` mồ côi cũ hơn `max_age_seconds` trong `directory`
+    mà KHÔNG có tiến trình nào đang nắm giữ khóa `fcntl.flock(LOCK_EX | LOCK_NB)`.
+    Trả về số lượng file .lock đã dọn."""
+    dir_path = Path(directory)
+    if not dir_path.is_dir():
+        return 0
+    now = time.time()
+    cleaned = 0
+    for root, _dirs, files in os.walk(dir_path):
+        for f in files:
+            if not f.endswith(".lock"):
+                continue
+            lp = Path(root) / f
+            try:
+                st = lp.stat()
+                if now - st.st_mtime < max_age_seconds:
+                    continue
+                with open(lp, "a") as lock_f:
+                    try:
+                        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        try:
+                            os.unlink(lp)
+                            cleaned += 1
+                        finally:
+                            fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+                    except (BlockingIOError, OSError):
+                        pass
+            except (FileNotFoundError, OSError):
+                continue
+    return cleaned

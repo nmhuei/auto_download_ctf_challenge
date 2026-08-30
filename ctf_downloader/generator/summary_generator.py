@@ -7,7 +7,7 @@ from ..services.status_service import ROW_GLYPHS
 from ..storage.constants import DEFAULT_CATEGORY, SUMMARY_FILES_LINE
 from ..storage.workspace_repo import WorkspaceRepo
 from ..utils.sanitize import md_cell
-from ..utils.sanitize import sanitize_folder_name
+from .workspace_builder import WorkspaceBuilder
 
 
 def _safe_int(value) -> int:
@@ -142,11 +142,16 @@ class SummaryGenerator:
             lines.append(f"## 📁 {md_cell(cat)}\n")
             lines.append("| Challenge | Points | Solves | Files | Status | Path |")
             lines.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
-            
-            clean_cat = sanitize_folder_name(cat, default="Misc")
             for c in challs:
-                clean_name = sanitize_folder_name(c.name, default=f"chall_{c.id}")
-                rel_path = f"{clean_cat}/{clean_name}/writeup/README.md"
+                # Review-6 MED: đường dẫn trong SUMMARY phải đi qua CÙNG
+                # resolver với pipeline tải (C9-01 guard owner/-id) — tự
+                # tính sanitize() ở đây từng trỏ SUMMARY vào thư mục của
+                # CHỦ SỞ HỮU KHÁC khi resolver redirect sang name-<id>.
+                resolved = WorkspaceBuilder.resolve_challenge_dir(
+                    base_output_dir, c)
+                dir_rel = os.path.relpath(resolved, base_output_dir)
+                dir_rel = dir_rel.replace(os.sep, "/")   # link markdown
+                readme_rel = f"{dir_rel}/writeup/README.md"
                 
                 c_files = all_results.get(c.id, [])
                 succ_files = sum(1 for f in c_files if f.get("success"))
@@ -163,7 +168,7 @@ class SummaryGenerator:
                 
                 # Tên challenge cũng dữ liệu server — '|' vỡ bảng 6 cột;
                 # điểm None -> '-' (không in chữ 'None' ra cell).
-                lines.append(f"| **[{md_cell(c.name)}]({rel_path})** | {_points_display(c.points)} | {solves_str} | {files_str} | {status_str} | [`{clean_cat}/{clean_name}`]({clean_cat}/{clean_name}) |")
+                lines.append(f"| **[{md_cell(c.name)}]({readme_rel})** | {_points_display(c.points)} | {solves_str} | {files_str} | {status_str} | [`{dir_rel}`]({dir_rel}) |")
             lines.append("")
 
         summary_content = "\n".join(lines)

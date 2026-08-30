@@ -371,6 +371,20 @@ class TestArchiveWorkspace(StorageTestBase):
         self.assertEqual(log.splitlines()[0].split()[1],
                          bare_log.splitlines()[0].split()[1])
 
+    def test_archive_output_inside_source_tree_is_refused(self):
+        ws = self.make_alpha("selfarchive")
+        with self.assertRaisesRegex(StorageError, "NGOÀI workspace"):
+            StorageManager.archive_workspace(
+                ws, os.path.join(ws, "_archives")
+            )
+
+    def test_archive_symlink_workspace_root_is_refused(self):
+        ws = self.make_alpha("realarchive")
+        link = os.path.join(self.base, "archive-link")
+        os.symlink(ws, link)
+        with self.assertRaisesRegex(StorageError, "symlink"):
+            StorageManager.archive_workspace(link)
+
     def test_nonexistent_workspace_raises(self):
         with self.assertRaises(StorageError):
             StorageManager.archive_workspace(
@@ -391,6 +405,33 @@ class TestDeleteWorkspace(StorageTestBase):
                         "dữ liệu phải nguyên vẹn sau rename")
         # Nằm trong _archives cạnh base
         self.assertIn("_archives", new_path)
+
+    def test_delete_symlink_workspace_root_is_refused_without_moving_target(self):
+        ws = self.make_alpha("real-delete")
+        marker = os.path.join(ws, "notes.txt")
+        link = os.path.join(self.base, "delete-link")
+        os.symlink(ws, link)
+        with self.assertRaisesRegex(StorageError, "symlink"):
+            StorageManager.delete_workspace(link)
+        self.assertTrue(os.path.isdir(ws))
+        self.assertTrue(os.path.isfile(marker))
+        self.assertTrue(os.path.islink(link))
+
+    def test_delete_trash_inside_workspace_is_refused(self):
+        ws = self.make_alpha("bad-trash")
+        with self.assertRaisesRegex(StorageError, "NGOÀI workspace"):
+            StorageManager.delete_workspace(
+                ws, trash_dir=os.path.join(ws, "trash")
+            )
+        self.assertTrue(os.path.isdir(ws))
+
+    def test_delete_invalid_trash_root_normalizes_storage_error(self):
+        ws = self.make_alpha("bad-trash-file")
+        bad = os.path.join(self.base, "trash-as-file")
+        _write(bad, b"not a dir")
+        with self.assertRaises(StorageError):
+            StorageManager.delete_workspace(ws, trash_dir=bad)
+        self.assertTrue(os.path.isdir(ws))
 
     def test_delete_missing_raises(self):
         with self.assertRaises(StorageError):
@@ -536,6 +577,90 @@ class TestExportWorkspace(unittest.TestCase):
         # files_count khớp số entry thực tế trong zip
         self.assertEqual(result["files_count"], len(entries))
 
+    def _make_v2_ws(self, name="eps"):
+        """Workspace schema v2: flag thật nằm ở status.flag.value
+        (submit_service.hoard_flag / migrate-on-read ghi đó), kèm cả key
+        legacy submitted_flag."""
+        ws = os.path.join(self.base, name)
+        _write(os.path.join(ws, "challenges.json"), json.dumps(
+            {"ctf_info": {"flag_format": r"^PTITCTF\{.+\}$"}}))
+        _write(os.path.join(ws, "Web", "c1", "metadata.json"), json.dumps({
+            "name": "c1",
+            "submitted_flag": self.REAL_FLAG,
+            "status": {
+                "schema_version": 2,
+                "solve": "working",
+                "flag": {"value": self.REAL_FLAG, "state": "hoarded"},
+                "writeup": "none",
+                "notes": f"flag bắt được: {self.REAL_FLAG}",
+                "labels": ["pwn"],
+            },
+        }))
+        return ws
+
+    def test_strip_secrets_redacts_schema_v2_status_flag(self):
+        """hunt-c20 HIGH: nhánh metadata.json cũ chỉ xoá submitted_flag rồi
+        return sớm → status.flag.value (schema v2) còn nguyên flag trong
+        pack. Phải redact ĐỦ vị trí flag + vẫn redact text (notes)."""
+        ws = self._make_v2_ws()
+        result = StorageManager.export_workspace(ws)
+        entries = self._read_zip(result["zip_path"])
+
+        meta_raw = entries["Web/c1/metadata.json"].decode("utf-8")
+        self.assertNotIn(self.REAL_FLAG, meta_raw,
+                         "flag còn nguyên trong metadata.json của pack")
+
+        # Cấu trúc schema v2 GIỮ NGUYÊN — chỉ value bị thay placeholder
+        meta = json.loads(meta_raw)
+        self.assertEqual(meta["status"]["flag"]["value"], "[REDACTED]")
+        self.assertEqual(meta["status"]["flag"]["state"], "hoarded")
+        self.assertNotIn("submitted_flag", meta)
+        self.assertIn("[REDACTED]", meta["status"]["notes"],
+                      "_redact_text phải vẫn chạy trên phần text JSON")
+
+        # Không leak flag ở bất kỳ entry nào của pack
+        blob = b"\n".join(entries.values())
+        self.assertNotIn(self.REAL_FLAG.encode(), blob)
+        self.assertGreaterEqual(result["stripped_count"], 3)
+
+    def test_strip_secrets_keeps_placeholder_flag_value_untouched(self):
+        # value là placeholder FLAG{...} (chưa có flag thật) → giữ nguyên,
+        # không đếm redact ảo.
+        ws = self._make_v2_ws("eps_ph")
+        meta_path = os.path.join(ws, "Web", "c1", "metadata.json")
+        data = json.load(open(meta_path))
+        data["status"]["flag"] = {"value": "FLAG{...}", "state": "none"}
+        del data["submitted_flag"]
+        _write(meta_path, json.dumps(data))
+
+        result = StorageManager.export_workspace(ws)
+        entries = self._read_zip(result["zip_path"])
+        meta = json.loads(entries["Web/c1/metadata.json"].decode("utf-8"))
+        self.assertEqual(meta["status"]["flag"]["value"], "FLAG{...}")
+        self.assertNotIn("[REDACTED]", json.dumps(meta["status"]["flag"]))
+
+    def test_strip_secrets_redacts_solver_scripts(self):
+        """hunt-c20 MED: script solver/ cũng chứa flag thật (solve.py in
+        flag khi chạy) → phải được redact như writeup text."""
+        ws = os.path.join(self.base, "sol")
+        _write(os.path.join(ws, "challenges.json"), json.dumps(
+            {"ctf_info": {"flag_format": r"^PTITCTF\{.+\}$"}}))
+        _write(os.path.join(ws, "Web", "c1", "solver", "solve.py"),
+               f"#!/usr/bin/env python3\nprint('{self.REAL_FLAG}')\n")
+        _write(os.path.join(ws, "Web", "c1", "solver_notes.txt"),
+               f"hint: {self.REAL_FLAG}\n")
+        result = StorageManager.export_workspace(ws)
+        entries = self._read_zip(result["zip_path"])
+
+        solve_py = entries["Web/c1/solver/solve.py"].decode("utf-8")
+        self.assertNotIn(self.REAL_FLAG, solve_py)
+        self.assertIn("[REDACTED]", solve_py)
+        notes = entries["Web/c1/solver_notes.txt"].decode("utf-8")
+        self.assertNotIn(self.REAL_FLAG, notes)
+
+        blob = b"\n".join(entries.values())
+        self.assertNotIn(self.REAL_FLAG.encode(), blob)
+
     def test_workspace_original_untouched(self):
         StorageManager.export_workspace(self.ws)
         self.assertEqual(
@@ -588,6 +713,50 @@ class TestExportWorkspace(unittest.TestCase):
         self.assertNotIn("SECRET_hunter2", text)
         self.assertIn("[REDACTED]", text)
         self.assertGreaterEqual(result["stripped_count"], 1)
+
+    def test_external_file_symlink_is_never_dereferenced_into_export(self):
+        secret = os.path.join(self.tmp, "outside-secret.txt")
+        _write(secret, b"OUTSIDE_SECRET_MUST_NOT_LEAK")
+        link = os.path.join(self.ws, "Web", "chall1", "solver", "key.txt")
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        os.symlink(secret, link)
+
+        for strip in (True, False):
+            result = StorageManager.export_workspace(
+                self.ws,
+                out_path=os.path.join(
+                    self.tmp, f"symlink-{int(strip)}.zip"
+                ),
+                strip_secrets=strip,
+            )
+            entries = self._read_zip(result["zip_path"])
+            self.assertNotIn("Web/chall1/solver/key.txt", entries)
+            self.assertNotIn(
+                b"OUTSIDE_SECRET_MUST_NOT_LEAK",
+                b"\n".join(entries.values()),
+            )
+
+    def test_internal_file_symlink_is_skipped_not_dereferenced(self):
+        real = os.path.join(self.ws, "real.txt")
+        _write(real, b"inside")
+        os.symlink(real, os.path.join(self.ws, "alias.txt"))
+        result = StorageManager.export_workspace(self.ws, strip_secrets=False)
+        entries = self._read_zip(result["zip_path"])
+        self.assertIn("real.txt", entries)
+        self.assertNotIn("alias.txt", entries)
+
+    def test_export_output_inside_source_tree_is_refused(self):
+        with self.assertRaisesRegex(StorageError, "NGOÀI workspace"):
+            StorageManager.export_workspace(
+                self.ws,
+                out_path=os.path.join(self.ws, "exports", "share.zip"),
+            )
+
+    def test_export_symlink_workspace_root_is_refused(self):
+        link = os.path.join(self.base, "gamma-link")
+        os.symlink(self.ws, link)
+        with self.assertRaisesRegex(StorageError, "symlink"):
+            StorageManager.export_workspace(link)
 
     def test_missing_workspace_raises(self):
         with self.assertRaises(StorageError):

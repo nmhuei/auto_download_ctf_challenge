@@ -20,6 +20,7 @@ services/instance_keepalive.py (state machine + R-A/R-B).
 from __future__ import annotations
 
 import datetime as _dt
+import inspect
 import json
 import os
 import random
@@ -461,8 +462,17 @@ class WatchStateStore:
             return None
         if not raw:
             return False     # zombie / đang exec — không phải watch của ta
-        txt = raw.replace(b"\x00", b" ").decode("utf-8", "replace").lower()
-        return "ctf" in txt or "watch" in txt
+        argv = [
+            part.decode("utf-8", "replace").lower()
+            for part in raw.split(b"\x00") if part
+        ]
+        if not argv:
+            return False
+        # argv[0] là interpreter/executable path. Không dùng nó làm marker:
+        # venv/project path hợp lệ có thể chứa chữ "ctf" dù process chỉ là
+        # ``python -c sleep`` hoàn toàn không liên quan đến watch.
+        command_text = " ".join(argv[1:])
+        return "watch" in command_text or "ctf watch" in command_text
 
     @staticmethod
     def _pid_alive(pid: int) -> bool:
@@ -712,9 +722,10 @@ def resolve_event_window(platform: Any, repo: WorkspaceRepo,
     # Mirror vào challenges.json.ctf_info.event_window cho SUMMARY/dashboard
     if times is not None:
         try:
-            iso = lambda dt: dt.isoformat() if dt else None
+            def _iso(dt):
+                return dt.isoformat() if dt else None
             repo.update_ctf_info(event_window={
-                "start": iso(times.start_utc), "end": iso(times.end_utc),
+                "start": _iso(times.start_utc), "end": _iso(times.end_utc),
                 "source": times.source, "confidence": times.confidence})
         except Exception:
             pass
@@ -1179,25 +1190,109 @@ class WatchService:
     # ------------------------------------------------------------------ #
     def _tick_scoreboard(self, window_active: bool = True,
                          final: bool = False) -> List[str]:
-        result = self.platform.fetch_scoreboard() or {}
+        lines: List[str] = []
+        etag_cache = self.state.setdefault("etag_cache", {})
+        saved_etag = etag_cache.get("scoreboard")
+        fetcher = self.platform.fetch_scoreboard
+
+        # Adapters mới nhận if_none_match; fake/legacy adapters trong plugin
+        # ngoài tree có thể giữ signature cũ nên chỉ truyền kwarg khi hỗ trợ.
+        supports_conditional = False
+        try:
+            params = inspect.signature(fetcher).parameters.values()
+            supports_conditional = any(
+                p.name == "if_none_match" or p.kind == inspect.Parameter.VAR_KEYWORD
+                for p in params
+            )
+        except (TypeError, ValueError):
+            pass
+        result = (
+            fetcher(if_none_match=saved_etag)
+            if supports_conditional else fetcher()
+        ) or {}
+        if result.get("_error"):
+            raise RuntimeError(f"scoreboard transport: {result['_error']}")
+
+        status_raw = result.get("_http_status")
+        try:
+            http_status = int(status_raw) if status_raw is not None else None
+        except (TypeError, ValueError):
+            http_status = None
+        new_etag = result.get("_etag")
+        if new_etag:
+            etag_cache["scoreboard"] = new_etag
+
+        # 304 là tick khỏe + không đổi: tuyệt đối không overwrite last score/
+        # mini rows bằng các field None của response rỗng.
+        if result.get("_not_modified") or http_status == 304:
+            self.scheduler.clear_rate_limit("scoreboard")
+            self._scoreboard_idle = getattr(self, "_scoreboard_idle", 0) + 1
+            if self._scoreboard_idle >= SCOREBOARD_IDLE_ROUNDS:
+                base_iv = (self.scheduler._tasks.get("scoreboard") or {}).get(
+                    "interval")
+                if (base_iv is not None
+                        and float(base_iv) != ADAPTIVE_SCOREBOARD_INTERVAL
+                        and getattr(self, "_scoreboard_base_interval", None) is None):
+                    self._scoreboard_base_interval = float(base_iv)
+                self.scheduler.set_interval(
+                    "scoreboard", ADAPTIVE_SCOREBOARD_INTERVAL)
+            return lines
+
+        if http_status == 429:
+            ra = result.get("_retry_after")
+            try:
+                delay = max(1.0, float(ra))
+                why = "theo Retry-After"
+                self.scheduler.clear_rate_limit("scoreboard")
+            except (TypeError, ValueError):
+                delay = self.scheduler.rate_limit_backoff("scoreboard")
+                why = "backoff ×2 nội bộ"
+            self.scheduler.set_penalty("scoreboard", delay)
+            return [f"⏳ scoreboard bị rate-limit (429) — lùi {delay:.0f}s ({why})."]
+
+        if http_status in (401, 403):
+            self.state["_scoreboard_auth_expired"] = True
+            self.scheduler.set_penalty("scoreboard", 60.0)
+            return [
+                "🔐 Scoreboard yêu cầu xác thực lại (HTTP "
+                f"{http_status}) — kiểm tra cookie/token."
+            ]
+        if http_status is not None and http_status >= 500:
+            raise RuntimeError(f"scoreboard HTTP {http_status}")
+        if http_status is not None and http_status >= 400:
+            raise RuntimeError(f"scoreboard HTTP {http_status}")
+
+        # Một số platform có scoreboard public nhưng endpoint /me trả auth
+        # expired. Vẫn dùng standings public, đồng thời surface auth drift một
+        # lần thay vì biến cả tick thành lỗi.
+        auth_status = result.get("_auth_status")
+        if auth_status in (401, 403):
+            if not self.state.get("_scoreboard_auth_expired"):
+                lines.append(
+                    "🔐 Cookie/token hết hạn: scoreboard public vẫn đọc được "
+                    "nhưng rank cá nhân có thể thiếu."
+                )
+            self.state["_scoreboard_auth_expired"] = True
+        elif self.state.pop("_scoreboard_auth_expired", None):
+            lines.append("🔓 Xác thực scoreboard đã hoạt động lại.")
+
+        self.scheduler.clear_rate_limit("scoreboard")
         # UI-only stash cho mini-scoreboard (không đổi logic tick đã review)
         self._mini_sb_rows = list(result.get("standings") or [])[:8]
         my_rank, my_score = result.get("my_rank"), result.get("my_score")
         total = result.get("total_teams") or len(result.get("standings") or [])
 
         cur = (str(my_rank), str(my_score))
-        lines = []
-        if self._last_score is not None and cur != self._last_score:
+        if getattr(self, "_last_score", None) is not None and cur != self._last_score:
             old_rank, old_score = self._last_score
             lines.append(f"🩸 Rank thay đổi: {old_rank or '-'} ({old_score}) → "
                          f"{my_rank or '-'} ({my_score}) · tổng {total} teams")
         self._last_score = cur
 
         # Adaptive HAI CHIỀU (hunt-c17 F-3): 3 kỳ liên tiếp không đổi → nới
-        # interval lên 120s; activity quay lại (idle bị reset) → trả về đúng
-        # interval cơ sở trước đó thay vì kẹt 120s đến hết giải.
+        # interval lên 120s; activity quay lại → trả về interval cơ sở.
         if cur == getattr(self, "_prev_score_same", None):
-            self._scoreboard_idle += 1
+            self._scoreboard_idle = getattr(self, "_scoreboard_idle", 0) + 1
         else:
             self._scoreboard_idle = 0
         self._prev_score_same = cur
@@ -1210,8 +1305,6 @@ class WatchService:
             self.scheduler.set_interval("scoreboard",
                                         ADAPTIVE_SCOREBOARD_INTERVAL)
         elif getattr(self, "_scoreboard_base_interval", None) is not None:
-            # getattr phòng thủ: tick methods có thể được gọi trên instance
-            # dựng qua __new__ (test harness) thiếu attr __init__
             self.scheduler.set_interval(
                 "scoreboard", self._scoreboard_base_interval)
             self._scoreboard_base_interval = None

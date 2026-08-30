@@ -20,10 +20,14 @@ from ..utils.logger import Logger
 
 CONFIG_DIR = os.path.expanduser('~/.config/ctf_toolkit')
 GLOBAL_CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
+DEFAULT_WORKSPACE_ROOT = os.path.expanduser('~/Workspace/CTF')
 
 #: Defaults seed khi file thiếu key (file mới / hỏng được backup rồi reset).
 _DEFAULT_CONFIG: Dict[str, Any] = {
-    'workspaces': {}, 'default_workspace': None, 'auth': {},
+    'workspaces': {},
+    'default_workspace': None,
+    'workspace_root': DEFAULT_WORKSPACE_ROOT,
+    'auth': {},
 }
 
 
@@ -36,7 +40,22 @@ def load_global_config() -> Dict[str, Any]:
             pass
     # Literal mới mỗi lần gọi (không trả alias của _DEFAULT_CONFIG —
     # caller mutate dict trả về không được làm bẩn defaults dùng chung).
-    return {'workspaces': {}, 'default_workspace': None, 'auth': {}}
+    return copy.deepcopy(_DEFAULT_CONFIG)
+
+
+def resolve_workspace_root() -> str:
+    """Root mặc định cho mọi workspace CTF, có thể đổi bằng ``ctf config``.
+
+    Default ``~/Workspace/CTF`` được expand tại THỜI ĐIỂM GỌI thay vì dùng
+    path đã đóng băng lúc import module. Điều này giữ đúng semantics khi HOME
+    thay đổi trong container/test/chroot; một workspace_root custom trong
+    config vẫn được tôn trọng nguyên vẹn.
+    """
+    cfg = load_global_config()
+    raw = cfg.get('workspace_root')
+    if not raw or str(raw) == str(DEFAULT_WORKSPACE_ROOT):
+        raw = '~/Workspace/CTF'
+    return os.path.abspath(os.path.expanduser(str(raw)))
 
 
 def save_global_config(cfg: Dict[str, Any]) -> bool:
@@ -76,6 +95,8 @@ def update_global_config(
     biến mất. File hỏng: nội dung cũ được backup sang ``.bak`` trước khi
     khởi tạo lại từ defaults (hành vi locked_update_json).
     """
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+
     def _seeded(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         # deepcopy: setdefault với object lồng nhau DÙNG CHUNG của
         # _DEFAULT_CONFIG sẽ để mutator làm bẩn defaults cấp module và

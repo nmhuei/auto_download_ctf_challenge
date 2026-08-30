@@ -118,6 +118,21 @@ def test_a2_cookie_file_rong_tra_chuoi_rong_graceful(tmp_path):
     assert cookie == ""
 
 
+def test_a2b_unreadable_cookie_file_raises_clear_input_error(tmp_path, monkeypatch):
+    f = tmp_path / "secret-cookie.txt"
+    f.write_text("session=abc", encoding="utf-8")
+    real_open = open
+
+    def denied(path, *args, **kwargs):
+        if str(path) == str(f):
+            raise PermissionError("denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", denied)
+    with pytest.raises(RuntimeError, match="Không đọc được cookie file"):
+        AuthService.resolve("/any/ws", cookie_arg=str(f))
+
+
 def test_a3_token_cli_uu_tien_hon_token_luu(monkeypatch):
     monkeypatch.setattr(auth_mod, "load_global_config",
                         lambda: {"auth": {os.path.abspath("/w"): {
@@ -241,13 +256,11 @@ def test_b4_captcha_none_sitekey_rong_di_tiep():
     assert gzctf_probe_captcha(plat) == {}
 
 
-def test_b5_hashpow_difficulty_0_tra_answer_rong():
-    """L edge-doc: difficulty<=0 -> solve_hash_pow trả '' -> payload gửi
-    'challenge': '<id>:' (answer rỗng, sai wire-format AnswerLength*2=16 hex
-    khi server vẫn bật HashPow với difficulty=0). Hiện trạng chấp nhận được
-    trong thực tế (difficulty=0 hiếm), ghi nhận để theo dõi."""
+def test_b5_hashpow_difficulty_0_van_tra_du_8_byte_answer():
+    """Current GZCTF always validates answer length == 8 bytes before
+    difficulty. Difficulty 0 therefore still needs a 16-hex answer."""
     from ctf_downloader.platforms.gzctf import solve_hash_pow
-    assert solve_hash_pow("aabb", 0) == ""
+    assert solve_hash_pow("aabb", 0) == "0000000000000000"
     ans = solve_hash_pow("00", 8)     # sanity: difficulty nhỏ giải được
     assert isinstance(ans, str) and len(ans) == 16
 
@@ -359,7 +372,7 @@ def test_c4_html_markers_rong_va_regex_hong_khong_crash():
 
 
 def test_c5_2_platform_cung_marker_ctfd_thang_theo_priority():
-    assert _MARKER_PRIORITY == ("rctf", "ctfd", "gzctf")   # chính sách khai báo
+    assert _MARKER_PRIORITY == ("rctf", "ctfd", "gzctf", "asisctf")   # chính sách khai báo
     html = ("<html>Powered by CTFd GZCTF csrfNonce' window.init</html>")
     platform, info, _s = _detect("https://mix.example/", html=html)
     # rctf không khớp (không có 'name="rctf-config"'/'kind":"') -> ctfd thắng
@@ -504,7 +517,11 @@ def test_d6_lock_live_pid_refuse_stale_takeover(tmp_path):
     store = WatchStateStore(str(tmp_path))
     assert store.acquire_lock() is True
     # live pid khác -> từ chối
-    orig_alive, orig_read = WatchStateStore._pid_alive, store._read_lock_pid
+    # Preserve the descriptor itself, not the unwrapped function returned
+    # by class attribute access. Restoring the unwrapped function turns a
+    # staticmethod into a bound instance method and pollutes later test order.
+    orig_alive = WatchStateStore.__dict__["_pid_alive"]
+    orig_read = store._read_lock_pid
     try:
         WatchStateStore._pid_alive = staticmethod(lambda pid: True)
         store._read_lock_pid = lambda: 987654

@@ -1,6 +1,6 @@
 import os
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 from ..platforms.base import Challenge
 from ..extractors.link_extractor import ExtractedLink, ConnectionInfo
 from ..extractors.text_parser import TextParser
@@ -371,13 +371,23 @@ class WorkspaceBuilder:
 
         return "\n".join(lines)
 
-    @staticmethod
-    def _generate_solve_template(challenge: Challenge, connections: List[ConnectionInfo]) -> str:
+    _CUSTOM_SOLVER_TEMPLATES: dict = {}
+
+    @classmethod
+    def register_solver_template(cls, category_keyword: str, template_fn: Callable[[Challenge, list], str]) -> None:
+        """Đăng ký template solve script tùy biến theo từ khóa category."""
+        cls._CUSTOM_SOLVER_TEMPLATES[category_keyword.lower()] = template_fn
+
+    @classmethod
+    def _generate_solve_template(cls, challenge: Challenge, connections: list[ConnectionInfo]) -> str:
         """
-        Generates an automated starter solve.py template matching category.
+        Generates a python boilerplate exploit script tailored to category/connections.
         """
-        # category None/không phải chuỗi -> DEFAULT_CATEGORY thay vì AttributeError
         cat_lower = WorkspaceBuilder._safe_category(challenge).lower()
+
+        for kw, fn in cls._CUSTOM_SOLVER_TEMPLATES.items():
+            if kw in cat_lower:
+                return fn(challenge, connections)
 
         # Check if there is a netcat connection
         nc_conn = next((c for c in connections if c.proto == "nc"), None)

@@ -312,9 +312,13 @@ class TestFileIOMultiprocess(unittest.TestCase):
             p = pathlib.Path(d) / "counter.json"
             atomic_write_json(p, {})
 
-            errors = multiprocessing.Queue()
+            # Python 3.13 warns (and may deadlock) when fork() is called
+            # from a multi-threaded xdist worker. Spawn still exercises true
+            # cross-process flock semantics without inheriting pytest threads.
+            ctx = multiprocessing.get_context("spawn")
+            errors = ctx.Queue()
             procs = [
-                multiprocessing.Process(
+                ctx.Process(
                     target=_increment_worker,
                     args=(str(p), str(i), n_incr, errors),
                 )
@@ -1076,6 +1080,65 @@ class TestDupAlternationReDoSGuard(unittest.TestCase):
             regex_search_with_timeout("(?i)(ptit)+ctf", "xxPTITptitctf"))
         self.assertTrue(
             validate_flag("PTITCTF{abc}", "(?i)^PTITCTF\\{.+\\}$"))
+
+    # ------------------------------------------------------------------
+    # Fixes (review de34074): (1) HIGH fail-open — U+0130 'İ' là codepoint
+    # duy nhất có .lower() dài 2 ký tự ('i' + U+0307) -> ord() raise
+    # TypeError, và crash xảy ra NGOÀI try/except ở call-site
+    # _is_risky_pattern (flag_format.py) nên nổ lên caller thay vì trả
+    # None an toàn. (2) MED — luật backref-vs-octal lệch sre: \DDD với
+    # ĐỦ 3 chữ số octal là octal VÔ ĐIỀU KIỆN kể cả khi nhóm DDD tồn tại.
+    # ------------------------------------------------------------------
+
+    def test_norm_literal_keeps_multichar_lower_codepoint(self):
+        from ctf_downloader.utils.flag_format import _norm_literal
+
+        expected = "\x00" + format(ord("İ"), "x") + ";"
+        # Trước fix: ord('i'+U+0307) raise TypeError.
+        self.assertEqual(_norm_literal("İ", True), expected)
+        self.assertEqual(_norm_literal("İ", False), expected)
+        # Codepoint thường vẫn fold bình thường dưới (?i).
+        self.assertEqual(_norm_literal("X", True),
+                         "\x00" + format(ord("x"), "x") + ";")
+
+    def test_scanner_survives_multichar_lower_patterns(self):
+        from ctf_downloader.utils.flag_format import (
+            _scan_dup_alternation as dup,
+            regex_search_with_timeout,
+        )
+
+        self.assertFalse(dup("(?i)İ"))        # không crash, không có alt
+        self.assertFalse(dup("(?i:xİ|xX)"))   # İ giữ nguyên ≠ 'x' đã fold
+        self.assertTrue(dup("(?i)(İ|İ)+"))    # trùng nguyên văn vẫn bị chặn
+        # Đường công khai không được nổ exception lên caller.
+        self.assertIsNotNone(regex_search_with_timeout("(?i)İ", "co İ here"))
+
+    def test_octal_three_digits_unconditional_even_if_group_exists(self):
+        from ctf_downloader.utils.flag_format import (
+            _scan_dup_alternation as dup,
+            regex_search_with_timeout,
+        )
+        import time
+
+        # sre (docs "\\number"): số có đủ 3 chữ số octal -> LUÔN là octal
+        # escape, không bao giờ là group match — dù nhóm 101 tồn tại.
+        # Vậy (A|\101)+ với 101 nhóm phía trước là dup thật (\101 ≡ 'A')
+        # và phải bị chặn tĩnh; chọn backref-prefix trước đó đã bỏ lỡ.
+        pat = "(x)" * 101 + r"(A|\101)+"
+        self.assertTrue(dup(pat))
+        t0 = time.monotonic()
+        m = regex_search_with_timeout(pat, "A" * 10000 + "B")
+        elapsed = time.monotonic() - t0
+        self.assertIsNone(m, pat)
+        self.assertLess(elapsed, 2.0, pat)
+
+    def test_two_digit_ref_stays_backreference_not_octal(self):
+        from ctf_downloader.utils.flag_format import _scan_dup_alternation as dup
+
+        # \99 chỉ có 2 chữ số: nhóm 99 tồn tại -> backref THẬT theo sre
+        # (đã verify: match 'x'*99). Nhánh 'A' vs \99 khác nhau -> không
+        # bị chặn oan sau khi luật 3-octal được ưu tiên.
+        self.assertFalse(dup("(x)" * 99 + r"(A|\99)+"))
 
 
 # ----------------------------------------------------------------------

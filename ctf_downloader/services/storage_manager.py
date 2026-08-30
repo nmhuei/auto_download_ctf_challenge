@@ -19,8 +19,10 @@ Trách nhiệm (spec storage-manager):
 - **suggest_actions**: gợi ý tiếng Việt (archive ws ended >7 ngày, warn vượt
   ngưỡng, cảnh báo đĩa gần đầy).
 - **export_workspace**: xuất zip bản chia sẻ/kho KHÔNG lộ flag (strip-secrets):
-  redact flag thật trong README/writeup thành ``[REDACTED]``, bỏ ``flag.txt``
-  và ``submit_history.json``, xoá field ``submitted_flag`` khỏi metadata.json.
+  redact flag thật trong README/writeup/solver script thành ``[REDACTED]``,
+  bỏ ``flag.txt`` và ``submit_history.json``, xoá field ``submitted_flag``
+  và redact ``status.flag.value`` (schema v2) khỏi metadata.json kèm redact
+  text trên toàn bộ nội dung đã serialize.
   KHÔNG đụng workspace gốc — chỉ tạo zip.
 
 Method thuần, không dính I/O mạng, dễ test trong tmpdir.
@@ -31,18 +33,20 @@ import json as _json
 import os
 import re as _re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from rich.markup import escape
 
 from ..platforms.base import normalize_epoch_to_utc
+from ..storage.constants import FLAG_PLACEHOLDER
 from ..storage.fileio import locked_path
 from ..storage.workspace_repo import WorkspaceRepo
 from ..ui.theme import ERROR as _ERROR_COLOR
@@ -77,8 +81,9 @@ _GENERIC_FLAG_RE = _re.compile(
     r"([A-Za-z][A-Za-z0-9_]{1,31})\{([^{}\n]{2,120})\}"
 )
 # File text redact được: README* hoặc *.md/*.txt, hoặc bất kỳ file nào nằm
-# trong thư mục writeup/
-_REDACTABLE_NAME_PATTERNS = ("README*", "*.md", "*.txt")
+# trong thư mục writeup/ hay solver/ (solve script cũng in/nhét flag thật —
+# hunt-c20 MED), hoặc file tên solve*.py / solver* ở bất kỳ đâu.
+_REDACTABLE_NAME_PATTERNS = ("README*", "*.md", "*.txt", "solver*", "solve*.py")
 # File bị loại KHỎI zip hoàn toàn khi strip_secrets
 _STRIP_ENTIRE_FILES = ("flag.txt", "submit_history.json")
 
@@ -345,7 +350,7 @@ class StorageManager:
             )
             + f"  [{faint}]{'USAGE':<{usage_w}}[/{faint}]"
             + f"  [{faint}]{'CHALLS':>6}[/{faint}]  "
-            + f"[{faint}]{f'NOTE':<{note_w}}[/{faint}]"
+            + f"[{faint}]{'NOTE':<{note_w}}[/{faint}]"
         )
         lines.append(header)
         grand = 0
@@ -413,7 +418,12 @@ class StorageManager:
         out_dir đã có remote. Lỗi git → raise :class:`StorageError` kèm stderr
         (không nuốt).
         """
-        src = Path(ws_path).expanduser().resolve()
+        raw_src = Path(ws_path).expanduser().absolute()
+        if raw_src.is_symlink():
+            raise StorageError(
+                f"Từ chối archive workspace qua symlink: {raw_src}"
+            )
+        src = raw_src.resolve()
         if not src.is_dir():
             raise StorageError(f"Workspace không tồn tại: {src}")
         dest = (
@@ -423,6 +433,7 @@ class StorageManager:
         )
         try:
             dest.mkdir(parents=True, exist_ok=True)
+            dest = dest.resolve()
         except OSError as exc:
             # C15-5: ``_archives`` tồn tại dưới dạng FILE (hoặc đường dẫn
             # không tạo được) phải ra khỏi hàm theo đúng hợp đồng dịch vụ —
@@ -430,6 +441,11 @@ class StorageManager:
             raise StorageError(
                 f"Không thể chuẩn bị thư mục lưu trữ '{dest}': {exc}"
             ) from exc
+        if dest == src or src in dest.parents:
+            raise StorageError(
+                "Thư mục archive phải nằm NGOÀI workspace nguồn để tránh "
+                "archive tự đóng gói file output/tmp của chính nó."
+            )
 
         stamp = _dt.datetime.now(_TIMEZONE).strftime("%Y%m%d")
         archive_path = dest / f"{src.name}_{stamp}.tar.gz"
@@ -625,7 +641,12 @@ class StorageManager:
 
         Trả về đường dẫn mới (thùng rác).
         """
-        src = Path(ws_path).expanduser().resolve()
+        raw_src = Path(ws_path).expanduser().absolute()
+        if raw_src.is_symlink():
+            raise StorageError(
+                f"Từ chối delete workspace qua symlink: {raw_src}"
+            )
+        src = raw_src.resolve()
         if not src.is_dir():
             raise StorageError(f"Workspace không tồn tại: {src}")
         dest_root = (
@@ -633,13 +654,24 @@ class StorageManager:
             if trash_dir is not None
             else src.parent / _ARCHIVE_DIR_NAME
         )
-        dest_root.mkdir(parents=True, exist_ok=True)
+        try:
+            dest_root.mkdir(parents=True, exist_ok=True)
+            dest_root = dest_root.resolve()
+        except OSError as exc:
+            raise StorageError(
+                f"Không thể chuẩn bị thùng rác '{dest_root}': {exc}"
+            ) from exc
+        if dest_root == src or src in dest_root.parents:
+            raise StorageError(
+                "Thùng rác phải nằm NGOÀI workspace nguồn; không thể rename "
+                "một thư mục vào chính cây con của nó."
+            )
         ts = _dt.datetime.now(_TIMEZONE).strftime("%Y%m%d_%H%M%S")
         target = dest_root / f"{src.name}{_DELETED_PREFIX}{ts}"
         try:
             src.rename(target)
         except OSError as exc:
-            raise StorageError(f"Không rename được '{src}' → '{target}': {exc}")
+            raise StorageError(f"Không rename được '{src}' → '{target}': {exc}") from exc
         return str(target)
 
     # ------------------------------------------------------------------
@@ -723,18 +755,25 @@ class StorageManager:
         ``.ctf/watch_state.json``.
 
         ``strip_secrets=True``:
-        - README/writeup text: flag thật → ``[REDACTED]`` (regex generic +
-          ``challenges.json → ctf_info.flag_format`` nếu đọc được; placeholder
+        - README/writeup/solver text: flag thật → ``[REDACTED]`` (regex generic
+          + ``challenges.json → ctf_info.flag_format`` nếu đọc được; placeholder
           ``FLAG{...}`` giữ nguyên);
         - mọi ``flag.txt``: loại khỏi zip;
         - ``submit_history.json``: loại nguyên file;
-        - ``metadata.json``: xoá key ``submitted_flag`` (parse JSON → ghi lại).
+        - ``metadata.json``: xoá key ``submitted_flag``, redact
+          ``status.flag.value`` (schema v2) → ``[REDACTED]`` (giữ cấu trúc
+          khác), rồi vẫn redact flag dạng text trên toàn bộ JSON.
 
         KHÔNG đụng workspace gốc — chỉ đọc. Trả
         ``{zip_path, files_count, stripped_count}`` với ``stripped_count``
         là tổng số chỗ đã redact/loại bỏ.
         """
-        src = Path(ws_path).expanduser().resolve()
+        raw_src = Path(ws_path).expanduser().absolute()
+        if raw_src.is_symlink():
+            raise StorageError(
+                f"Từ chối export workspace qua symlink: {raw_src}"
+            )
+        src = raw_src.resolve()
         if not src.is_dir():
             raise StorageError(f"Workspace không tồn tại: {src}")
 
@@ -749,7 +788,18 @@ class StorageManager:
                 zip_path = out / default_name
             else:
                 zip_path = out
-        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            zip_path.parent.mkdir(parents=True, exist_ok=True)
+            zip_path = zip_path.parent.resolve() / zip_path.name
+        except OSError as exc:
+            raise StorageError(
+                f"Không thể chuẩn bị nơi export '{zip_path.parent}': {exc}"
+            ) from exc
+        if zip_path.parent == src or src in zip_path.parent.parents:
+            raise StorageError(
+                "File export phải nằm NGOÀI workspace nguồn để tránh ZIP tự "
+                "đóng gói chính file output đang được ghi."
+            )
 
         flag_format_re = (
             StorageManager._load_flag_format_regex(src)
@@ -758,35 +808,79 @@ class StorageManager:
 
         files_count = 0
         stripped_count = 0
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for root, dirnames, filenames in os.walk(src):
-                dirnames[:] = sorted(
-                    d for d in dirnames
-                    if d not in DEFAULT_EXCLUDE_DIRS
-                    and not StorageManager._dir_excluded(root, d, src, [])
-                )
-                for fname in sorted(filenames):
-                    fpath = Path(root) / fname
-                    rel = fpath.relative_to(src).as_posix()
-                    if StorageManager._file_excluded(rel, []):
-                        continue
+        try:
+            with locked_path(zip_path):
+                tmp_path: Optional[Path] = None
+                try:
+                    fd, tmp_name = tempfile.mkstemp(
+                        dir=str(zip_path.parent),
+                        prefix=zip_path.name + ".",
+                        suffix=".zip.tmp",
+                    )
+                    os.close(fd)
+                    tmp_path = Path(tmp_name)
+                    with zipfile.ZipFile(
+                        tmp_path, "w", zipfile.ZIP_DEFLATED
+                    ) as zf:
+                        for root, dirnames, filenames in os.walk(src):
+                            dirnames[:] = sorted(
+                                d for d in dirnames
+                                if d not in DEFAULT_EXCLUDE_DIRS
+                                and not StorageManager._dir_excluded(
+                                    root, d, src, []
+                                )
+                            )
+                            for fname in sorted(filenames):
+                                fpath = Path(root) / fname
+                                rel = fpath.relative_to(src).as_posix()
+                                if StorageManager._file_excluded(rel, []):
+                                    continue
 
-                    if strip_secrets:
-                        if fname in _STRIP_ENTIRE_FILES:
-                            stripped_count += 1
-                            continue
-                        payload, redacted = StorageManager._transform_for_export(
-                            fpath, fname, rel, flag_format_re
-                        )
-                        stripped_count += redacted
-                    else:
+                                # Never dereference a workspace symlink into
+                                # an exported ZIP. Read one already-verified
+                                # regular file descriptor and transform those
+                                # bytes only; this also closes the lstat/read
+                                # TOCTOU window on the final path component.
+                                raw_bytes = StorageManager._read_export_file(
+                                    src, fpath
+                                )
+                                if raw_bytes is None:
+                                    continue
+
+                                if strip_secrets:
+                                    if fname in _STRIP_ENTIRE_FILES:
+                                        stripped_count += 1
+                                        continue
+                                    payload, redacted = (
+                                        StorageManager._transform_for_export(
+                                            fpath, fname, rel, flag_format_re,
+                                            raw_bytes=raw_bytes,
+                                        )
+                                    )
+                                    stripped_count += redacted
+                                else:
+                                    payload = raw_bytes
+
+                                zf.writestr(rel, payload)
+                                files_count += 1
+                    os.replace(tmp_path, zip_path)
+                except BaseException:
+                    if tmp_path is not None:
                         try:
-                            payload = fpath.read_bytes()
+                            tmp_path.unlink(missing_ok=True)
                         except OSError:
-                            continue
-
-                    zf.writestr(rel, payload)
-                    files_count += 1
+                            pass
+                    try:
+                        zip_path.with_name(
+                            zip_path.name + ".lock"
+                        ).unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    raise
+        except OSError as exc:
+            raise StorageError(
+                f"Không thể export workspace '{src.name}': {exc}"
+            ) from exc
 
         return {
             "zip_path": str(zip_path),
@@ -795,6 +889,41 @@ class StorageManager:
         }
 
     # -- helpers cho export_workspace -------------------------------------
+
+    @staticmethod
+    def _read_export_file(src: Path, fpath: Path) -> Optional[bytes]:
+        """Read one regular file without following symlinks outside ``src``.
+
+        Returns ``None`` for symlinks, special files, containment failures,
+        disappearing files, or races where the inode changed between lstat
+        and open. ``O_NOFOLLOW`` is used when the platform provides it.
+        """
+        try:
+            before = os.lstat(fpath)
+            if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+                return None
+            resolved = fpath.resolve(strict=True)
+            try:
+                resolved.relative_to(src)
+            except ValueError:
+                return None
+
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(fpath, flags)
+            try:
+                after = os.fstat(fd)
+                if not stat.S_ISREG(after.st_mode):
+                    return None
+                if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+                    return None
+                with os.fdopen(fd, "rb", closefd=True) as fh:
+                    fd = -1
+                    return fh.read()
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+        except (OSError, ValueError):
+            return None
 
     @staticmethod
     def _load_flag_format_regex(ws_path: Path) -> Optional[_re.Pattern]:
@@ -819,10 +948,11 @@ class StorageManager:
 
     @staticmethod
     def _is_redactable_text(fname: str, rel: str) -> bool:
-        """True nếu là file text đáng redact: README*/*.md/*.txt hoặc nằm
-        trong thư mục ``writeup/``."""
+        """True nếu là file text đáng redact: README*/*.md/*.txt,
+        ``solve*.py``/``solver*``, hoặc nằm trong thư mục ``writeup/`` hay
+        ``solver/``."""
         parts = Path(rel).parts
-        if any(part == "writeup" for part in parts[:-1]):
+        if any(part in ("writeup", "solver") for part in parts[:-1]):
             return True
         return any(fnmatch.fnmatch(fname, pat) for pat in _REDACTABLE_NAME_PATTERNS)
 
@@ -858,39 +988,75 @@ class StorageManager:
         return result, count
 
     @staticmethod
+    def _redact_metadata_dict(data: dict) -> Tuple[dict, int]:
+        """Redact ĐỦ các vị trí flag có cấu trúc trong metadata.json
+        (hunt-c20 HIGH): key legacy ``submitted_flag`` + schema v2
+        ``status.flag.value`` (hoard_flag/submit/migrate-on-read ghi flag
+        thật ở đó). Giữ nguyên phần còn lại của cấu trúc.
+
+        Trả ``(dict_đã_redact, số_vị_trí_cấu_trúc_redact)``.
+        """
+        n_struct = 0
+        if "submitted_flag" in data:
+            del data["submitted_flag"]
+            n_struct += 1
+        status = data.get("status")
+        if isinstance(status, dict):
+            flag_block = status.get("flag")
+            if isinstance(flag_block, dict):
+                val = flag_block.get("value")
+                # Placeholder FLAG{...} không phải flag thật — giữ nguyên
+                # (khớp semantics migrate-on-read của workspace_repo).
+                if isinstance(val, str) and val.strip() \
+                        and val != FLAG_PLACEHOLDER:
+                    flag_block["value"] = _EXPORT_PLACEHOLDER_MARKER
+                    n_struct += 1
+        return data, n_struct
+
+    @staticmethod
     def _transform_for_export(
         fpath: Path,
         fname: str,
         rel: str,
         flag_format_re: Optional[_re.Pattern],
+        *,
+        raw_bytes: Optional[bytes] = None,
     ) -> Tuple[bytes, int]:
         """Chuẩn bị nội dung một file cho zip strip-secrets.
 
-        Trả ``(bytes_ghi_vào_zip, số_redact)``. metadata.json mất key
-        ``submitted_flag`` tính 1 redact; file nhị phân/giữ nguyên → 0.
+        Trả ``(bytes_ghi_vào_zip, số_redact)``. metadata.json redact cả vị
+        trí CÓ CẤU TRÚC (``submitted_flag``, ``status.flag.value``) lẫn text
+        (flag lẫn trong notes/raw...) tính mỗi chỗ 1 redact;
+        file nhị phân/giữ nguyên → 0.
         """
+        if raw_bytes is None:
+            # Compatibility for direct unit/plugin callers. The main export
+            # path always supplies bytes from _read_export_file().
+            raw_bytes = fpath.read_bytes()
+
         if fname == "metadata.json":
             try:
-                raw = fpath.read_text(encoding="utf-8-sig")
+                raw = raw_bytes.decode("utf-8-sig")
                 data = _json.loads(raw)
-            except (OSError, ValueError):
-                return fpath.read_bytes(), 0
-            if isinstance(data, dict) and "submitted_flag" in data:
-                del data["submitted_flag"]
-                return (_json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8"), 1
-            return raw.encode("utf-8"), 0
+            except (UnicodeDecodeError, ValueError):
+                return raw_bytes, 0
+            if not isinstance(data, dict):
+                return raw.encode("utf-8"), 0
+            data, n_struct = StorageManager._redact_metadata_dict(data)
+            # Vẫn chạy _redact_text trên toàn bộ text đã serialize như nhánh
+            # writeup: flag có thể lọt ở notes/raw/title... (hunt-c20 HIGH).
+            text = _json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+            new_text, n_text = StorageManager._redact_text(text, flag_format_re)
+            if n_struct == 0 and n_text == 0:
+                return raw.encode("utf-8"), 0  # sạch → passthrough nguyên byte
+            return new_text.encode("utf-8"), n_struct + n_text
 
         if StorageManager._is_redactable_text(fname, rel):
             try:
-                raw = fpath.read_text(encoding="utf-8")
+                raw = raw_bytes.decode("utf-8")
             except UnicodeDecodeError:
-                return fpath.read_bytes(), 0
-            except OSError:
-                return b"", 0
+                return raw_bytes, 0
             new_text, n = StorageManager._redact_text(raw, flag_format_re)
             return new_text.encode("utf-8"), n
 
-        try:
-            return fpath.read_bytes(), 0
-        except OSError:
-            return b"", 0
+        return raw_bytes, 0

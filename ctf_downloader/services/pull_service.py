@@ -136,6 +136,62 @@ class PullService:
         ))
 
     @staticmethod
+    def _prepare_git_workflow(config: DownloaderConfig, platform: Any) -> Optional[Dict[str, Any]]:
+        """Create/checkout the contest branch before any workspace write."""
+        if not getattr(config, "git_workflow", False):
+            return None
+        from .git_workflow import GitWorkflowService
+
+        output_dir = config.output_dir
+        if not output_dir:
+            raise ValueError(
+                "Git workflow cần output_dir đã resolve trước khi prepare branch."
+            )
+        title = getattr(getattr(platform, "ctf_info", None), "title", None)
+        title = title or os.path.basename(output_dir) or "CTF"
+        meta = GitWorkflowService.prepare_pull(
+            output_dir,
+            title,
+            base_branch=getattr(config, "git_base_branch", "main") or "main",
+            remote=getattr(config, "git_remote", "origin") or "origin",
+        )
+        Logger.info(
+            f"Git event branch: [literal]{escape(meta['branch'])}[/literal] "
+            f"→ base [literal]{escape(meta['base_branch'])}[/literal]",
+            markup=True,
+        )
+        return meta
+
+    @staticmethod
+    def _finalize_git_workflow(config: DownloaderConfig) -> Optional[Dict[str, Any]]:
+        """Checkpoint workspace and optionally push the event branch."""
+        if not getattr(config, "git_workflow", False):
+            return None
+        from .git_workflow import GitWorkflowService
+
+        output_dir = config.output_dir
+        if not output_dir:
+            raise ValueError(
+                "Git workflow cần output_dir đã resolve trước khi checkpoint."
+            )
+        result = GitWorkflowService.checkpoint_and_push(
+            output_dir,
+            message=f"ctf({os.path.basename(output_dir)}): pull snapshot",
+            push=bool(getattr(config, "git_auto_push", True)),
+        )
+        if result.get("pushed"):
+            Logger.success(
+                f"Đã push Git branch {result['branch']} → {result['remote']}."
+            )
+        elif getattr(config, "git_auto_push", True):
+            Logger.warning(
+                "Git branch đã commit local nhưng chưa push vì repo chưa có remote."
+            )
+        else:
+            Logger.info(f"Git branch {result['branch']} đã checkpoint local.")
+        return result
+
+    @staticmethod
     def run(config: DownloaderConfig,
             session: Optional[Any] = None) -> Dict[str, Any]:
         """Tải toàn bộ challenge của giải về workspace.
@@ -161,6 +217,7 @@ class PullService:
             token=config.token,
             custom_headers=config.custom_headers,
             timeout=config.timeout,
+            base_url=config.url,
         )
 
         # 1. Detect Platform
@@ -192,9 +249,11 @@ class PullService:
         if not config.output_dir:
             ctf_title = platform.ctf_info.title or ""
             folder_name = sanitize_ctf_title(ctf_title, fallback_domain=config.url)
-            base_ctf_dir = os.path.expanduser("~/Workspace/CTF")
+            from ..storage.global_config import resolve_workspace_root
+            base_ctf_dir = resolve_workspace_root()
             config.output_dir = os.path.abspath(os.path.join(base_ctf_dir, folder_name))
 
+        git_prepare = PullService._prepare_git_workflow(config, platform)
         Logger.info(f"Output Directory: [path]{escape(config.output_dir)}[/path]", markup=True)
 
         # Filter categories if specified
@@ -208,7 +267,7 @@ class PullService:
 
         # Display found summary — ok_summary đã in bởi _fetch_challenges_ui;
         # giữ nguyên bảng overview theo category.
-        categories_dict = {}
+        categories_dict: Dict[str, int] = {}
         for c in challenges:
             categories_dict[c.category] = categories_dict.get(c.category, 0) + 1
 
@@ -308,6 +367,8 @@ class PullService:
         except Exception:
             pass
 
+        git_result = PullService._finalize_git_workflow(config)
+
         return {
             "ok": True,
             "output_dir": config.output_dir,
@@ -315,6 +376,8 @@ class PullService:
             "total_files": total_files,
             "challenges_processed": len(all_download_results),
             "elapsed_seconds": elapsed,
+            "git": git_result,
+            "git_prepare": git_prepare,
         }
 
     # ------------------------------------------------------------------ #
@@ -343,7 +406,9 @@ class PullService:
             timeout=config.timeout,
             force=config.force_redownload,
             size_limit_bytes=config.size_limit_bytes,
-            consent_state=consent_state
+            consent_state=consent_state,
+            verify_mode=config.verify_downloads,
+            allow_private_redirects=config.allow_private_redirects,
         )
 
         # Extract links & connection info
@@ -424,6 +489,8 @@ class PullService:
                 force=config.force_redownload,
                 size_limit_bytes=config.size_limit_bytes,
                 consent_state=state,
+                verify_mode=config.verify_downloads,
+                allow_private_redirects=config.allow_private_redirects,
             )
             planner.plan_consents(urls)
         except Exception as exc:
@@ -563,6 +630,7 @@ class PullService:
             token=config.token,
             custom_headers=config.custom_headers,
             timeout=config.timeout,
+            base_url=config.url,
         )
 
         # 1. Detect + Authenticate + Fetch (giống full pull)
@@ -585,9 +653,11 @@ class PullService:
         if not config.output_dir:
             ctf_title = platform.ctf_info.title or ""
             folder_name = sanitize_ctf_title(ctf_title, fallback_domain=config.url)
-            base_ctf_dir = os.path.expanduser("~/Workspace/CTF")
+            from ..storage.global_config import resolve_workspace_root
+            base_ctf_dir = resolve_workspace_root()
             config.output_dir = os.path.abspath(os.path.join(base_ctf_dir, folder_name))
         output_dir = config.output_dir
+        git_prepare = PullService._prepare_git_workflow(config, platform)
         try:
             os.makedirs(output_dir, exist_ok=True)
         except OSError as exc:
@@ -635,16 +705,28 @@ class PullService:
                          for cid, (mp, _m) in local_index.items()
                          if cid not in api_ids and _in_scope(_m.get("category"))]
 
-        # --refresh-meta: challenge đã có nhưng attachment thiếu trên đĩa →
-        # đưa vào hàng tải lại (full pipeline).
+        # Challenge cũ đi qua full pipeline khi:
+        # - --refresh-meta phát hiện attachment local bị thiếu; hoặc
+        # - user yêu cầu normal/strict revalidation. DownloadManager sẽ tự
+        #   skip từng file nếu validator/hash vẫn đạt, nên đây không đồng
+        #   nghĩa với việc ép tải body lại tất cả.
         redownload: List[Challenge] = []
-        if refresh_meta:
-            for chall, _mp, m in existing_pairs:
+        verify_existing = str(getattr(config, "verify_downloads", "fast")) != "fast"
+        for chall, _mp, m in existing_pairs:
+            needs_pipeline = bool(
+                verify_existing
+                and ((m.get("downloaded_files") or []) or getattr(chall, "files", None))
+            )
+            if refresh_meta and not needs_pipeline:
                 for df in (m.get("downloaded_files") or []):
-                    sp = df.get("saved_path") if isinstance(df, dict) else None
+                    if not isinstance(df, dict):
+                        continue
+                    sp = df.get("saved_path")
                     if df.get("success") and sp and not os.path.isfile(sp):
-                        redownload.append(chall)
+                        needs_pipeline = True
                         break
+            if needs_pipeline:
+                redownload.append(chall)
 
         all_results: Dict[Any, List[Dict[str, Any]]] = {}
         failed_downloads = 0
@@ -769,6 +851,8 @@ class PullService:
         except Exception:
             pass
 
+        git_result = PullService._finalize_git_workflow(config)
+
         return {
             "ok": True,
             "output_dir": output_dir,
@@ -782,6 +866,8 @@ class PullService:
             "skipped": skipped,
             "missing": len(missing_items),
             "elapsed_seconds": elapsed,
+            "git": git_result,
+            "git_prepare": git_prepare,
         }
 
     # ------------------------------------------------------------------ #
@@ -919,8 +1005,13 @@ class PullService:
     @staticmethod
     def _is_superseded(meta: Any) -> bool:
         """C19-M2: metadata đã bị tombstone (challenge đổi category/tên ->
-        thư mục mới) — không còn đại diện cho id trong mọi index."""
-        return bool(isinstance(meta, dict) and meta.get("superseded_by"))
+        thư mục mới) — không còn đại diện cho id trong mọi index.
+
+        Review-6 HIGH: predicate chuyển về helper TẦNG REPO dùng chung
+        (:func:`storage.workspace_repo.is_superseded`) để mọi consumer lọc
+        tombstone từ MỘT nguồn; hàm này chỉ còn là alias cho caller cũ."""
+        from ..storage.workspace_repo import is_superseded
+        return is_superseded(meta)
 
     @staticmethod
     def _find_fresh_meta_path(repo: Any, cid: Any,
@@ -1063,12 +1154,16 @@ class PullService:
                 changed = PullService._merge_dynamic_metadata(
                     repo, meta_path, chall)
             except OSError as exc:
-                # C15-1: workspace read-only / đĩa đầy phải lộ tín hiệu lỗi
-                # (write_errors) — nuốt chửng làm user tưởng sync thành công.
+                # C15-1: workspace read-only / đĩa đầy phải lộ tín hiệu lỗi.
                 write_errors.append(f"merge {meta_path}: {exc}")
                 continue
-            except Exception:
-                changed = False
+            except Exception as exc:
+                # Programming/data-shape failures are also partial sync
+                # failures. Do not silently convert them into a clean noop.
+                write_errors.append(
+                    f"merge {meta_path}: {type(exc).__name__}: {exc}"
+                )
+                continue
             if changed:
                 updated += 1
             # Stamp synced_at CHỈ khi dữ liệu thực sự đổi hoặc challenge chưa
@@ -1080,8 +1175,10 @@ class PullService:
                         meta_path, lambda st: {**st, "synced_at": now_str})
             except OSError as exc:
                 write_errors.append(f"sync-stamp {meta_path}: {exc}")
-            except Exception:
-                pass
+            except Exception as exc:
+                write_errors.append(
+                    f"sync-stamp {meta_path}: {type(exc).__name__}: {exc}"
+                )
 
         # C15-3: đối xứng với --update — challenge local bị xoá khỏi giải
         # phải được đánh dấu removed_from_server + liệt kê ra result, không
@@ -1101,12 +1198,19 @@ class PullService:
                                       "path": str(mp)})
             except OSError as exc:
                 write_errors.append(f"mark-removed {mp}: {exc}")
+            except Exception as exc:
+                write_errors.append(
+                    f"mark-removed {mp}: {type(exc).__name__}: {exc}"
+                )
 
         verdict = PullService.verify(repo, platform)
         drift = verdict["unsolved_locally_solved_remotely"]
 
         result = {
-            "ok": True,
+            # Partial persist/corrupt-local state is NOT a successful sync for
+            # CLI/automation purposes. Keep detailed partial results so the
+            # user can recover, but return non-zero through handle_sync.
+            "ok": not write_errors and not corrupt_local,
             "updated": updated,
             "new": len(new_on_server),
             "new_on_server": new_on_server,
