@@ -21,10 +21,10 @@ class BridgeMessageType(str, Enum):
 
 
 def get_bridge_token_path() -> str:
-    from ..storage.constants import DEFAULT_CONFIG_DIR
-    return os.path.join(DEFAULT_CONFIG_DIR, TOKEN_FILE_NAME)
+    from ..storage.global_config import CONFIG_DIR
+    return os.path.join(CONFIG_DIR, TOKEN_FILE_NAME)
 
 
 def get_bridge_pid_path() -> str:
-    from ..storage.constants import DEFAULT_CONFIG_DIR
-    return os.path.join(DEFAULT_CONFIG_DIR, PID_FILE_NAME)
+    from ..storage.global_config import CONFIG_DIR
+    return os.path.join(CONFIG_DIR, PID_FILE_NAME)

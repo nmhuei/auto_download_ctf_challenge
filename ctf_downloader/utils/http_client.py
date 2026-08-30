@@ -181,7 +181,8 @@ class CloudflareAdaptiveSession(requests.Session):
     lazily-created curl_cffi browser session. If the first response is itself a
     Challenge Page, only idempotent methods are replayed.
 
-    A mutating request is never automatically replayed after it was sent.
+    If Cloudflare Managed Challenge blocks both requests and curl_cffi,
+    traffic seamlessly routes through BrowserBridgeTransport (Extension Bridge).
     """
 
     SAFE_REPLAY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -191,14 +192,24 @@ class CloudflareAdaptiveSession(requests.Session):
         *,
         impersonate: str = "chrome",
         cloudflare_fallback: bool = True,
+        enable_bridge: bool = True,
     ) -> None:
         super().__init__()
         self._cf_impersonate = impersonate
         self._cf_fallback = bool(cloudflare_fallback)
+        self._enable_bridge = bool(enable_bridge)
         self._cf_seen = False
         self._cf_active = False
+        self._bridge_active = False
         self._cf_browser_session: Any = None
         self._cf_foreign_sessions: Dict[str, Any] = {}
+        self._bridge_transport: Any = None
+        if self._enable_bridge:
+            try:
+                from ..bridge.transport import BrowserBridgeTransport
+                self._bridge_transport = BrowserBridgeTransport(auto_start_daemon=False)
+            except Exception:
+                pass
         self._cf_lock = threading.RLock()
         self._cf_warned_unavailable = False
         self._cf_warned_persistent_challenge = False
@@ -448,6 +459,28 @@ class CloudflareAdaptiveSession(requests.Session):
             if callable(close):
                 close()
 
+    def _bridge_request(self, method: str, url: str, **kwargs: Any) -> Optional[requests.Response]:
+        if not self._bridge_transport:
+            return None
+        try:
+            req = requests.Request(
+                method=method,
+                url=url,
+                headers=dict(self.headers),
+                cookies=self.cookies,
+                params=kwargs.get("params"),
+                data=kwargs.get("data"),
+                json=kwargs.get("json"),
+            )
+            # Override with explicit headers from kwargs
+            if kwargs.get("headers"):
+                req.headers.update(kwargs["headers"])
+            prep = self.prepare_request(req)
+            resp = self._bridge_transport.send(prep, **kwargs)
+            return resp
+        except Exception:
+            return None
+
     def request(self, method: str, url: str, **kwargs: Any) -> Any:
         method_up = str(method or "GET").upper()
         skip_preflight = bool(kwargs.pop("_cf_skip_preflight", False))
@@ -456,12 +489,24 @@ class CloudflareAdaptiveSession(requests.Session):
         if method_up not in self.SAFE_REPLAY_METHODS and not skip_preflight:
             self._preflight_mutation(url, kwargs)
 
+        if self._bridge_active:
+            bridge_resp = self._bridge_request(method_up, url, **kwargs)
+            if bridge_resp is not None and not is_cloudflare_challenge(bridge_resp, inspect_body=not bool(kwargs.get("stream"))):
+                return bridge_resp
+
         if self._cf_active:
             response = self._browser_request(method_up, url, **kwargs)
             if response is not None:
                 if is_cloudflare_challenge(
                     response, inspect_body=not bool(kwargs.get("stream"))
                 ):
+                    # Try bridge fallback before failing
+                    if self._enable_bridge:
+                        bridge_resp = self._bridge_request(method_up, url, **kwargs)
+                        if bridge_resp is not None and not is_cloudflare_challenge(bridge_resp, inspect_body=not bool(kwargs.get("stream"))):
+                            self._bridge_active = True
+                            return bridge_resp
+
                     self._warn_once(
                         "persistent",
                         "Cloudflare vẫn trả Challenge Page sau browser "
@@ -511,10 +556,21 @@ class CloudflareAdaptiveSession(requests.Session):
 
         browser_response = self._browser_request(method_up, url, **kwargs)
         if browser_response is None:
+            if self._enable_bridge:
+                bridge_resp = self._bridge_request(method_up, url, **kwargs)
+                if bridge_resp is not None:
+                    self._bridge_active = True
+                    return bridge_resp
             return response
         if is_cloudflare_challenge(
             browser_response, inspect_body=not bool(kwargs.get("stream"))
         ):
+            if self._enable_bridge:
+                bridge_resp = self._bridge_request(method_up, url, **kwargs)
+                if bridge_resp is not None and not is_cloudflare_challenge(bridge_resp, inspect_body=not bool(kwargs.get("stream"))):
+                    self._bridge_active = True
+                    return bridge_resp
+
             self._warn_once(
                 "persistent",
                 "Cloudflare vẫn trả Challenge Page sau browser fingerprint. "
@@ -630,3 +686,6 @@ def create_session(
             raise RuntimeError("Không khởi tạo được browser impersonation transport")
 
     return session
+
+
+AdaptiveSession = CloudflareAdaptiveSession
