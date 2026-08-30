@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "CTF Operations Bridge",
+  "version": "1.0.0",
+  "description": "Bypass Cloudflare & forward network requests from CTF CLI toolkit",
+  "permissions": [
+    "cookies",
+    "storage",
+    "declarativeNetRequest",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background/service_worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "CTF Operations Bridge",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
