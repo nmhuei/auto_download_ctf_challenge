@@ -284,6 +284,22 @@ class HealthService:
         self.timeout = timeout
 
     # ------------------------------------------------------------------ #
+    @classmethod
+    def check_bridge_health(cls) -> Dict[str, Any]:
+        """Check status of Browser Extension Bridge daemon and token."""
+        import os
+        from ..bridge.daemon import BridgeDaemon
+        daemon = BridgeDaemon()
+        token_exists = os.path.exists(daemon.token_path)
+        is_running = daemon.is_running() and daemon.is_port_open()
+        return {
+            "bridge_running": is_running,
+            "port": daemon.port,
+            "host": daemon.host,
+            "token_exists": token_exists,
+            "pid": daemon.read_pid() if is_running else None,
+        }
+
     def check(self, url: str, cookie: Optional[str] = None,
               token: Optional[str] = None, workspace: Optional[str] = None,
               session: Any = None) -> DoctorReport:

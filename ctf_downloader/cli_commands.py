@@ -1545,3 +1545,49 @@ def handle_config(args):
         sys.exit(1)
     Logger.success(f"Đã lưu {key} = {_config_render(spec, new_val)} "
                    f"({GLOBAL_CONFIG_FILE}).")
+
+
+def handle_bridge(args):
+    """Manage local Browser Extension Bridge daemon and authentication token."""
+    from .bridge.daemon import BridgeDaemon
+    from .ui.theme import ACCENT, FG_MUTED, INFO, SOLVED, WARN
+
+    action = getattr(args, "bridge_action", "status") or "status"
+    daemon = BridgeDaemon()
+
+    if action == "start":
+        if daemon.is_running() and daemon.is_port_open():
+            Logger.info(f"Bridge daemon đã đang chạy tại ws://{daemon.host}:{daemon.port}/ws (PID: {daemon.read_pid()}).")
+            return
+        token = daemon.get_or_create_token()
+        ok = daemon.ensure_running()
+        if ok:
+            Logger.success(f"Đã khởi chạy Bridge daemon tại ws://{daemon.host}:{daemon.port}/ws (PID: {daemon.read_pid()}).")
+        else:
+            Logger.error("Không thể khởi chạy Bridge daemon.")
+            sys.exit(1)
+
+    elif action == "stop":
+        if not daemon.is_running():
+            Logger.info("Bridge daemon hiện không chạy.")
+            return
+        daemon.stop()
+        Logger.success("Đã dừng Bridge daemon.")
+
+    elif action == "token":
+        token = daemon.get_or_create_token()
+        print(token)
+
+    else:  # status
+        is_running = daemon.is_running() and daemon.is_port_open()
+        token = daemon.get_or_create_token()
+        pid = daemon.read_pid() if is_running else "-"
+        status_str = f"[bold {SOLVED}]🟢 RUNNING[/bold {SOLVED}]" if is_running else f"[bold {WARN}]🔴 STOPPED[/bold {WARN}]"
+
+        Logger.info(f"CTF OPERATIONS BRIDGE // [bold]{status_str}[/bold]", markup=True)
+        Logger.info(f"  • Host / Port: {daemon.host}:{daemon.port}")
+        Logger.info(f"  • Daemon PID : {pid}")
+        Logger.info(f"  • Token File : {daemon.token_path}")
+        Logger.info(f"  • Token      : {token[:8]}...{token[-8:]}")
+        if not is_running:
+            Logger.info(f"\n[italic {FG_MUTED}]Dùng `ctf bridge start` để bật daemon hoặc tải Extension trên trình duyệt để tự động kết nối.[/italic {FG_MUTED}]", markup=True)

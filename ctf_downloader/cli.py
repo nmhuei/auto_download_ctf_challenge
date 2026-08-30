@@ -6,6 +6,7 @@ import sys
 
 from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test cũ
     get_auth_for_workspace,
+    handle_bridge,
     handle_config,
     handle_doctor,
     handle_git,
@@ -399,6 +400,12 @@ def build_unified_parser():
     config_parser.add_argument('value', nargs='?',
                                help="Giá trị mới (vd auto-sync: on|off; workspace-root: đường dẫn). Bỏ trống để chỉ xem")
 
+    # 19. BRIDGE — quản lý Browser Extension Bridge daemon
+    bridge_parser = subparsers.add_parser('bridge', aliases=['ext'],
+                                          help='Quản lý Browser Extension Bridge (vượt Cloudflare)')
+    bridge_parser.add_argument('bridge_action', nargs='?', choices=['status', 'start', 'stop', 'token'],
+                               default='status', help='Thao tác: status (mặc định), start, stop, token')
+
     return parser
 
 
@@ -524,6 +531,8 @@ def main():
             _run_framed(handle_config, args, 'config')
         else:
             handle_config(args)
+    elif cmd in ['bridge', 'ext']:
+        handle_bridge(args)
     elif cmd in ['menu', 'ui', 'console']:
         launch_interactive_menu(workspace_path=args.workspace, cookie=args.cookie, token=args.token)
     else:
