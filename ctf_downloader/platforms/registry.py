@@ -94,4 +94,4 @@ def display_label(key: str, max_len: int = 10) -> str:
 # Kích hoạt đăng ký: import các module platform để decorator chạy.
 # KHÔNG xoá — nếu bỏ thì registry rỗng.
 # ---------------------------------------------------------------------------
-from . import ctfd, custom_rest, generic_html, gzctf, rctf  # noqa: E402,F401
+from . import asisctf, ctfd, custom_rest, generic_html, gzctf, rctf  # noqa: E402,F401

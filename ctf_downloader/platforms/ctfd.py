@@ -9,6 +9,7 @@ from rich.markup import escape
 from .base import (BasePlatform, Challenge, CTFInfo, EventTimes,
                    PlatformRegisterUnsupported, SolveAttribution, epoch_ms,
                    normalize_epoch_to_utc, safe_get_json)
+from ..utils.http_client import CloudflareChallengeError
 from ..utils.logger import Logger
 from ..utils.sanitize import sanitize_filename
 from .registry import register
@@ -36,6 +37,10 @@ def ctfd_scrape_nonce(platform) -> Optional[str]:
         Logger.warning(f"CTFd register: GET /register -> HTTP {resp.status_code}")
         return None
     html = resp.text or ""
+    # Keep the exact register page for captcha/extra-field preflight. This
+    # avoids a second GET and lets ctfd_register fail closed before POSTing an
+    # incomplete form.
+    platform._register_page_html = html
     for pattern in _NONCE_PATTERNS:
         match = pattern.search(html)
         if match:
@@ -44,6 +49,11 @@ def ctfd_scrape_nonce(platform) -> Optional[str]:
     meta_csrf = soup.find("meta", {"name": "csrf-token"})
     if meta_csrf and meta_csrf.get("content"):
         return meta_csrf["content"]
+    # Current CTFd templates render form.nonce() as a hidden input; some
+    # themes no longer expose window.init/csrfNonce JavaScript.
+    hidden = soup.find("input", {"name": "nonce"})
+    if hidden and hidden.get("value"):
+        return hidden["value"]
     return None
 
 
@@ -57,6 +67,35 @@ def ctfd_register(platform, *, username: str, email: str, password: str,
         return {"ok": False,
                 "message": "Không lấy được csrfNonce từ trang /register "
                            "(platform có thể chặn bot hoặc khác chuẩn CTFd)."}
+
+    # Fail closed for form requirements we cannot satisfy automatically.
+    html = str(getattr(platform, "_register_page_html", "") or "")
+    low = html.lower()
+    captcha_markers = (
+        "cf-turnstile", "g-recaptcha", "h-captcha", "hcaptcha",
+        "recaptcha", "turnstile",
+    )
+    if any(marker in low for marker in captcha_markers):
+        raise PlatformRegisterUnsupported(
+            "CTFd register page có captcha — đăng ký thủ công. "
+            "Tool không bypass captcha/plugin anti-bot."
+        )
+    soup = BeautifulSoup(html, "html.parser")
+    supported = {"name", "email", "password", "nonce"}
+    unknown_required = []
+    for field in soup.find_all(["input", "select", "textarea"]):
+        field_name = str(field.get("name") or "").strip()
+        field_type = str(field.get("type") or "").strip().lower()
+        if not field_name or field_type in ("submit", "button", "hidden"):
+            continue
+        if field.has_attr("required") and field_name not in supported:
+            unknown_required.append(field_name)
+    if unknown_required:
+        raise PlatformRegisterUnsupported(
+            "CTFd register page có field bắt buộc chưa hỗ trợ: "
+            + ", ".join(sorted(set(unknown_required)))
+            + ". Hãy đăng ký thủ công để không tự ý chấp nhận ToS/extra fields."
+        )
 
     try:
         resp = sess.post(
@@ -438,6 +477,12 @@ class CTFdPlatform(BasePlatform):
         try:
             resp = self.session.post(url, json=payload, timeout=15)
             if resp.status_code != 200:
+                if resp.status_code == 429:
+                    self.last_verdict = "ratelimited"
+                elif resp.status_code in (401, 403):
+                    self.last_verdict = "auth_failed"
+                else:
+                    self.last_verdict = "unknown"
                 return False, f"Máy chủ trả HTTP {resp.status_code}"
 
             data = resp.json()
@@ -453,13 +498,13 @@ class CTFdPlatform(BasePlatform):
                 self.last_verdict = "correct"
                 return True, "🎉 Flag chính xác! Đã giải xong challenge!"
             elif status == "already_solved":
-                self.last_verdict = "correct"
+                self.last_verdict = "already_solved"
                 return True, "✅ Bạn đã giải challenge này trước đó rồi!"
             elif status == "incorrect":
                 self.last_verdict = "incorrect"
                 return False, "❌ Flag không đúng."
             elif status == "paused":
-                self.last_verdict = "unknown"
+                self.last_verdict = "event_paused"
                 return False, "⏸️ CTF đang tạm dừng."
             elif status == "ratelimited":
                 self.last_verdict = "ratelimited"
@@ -468,9 +513,12 @@ class CTFdPlatform(BasePlatform):
                 self.last_verdict = "unknown"
                 return False, f"Status: {status} ({message})"
 
+        except CloudflareChallengeError as e:
+            self.last_verdict = "unknown"
+            return False, f"Cloudflare đang chặn submit: {e}"
         except Exception as e:
             self.last_verdict = "unknown"
-            return False, f"Ngoại lệ khi submit flag"
+            return False, f"Ngoại lệ khi submit flag: {e}"
 
     def _clean_user_access(self, val: Optional[str]) -> Optional[str]:
         if not val:
@@ -480,6 +528,25 @@ class CTFdPlatform(BasePlatform):
         if m:
             return m.group(1)
         return val_str
+
+    def _normalize_instance_payload(self, data: Any) -> Dict[str, Any]:
+        payload: Dict[str, Any] = data if isinstance(data, dict) else {}
+        nested = payload.get("data")
+        inner: Dict[str, Any] = nested if isinstance(nested, dict) else payload
+        raw_entry = (
+            inner.get("user_access") or inner.get("entry") or inner.get("domain")
+        )
+        if not raw_entry and inner.get("host") and inner.get("port") is not None:
+            raw_entry = f"{inner.get('host')}:{inner.get('port')}"
+        return {
+            "entry": self._clean_user_access(raw_entry),
+            "time_left": (
+                inner.get("remaining_time")
+                if inner.get("remaining_time") is not None
+                else inner.get("time_left")
+            ),
+            "raw": inner,
+        }
 
     def start_instance(self, challenge_id: Any) -> Tuple[bool, Dict[str, Any]]:
         """
@@ -495,17 +562,13 @@ class CTFdPlatform(BasePlatform):
             if resp.status_code == 200:
                 data = resp.json() or {}
                 if data.get("success"):
-                    container_data = data.get("data", {})
-                    raw_entry = container_data.get("user_access") or container_data.get("domain") or f"{container_data.get('host')}:{container_data.get('port')}"
-                    return True, {
-                        "entry": self._clean_user_access(raw_entry),
-                        "time_left": container_data.get("remaining_time"),
-                        "raw": container_data
-                    }
+                    return True, self._normalize_instance_payload(data)
                 else:
                     return False, {"message": data.get("message", "Khởi động container thất bại.")}
             elif resp.status_code == 500:
                 return False, {"message": "Lỗi server (500): container runner / Docker Swarm phía server không truy cập được hoặc admin CTF chưa cấu hình."}
+        except CloudflareChallengeError as e:
+            return False, {"message": f"Cloudflare đang chặn start instance: {e}"}
         except Exception as e:
             Logger.warning(f"Lỗi khi gọi {whale_v1_url}: {e}")
 
@@ -516,12 +579,9 @@ class CTFdPlatform(BasePlatform):
             if resp.status_code == 200:
                 data = resp.json() or {}
                 if data.get("success"):
-                    container_data = data.get("data", {})
-                    return True, {
-                        "entry": container_data.get("user_access") or container_data.get("domain") or f"{container_data.get('host')}:{container_data.get('port')}",
-                        "time_left": container_data.get("remaining_time"),
-                        "raw": container_data
-                    }
+                    return True, self._normalize_instance_payload(data)
+        except CloudflareChallengeError as e:
+            return False, {"message": f"Cloudflare đang chặn start instance: {e}"}
         except Exception:
             pass
 
@@ -531,7 +591,9 @@ class CTFdPlatform(BasePlatform):
             resp = self.session.post(api_url, json={"challenge_id": challenge_id}, timeout=15)
             if resp.status_code in [200, 201]:
                 data = resp.json() or {}
-                return True, data.get("data", data)
+                return True, self._normalize_instance_payload(data)
+        except CloudflareChallengeError as e:
+            return False, {"message": f"Cloudflare đang chặn start instance: {e}"}
         except Exception:
             pass
 
@@ -548,16 +610,20 @@ class CTFdPlatform(BasePlatform):
         whale_v1_url = f"{self.base_url}/api/v1/plugins/ctfd-whale/container?challenge_id={challenge_id}"
         try:
             resp = self.session.delete(whale_v1_url, json={}, timeout=15)
-            if resp.status_code == 200:
+            if resp.status_code in (200, 204):
                 return True, "Đã dừng container."
+        except CloudflareChallengeError as e:
+            return False, f"Cloudflare đang chặn stop instance: {e}"
         except Exception:
             pass
 
         whale_url = f"{self.base_url}/plugins/ctfd-whale/container"
         try:
             resp = self.session.delete(whale_url, json={"challenge_id": challenge_id}, timeout=15)
-            if resp.status_code == 200:
+            if resp.status_code in (200, 204):
                 return True, "Đã dừng container."
+        except CloudflareChallengeError as e:
+            return False, f"Cloudflare đang chặn stop instance: {e}"
         except Exception:
             pass
         return False, "Dừng container trên CTFd thất bại."
@@ -573,60 +639,77 @@ class CTFdPlatform(BasePlatform):
         whale_v1_url = f"{self.base_url}/api/v1/plugins/ctfd-whale/container?challenge_id={challenge_id}"
         try:
             resp = self.session.patch(whale_v1_url, json={}, timeout=15)
-            if resp.status_code == 200:
+            if resp.status_code in (200, 204):
                 return True, "Đã gia hạn thời gian sống của container."
+        except CloudflareChallengeError as e:
+            return False, f"Cloudflare đang chặn extend instance: {e}"
         except Exception:
             pass
 
         whale_url = f"{self.base_url}/plugins/ctfd-whale/container"
         try:
             resp = self.session.patch(whale_url, json={"challenge_id": challenge_id}, timeout=15)
-            if resp.status_code == 200:
+            if resp.status_code in (200, 204):
                 return True, "Đã gia hạn thời gian sống của container."
+        except CloudflareChallengeError as e:
+            return False, f"Cloudflare đang chặn extend instance: {e}"
         except Exception:
             pass
         return False, "Gia hạn container trên CTFd thất bại."
 
     def get_instance_status(self, challenge_id: Any) -> Dict[str, Any]:
+        """Fetch current CTFd container status without false "stopped".
+
+        ``stopped`` is returned only when a supported endpoint answers
+        successfully and explicitly indicates there is no active instance.
+        Transport/auth/plugin-discovery failures are ``unknown`` so keepalive
+        never destroys/restarts a healthy container based on missing data.
         """
-        Fetches current container instance status on CTFd.
-        """
-        # Try API v1 first
+        saw_supported_response = False
+        auth_status = None
+
         whale_v1_url = f"{self.base_url}/api/v1/plugins/ctfd-whale/container?challenge_id={challenge_id}"
         try:
             resp = self.session.get(whale_v1_url, timeout=10)
+            if resp.status_code in (401, 403):
+                auth_status = resp.status_code
             if resp.status_code == 200:
+                saw_supported_response = True
                 data = resp.json() or {}
                 if data.get("success"):
-                    cdata = data.get("data", {})
-                    if cdata and cdata.get("remaining_time") is not None:
-                        raw_ent = cdata.get("user_access") or cdata.get("domain") or f"{cdata.get('host')}:{cdata.get('port')}"
-                        return {
-                            "status": "running",
-                            "entry": self._clean_user_access(raw_ent),
-                            "time_left": cdata.get("remaining_time")
-                        }
-                    else:
-                        return {"status": "stopped", "entry": None, "time_left": None}
+                    info = self._normalize_instance_payload(data)
+                    if info.get("entry") or info.get("time_left") is not None:
+                        return {"status": "running", **info}
+                    return {"status": "stopped", "entry": None, "time_left": None}
         except Exception:
             pass
 
         whale_url = f"{self.base_url}/plugins/ctfd-whale/container"
         try:
-            resp = self.session.get(whale_url, params={"challenge_id": challenge_id}, timeout=10)
+            resp = self.session.get(
+                whale_url, params={"challenge_id": challenge_id}, timeout=10)
+            if resp.status_code in (401, 403):
+                auth_status = resp.status_code
             if resp.status_code == 200:
+                saw_supported_response = True
                 data = resp.json() or {}
                 if data.get("success"):
-                    cdata = data.get("data", {})
-                    raw_ent = cdata.get("user_access") or cdata.get("domain") or f"{cdata.get('host')}:{cdata.get('port')}"
-                    return {
-                        "status": "running",
-                        "entry": self._clean_user_access(raw_ent),
-                        "time_left": cdata.get("remaining_time")
-                    }
+                    info = self._normalize_instance_payload(data)
+                    if info.get("entry") or info.get("time_left") is not None:
+                        return {"status": "running", **info}
+                    return {"status": "stopped", "entry": None, "time_left": None}
         except Exception:
             pass
-        return {"status": "stopped", "entry": None, "time_left": None}
+
+        result = {"status": "unknown", "entry": None, "time_left": None}
+        if auth_status:
+            result["http_status"] = auth_status
+            result["reason"] = "auth_failed"
+        elif saw_supported_response:
+            result["reason"] = "ambiguous_response"
+        else:
+            result["reason"] = "unreachable_or_unsupported"
+        return result
 
     # ------------------------------------------------------------------
     # Solve attribution (spec §4) — users mode vs teams mode
@@ -657,7 +740,7 @@ class CTFdPlatform(BasePlatform):
                     me_id, me_name = d.get("id"), d.get("name") or me_name
 
                 teams_mode = False
-                rows = []
+                rows: List[Dict[str, Any]] = []
                 try:
                     rt = self.session.get(f"{self.base_url}/api/v1/teams/me", timeout=10)
                     if rt.status_code == 200 and (rt.json() or {}).get("data"):
@@ -713,7 +796,7 @@ class CTFdPlatform(BasePlatform):
                 cache = {}   # chưa từng fetch thành công: trả rỗng, lần sau retry
         return {orig: cache[k] for k, orig in wanted.items() if k in cache}
 
-    def fetch_scoreboard(self) -> Dict[str, Any]:
+    def fetch_scoreboard(self, if_none_match: Optional[str] = None) -> Dict[str, Any]:
         """
         Fetches full live scoreboard standings and personal/team ranking from CTFd.
         """
@@ -724,12 +807,19 @@ class CTFdPlatform(BasePlatform):
             "my_rank": None,
             "my_score": None,
             "total_teams": 0,
-            "standings": []
+            "standings": [],
+            "_http_status": None,
+            "_etag": None,
+            "_retry_after": None,
+            "_not_modified": False,
+            "_auth_status": None,
         }
 
         # 1. Get current team / user rank
         try:
             r_team = self.session.get(f"{self.base_url}/api/v1/teams/me", timeout=10)
+            if r_team.status_code in (401, 403):
+                result["_auth_status"] = r_team.status_code
             if r_team.status_code == 200:
                 tdata = (r_team.json() or {}).get("data", {})
                 if tdata:
@@ -742,6 +832,8 @@ class CTFdPlatform(BasePlatform):
         if not result["my_team"] or not result["my_rank"]:
             try:
                 r_user = self.session.get(f"{self.base_url}/api/v1/users/me", timeout=10)
+                if r_user.status_code in (401, 403):
+                    result["_auth_status"] = r_user.status_code
                 if r_user.status_code == 200:
                     udata = (r_user.json() or {}).get("data", {})
                     if udata:
@@ -753,9 +845,21 @@ class CTFdPlatform(BasePlatform):
             except Exception:
                 pass
 
-        # 2. Get full scoreboard
+        # 2. Get full scoreboard (watch có thể gửi If-None-Match)
         try:
-            r_sb = self.session.get(f"{self.base_url}/api/v1/scoreboard", timeout=15)
+            sb_headers = {"If-None-Match": if_none_match} if if_none_match else {}
+            r_sb = self.session.get(
+                f"{self.base_url}/api/v1/scoreboard",
+                timeout=15,
+                headers=sb_headers,
+            )
+            result["_http_status"] = r_sb.status_code
+            r_headers = getattr(r_sb, "headers", None) or {}
+            result["_etag"] = r_headers.get("ETag") or if_none_match
+            result["_retry_after"] = r_headers.get("Retry-After")
+            if r_sb.status_code == 304:
+                result["_not_modified"] = True
+                return result
             if r_sb.status_code == 200:
                 sb_data = (r_sb.json() or {}).get("data", [])
                 result["total_teams"] = len(sb_data)
@@ -782,6 +886,7 @@ class CTFdPlatform(BasePlatform):
                     })
                 result["standings"] = standings
         except Exception as e:
+            result["_error"] = f"{type(e).__name__}: {e}"
             Logger.warning(f"Không tải được scoreboard từ CTFd: {e}")
 
         return result

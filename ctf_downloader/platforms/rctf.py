@@ -6,12 +6,106 @@ from typing import List, Dict, Any, Optional, Tuple
 from bs4 import BeautifulSoup
 from rich.markup import escape
 from .base import (BasePlatform, Challenge, CTFInfo, EventTimes, Verdict,
-                   SolveAttribution, epoch_ms, normalize_epoch_to_utc, safe_get_json)
+                   PlatformRegisterUnsupported, SolveAttribution, epoch_ms,
+                   normalize_epoch_to_utc, safe_get_json)
 from ..utils.logger import Logger
 from .registry import register
 
 # Envelope JSON đặc trưng của rCTF: {"kind": "...", "message": ..., "data": ...}
 _RCTF_KIND_RE = re.compile(r"^(good|bad|unauth)")
+
+
+def rctf_register(platform, *, username: str, email: str, password: str,
+                  verify_email_hook=None) -> Dict[str, Any]:
+    """Register through current rCTF v2 auth API.
+
+    rCTF is token-based; ``password`` is intentionally unused. When captcha
+    protects the register action we fail closed/manual instead of bypassing it.
+    Email-verification completion uses the platform-aware tempmail hook.
+    """
+    base, sess = platform.base_url.rstrip("/"), platform.session
+
+    # Public runtime config is the canonical way to know whether registration
+    # is open and whether the register action is captcha-protected.
+    try:
+        cfg_resp = sess.get(
+            f"{base}/api/v2/integrations/client/config", timeout=15
+        )
+        cfg_json = cfg_resp.json() if cfg_resp.status_code == 200 else {}
+    except Exception as exc:
+        return {"ok": False,
+                "message": f"Không đọc được rCTF client config: {exc}"}
+
+    cfg_data = cfg_json.get("data") if isinstance(cfg_json, dict) else {}
+    cfg_data = cfg_data if isinstance(cfg_data, dict) else {}
+    if cfg_data.get("registrationsEnabled") is False:
+        return {"ok": False, "message": "rCTF đã tắt registration."}
+    captcha = cfg_data.get("captcha") or {}
+    protected = captcha.get("protectedEndpoints") if isinstance(captcha, dict) else {}
+    if isinstance(protected, dict) and protected.get("register"):
+        provider = captcha.get("provider") or "captcha"
+        raise PlatformRegisterUnsupported(
+            f"rCTF bật {provider} cho register — đăng ký thủ công. "
+            "Tool không bypass captcha."
+        )
+
+    payload = {"email": email, "name": username}
+    try:
+        resp = sess.post(f"{base}/api/v2/auth/register", json=payload,
+                         timeout=20)
+    except Exception as exc:
+        return {"ok": False, "message": f"Lỗi mạng khi register rCTF: {exc}"}
+
+    try:
+        data = resp.json() or {}
+    except Exception:
+        data = {}
+    kind = str(data.get("kind") or "")
+    message = str(data.get("message") or kind or f"HTTP {resp.status_code}")
+
+    if kind == "badCaptcha":
+        raise PlatformRegisterUnsupported(
+            "rCTF yêu cầu captcha cho register — đăng ký thủ công."
+        )
+    if resp.status_code == 429 or kind == "badRateLimit":
+        wait = ((data.get("data") or {}).get("timeLeft")
+                if isinstance(data.get("data"), dict) else None)
+        suffix = f" (timeLeft={wait})" if wait is not None else ""
+        return {"ok": False, "message": f"rCTF rate-limit: {message}{suffix}"}
+    if kind == "goodRegisterV2" and resp.status_code == 200:
+        tokens = data.get("data") or {}
+        return {
+            "ok": True,
+            "message": message,
+            "token": tokens.get("authToken"),
+            "team_token": tokens.get("teamToken"),
+            "email_verified": True,
+        }
+    if kind == "goodVerifySent" and resp.status_code == 200:
+        result: Dict[str, Any] = {
+            "ok": True,
+            "message": message,
+            "pending_email_verification": True,
+            "email_verified": False,
+        }
+        if verify_email_hook is None:
+            return result
+        verified = verify_email_hook(
+            sess, platform="rctf", base_url=base
+        )
+        ok = bool(verified.get("ok") if isinstance(verified, dict) else verified)
+        result["email_verified"] = ok
+        result["pending_email_verification"] = not ok
+        if isinstance(verified, dict):
+            vbody = verified.get("response") or {}
+            if isinstance(vbody, dict) and vbody.get("kind") == "goodRegisterV2":
+                tokens = vbody.get("data") or {}
+                result["token"] = tokens.get("authToken")
+                result["team_token"] = tokens.get("teamToken")
+        return result
+
+    return {"ok": False,
+            "message": f"rCTF register thất bại ({resp.status_code}/{kind}): {message}"}
 
 
 def probe_rctf_challs(origin: str, session, info, done: set) -> bool:
@@ -132,7 +226,16 @@ class RCTFPlatform(BasePlatform):
         Logger.error("Xác thực thất bại trên nền tảng rCTF.")
         return False
 
-
+    def register(self, *, username: str, email: str, password: str,
+                 verify_email_hook=None) -> Dict[str, Any]:
+        """Auto-register rCTF through the current v2 auth API."""
+        return rctf_register(
+            self,
+            username=username,
+            email=email,
+            password=password,
+            verify_email_hook=verify_email_hook,
+        )
 
     def fetch_challenges(self) -> List[Challenge]:
         """
@@ -226,7 +329,7 @@ class RCTFPlatform(BasePlatform):
                 self.last_verdict = "correct"
                 return True, "🎉 Correct flag! Challenge solved!"
             elif kind == "alreadySolved":
-                self.last_verdict = "correct"
+                self.last_verdict = "already_solved"
                 return True, "✅ Bạn đã giải challenge này trước đó rồi!"
             elif kind == "badFlag":
                 self.last_verdict = "incorrect"
@@ -235,11 +338,17 @@ class RCTFPlatform(BasePlatform):
                 self.last_verdict = "ratelimited"
                 return False, f"⏳ Rate limited! {message or 'Vui lòng chờ rồi submit lại.'}"
             elif kind == "badChallenge":
-                self.last_verdict = "unknown"
+                self.last_verdict = "challenge_not_found"
                 return False, f"⚠️ Không tìm thấy challenge hoặc không khả dụng ({message})."
             elif kind == "badToken":
-                self.last_verdict = "unknown"
+                self.last_verdict = "auth_failed"
                 return False, "🚫 Phiên xác thực hết hạn hoặc token không hợp lệ."
+            elif kind == "badStarted":
+                self.last_verdict = "event_not_started"
+                return False, f"⏳ Giải chưa bắt đầu ({message or 'event not started'})."
+            elif kind == "badEnded":
+                self.last_verdict = "event_closed"
+                return False, f"⏹️ Giải đã kết thúc ({message or 'event ended'})."
             else:
                 # HTTP 200 chỉ tính ĐÚNG khi kind thuộc họ 'good*'; kind lạ/
                 # thiếu -> unknown (không đánh dấu solved oan — C10-03).
@@ -335,7 +444,7 @@ class RCTFPlatform(BasePlatform):
                 cache = {}   # chưa từng fetch thành công: trả rỗng, lần sau retry
         return {orig: cache[k] for k, orig in wanted.items() if k in cache}
 
-    def fetch_scoreboard(self) -> Dict[str, Any]:
+    def fetch_scoreboard(self, if_none_match: Optional[str] = None) -> Dict[str, Any]:
         """
         Fetches leaderboard standings from rCTF (/api/v1/leaderboard/now).
         """
@@ -346,7 +455,11 @@ class RCTFPlatform(BasePlatform):
             "my_rank": None,
             "my_score": None,
             "total_teams": 0,
-            "standings": []
+            "standings": [],
+            "_http_status": None,
+            "_etag": None,
+            "_retry_after": None,
+            "_not_modified": False,
         }
 
         url = f"{self.base_url}/api/v1/leaderboard/now"
@@ -361,8 +474,24 @@ class RCTFPlatform(BasePlatform):
             # Phân trang: data.total > số dòng đã nhận → loop GET với
             # offset += limit; chặn tối đa 10 trang để tránh loop vô hạn.
             for _page in range(max_pages):
+                req_headers = (
+                    {"If-None-Match": if_none_match}
+                    if _page == 0 and if_none_match else {}
+                )
                 resp = self.session.get(
-                    url, params={"limit": limit, "offset": offset}, timeout=15)
+                    url,
+                    params={"limit": limit, "offset": offset},
+                    timeout=15,
+                    headers=req_headers,
+                )
+                if _page == 0:
+                    result["_http_status"] = resp.status_code
+                    resp_headers = getattr(resp, "headers", None) or {}
+                    result["_etag"] = resp_headers.get("ETag") or if_none_match
+                    result["_retry_after"] = resp_headers.get("Retry-After")
+                    if resp.status_code == 304:
+                        result["_not_modified"] = True
+                        return result
                 if resp.status_code != 200:
                     break
                 data = resp.json() or {}
@@ -400,6 +529,7 @@ class RCTFPlatform(BasePlatform):
                 })
             result["standings"] = standings
         except Exception as e:
+            result["_error"] = f"{type(e).__name__}: {e}"
             Logger.warning(f"Không tải được leaderboard từ rCTF: {e}")
 
         return result

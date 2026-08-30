@@ -213,6 +213,16 @@ class TestCTFdPlatformVerdicts(unittest.TestCase):
 
 
 class TestGZCTFPlatform(unittest.TestCase):
+    @staticmethod
+    def _submit_platform(sess):
+        p = GZCTFPlatform("http://gz.test/games/6/challenges", sess)
+        # Submit now performs a fail-closed /api/config preflight. These legacy
+        # verdict tests model a server with API encryption disabled and reserve
+        # sess.get exclusively for grading-status responses.
+        p._register_client_config = {}
+        p._register_client_config_ts = float("inf")
+        return p
+
     def test_game_id_from_path(self):
         p = GZCTFPlatform("http://gz.test/games/6/challenges", MagicMock())
         self.assertEqual(p.game_id, 6)
@@ -249,7 +259,7 @@ class TestGZCTFPlatform(unittest.TestCase):
 
     def test_submit_poll_accepted(self):
         sess = MagicMock()
-        p = GZCTFPlatform("http://gz.test/games/6/challenges", sess)
+        p = self._submit_platform(sess)
         sess.post.return_value = make_resp(200, text="123")
         sess.get.return_value = make_resp(200, text='"Accepted"')
         ok, msg = p.submit_flag(10, "GG{flag}")
@@ -259,7 +269,7 @@ class TestGZCTFPlatform(unittest.TestCase):
     @patch("ctf_downloader.platforms.gzctf.time.sleep")
     def test_submit_poll_wrong_answer(self, mock_sleep):
         sess = MagicMock()
-        p = GZCTFPlatform("http://gz.test/games/6/challenges", sess)
+        p = self._submit_platform(sess)
         sess.post.return_value = make_resp(200, text="123")
         sess.get.side_effect = [make_resp(200, text='"Grading"'), make_resp(200, text='"WrongAnswer"')]
         ok, msg = p.submit_flag(10, "GG{wrong}")
@@ -270,7 +280,7 @@ class TestGZCTFPlatform(unittest.TestCase):
     @patch("ctf_downloader.platforms.gzctf.time.sleep")
     def test_submit_unknown_when_poll_exhausted(self, mock_sleep):
         sess = MagicMock()
-        p = GZCTFPlatform("http://gz.test/games/6/challenges", sess)
+        p = self._submit_platform(sess)
         sess.post.return_value = make_resp(200, text="999")
         sess.get.return_value = make_resp(200, text='"Grading"')
         ok, msg = p.submit_flag(10, "GG{mystery}")
@@ -280,7 +290,7 @@ class TestGZCTFPlatform(unittest.TestCase):
 
     def test_submit_ratelimited(self):
         sess = MagicMock()
-        p = GZCTFPlatform("http://gz.test/games/6/challenges", sess)
+        p = self._submit_platform(sess)
         sess.post.return_value = make_resp(429, text="too fast")
         ok, msg = p.submit_flag(10, "GG{x}")
         self.assertEqual(p.last_verdict, "ratelimited")

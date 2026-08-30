@@ -31,9 +31,9 @@ from ..utils.urlnorm import parse_normalized
 # --------------------------------------------------------------------------- #
 # Chính sách thứ tự ưu tiên (giữ nguyên hành vi pipeline cũ) — dữ liệu từ registry
 # --------------------------------------------------------------------------- #
-_MARKER_PRIORITY = ("rctf", "ctfd", "gzctf")
-_COOKIE_PRIORITY = ("gzctf", "ctfd")
-_PROBE_PRIORITY = ("gzctf", "ctfd", "rctf")
+_MARKER_PRIORITY = ("rctf", "ctfd", "gzctf", "asisctf")
+_COOKIE_PRIORITY = ("gzctf", "ctfd", "asisctf")
+_PROBE_PRIORITY = ("gzctf", "ctfd", "rctf", "asisctf")
 
 # Thông điệp signal tầng 1 theo platform key (giữ nguyên văn bản cũ để
 # tương thích với các test/log hiện có)
@@ -41,13 +41,16 @@ _MARKER_SIGNALS = {
     "rctf": "HTML marker: <meta name=\"rctf-config\"> hoặc envelope {kind,message,data}",
     "ctfd": "HTML marker: csrfNonce' / window.init / Powered by CTFd / themes/core",
     "gzctf": "HTML marker: <meta keywords> GZCTF hoặc chuỗi GZCTF/GZ::CTF",
+    "asisctf": "HTML marker: ASIS CTF / alpineInstance / challenges/list",
 }
 
 # Thông điệp signal tầng 2
 _COOKIE_SIGNALS = {
     "gzctf": "Cookie GZCTF_Token trong cookie jar/hint -> nghi GZ::CTF",
     "ctfd": "Cookie Flask 'session' vừa được set -> nghi CTFd",
+    "asisctf": "Cookie asis_ctf session -> nghi ASIS CTF",
 }
+
 
 
 def _parse_cookie_hint_names(cookie_hint: str) -> Optional[set]:

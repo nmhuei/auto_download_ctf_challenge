@@ -29,7 +29,6 @@ from .constants import (
     SOLVED_DONE,
     SOLVED_MARKERS_DONE,
     SOLVED_TODO,
-    SOLVE_RANK,
     SOLVE_STATES,
     STATUS_SCHEMA_VERSION,
     SUMMARY_FILES_LINE_PREFIX,
@@ -45,6 +44,20 @@ from .fileio import (
 )
 
 PathLike = Union[str, Path]
+
+
+def is_superseded(meta: object) -> bool:
+    """True nếu metadata đã bị TOMBSTONE (``superseded_by`` trỏ tới bản mới
+    sau khi challenge đổi category/tên — C19-M2/review-6): bản cũ KHÔNG còn
+    đại diện cho id nữa.
+
+    Predicate DUY NHẤT của cả codebase — mọi reader tra challenge theo id/
+    name phải lọc bản tombstone để không ghi phán quyết vào thư mục chết
+    hay nhân đôi hàng trong list. Reader đi qua :meth:`challenge_index` /
+    :meth:`find_challenge` được miễn tự lọc (repo đã lọc); đường tự đi
+    ``iter_challenges()`` (os.walk) gọi helper này ngay sau read_metadata.
+    """
+    return bool(isinstance(meta, dict) and meta.get("superseded_by"))
 
 
 def _now_iso() -> str:
@@ -176,6 +189,12 @@ class WorkspaceRepo:
         url = (data.get("ctf_info") or {}).get("url")
         if url:
             return url
+        # Fallback submit_endpoint chỉ hợp lệ bên trong MỘT workspace thật.
+        # Nếu root không có challenges.json (vd chạy lệnh từ repo chứa nhiều
+        # workspace con), os.walk đệ quy trước đây nhặt metadata.json của
+        # workspace con và biến thư mục cha thành một workspace giả.
+        if not self.challenges_path.exists():
+            return None
         for meta_path in self.iter_challenges():
             meta = self.read_metadata(meta_path)
             endpoint = meta.get("submit_endpoint")
@@ -201,6 +220,11 @@ class WorkspaceRepo:
         for meta_path in self.iter_challenges():
             meta = self.read_metadata(meta_path)
             if not meta:
+                continue
+            # Review-6 HIGH: bản tombstone (challenge đổi category/tên ->
+            # thư mục mới) không được vào index — mọi consumer tra theo id
+            #/name qua đây sẽ khớp thư mục chết và ghi nhầm vào đó.
+            if is_superseded(meta):
                 continue
             meta = dict(meta)
             meta["_local_path"] = str(meta_path.parent)
@@ -514,6 +538,31 @@ class WorkspaceRepo:
             return data
 
         locked_update_json(self.submit_history_path, _mut)
+
+    def prune_submit_history(self, predicate: Callable[[dict], bool]) -> int:
+        """Xoá các entry submit history thoả mãn ``predicate(entry) == True``
+        dưới khóa flock an toàn. Trả về số lượng entry đã xoá."""
+        removed_count = 0
+
+        def _mut(data: dict) -> dict:
+            nonlocal removed_count
+            cur = data.get("entries")
+            disk = [e for e in cur if isinstance(e, dict)] if isinstance(cur, list) else []
+            kept = []
+            for e in disk:
+                if predicate(e):
+                    removed_count += 1
+                else:
+                    kept.append(e)
+            data["entries"] = kept
+            return data
+
+        locked_update_json(self.submit_history_path, _mut)
+        return removed_count
+
+    def clear_submit_history(self) -> int:
+        """Xoá toàn bộ lịch sử submit dưới lock. Trả về số lượng entry đã xoá."""
+        return self.prune_submit_history(lambda _e: True)
 
     # ------------------------------------------------------------------
     # Solved-state markers (writeup/README.md, README.md)

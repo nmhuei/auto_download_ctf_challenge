@@ -38,10 +38,13 @@ class TempMailClient:
 
     def __init__(self, session: Optional[requests.Session] = None,
                  base_url: str = DEFAULT_BASE, timeout: float = 10.0,
-                 rng=None):
+                 rng=None, sleep_fn: Callable[[float], None] = time.sleep,
+                 max_retry_after: float = 15.0):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self._rng = rng  # None -> dùng random module mặc định
+        self._sleep = sleep_fn
+        self.max_retry_after = max(0.0, float(max_retry_after))
         if session is None:
             # R5: session chuẩn qua factory (retry GET + UA browser) —
             # utils không import ngược lên services, dùng http_client gốc.
@@ -57,15 +60,38 @@ class TempMailClient:
     # ------------------------------------------------------------------ #
     def _request(self, method: str, path: str, **kwargs) -> requests.Response:
         url = f"{self.base_url}{path}"
-        try:
-            resp = self.session.request(method, url, timeout=self.timeout, **kwargs)
-        except Exception as exc:
-            raise TempMailError(f"mail.tm request lỗi ({method} {path}): {exc}") from exc
-        if resp.status_code >= 400:
-            raise TempMailError(
-                f"mail.tm {method} {path} -> HTTP {resp.status_code}: "
-                f"{resp.text[:120]}")
-        return resp
+        method = str(method).upper()
+        # Explicit HTTP 429 means the request was rejected by the rate limiter;
+        # retrying once after Retry-After is safe even for POST. Network/5xx
+        # errors on POST remain non-retried because side effects are ambiguous.
+        for attempt in range(2):
+            try:
+                resp = self.session.request(
+                    method, url, timeout=self.timeout, **kwargs
+                )
+            except Exception as exc:
+                raise TempMailError(
+                    f"mail.tm request lỗi ({method} {path}): {exc}"
+                ) from exc
+            if resp.status_code == 429 and attempt == 0:
+                raw = (getattr(resp, "headers", {}) or {}).get("Retry-After")
+                try:
+                    delay = max(0.0, float(raw)) if raw is not None else 1.0
+                except (TypeError, ValueError):
+                    delay = 1.0
+                delay = min(delay, self.max_retry_after)
+                Logger.warning(
+                    f"mail.tm rate-limit 429 — thử lại sau {delay:g}s."
+                )
+                self._sleep(delay)
+                continue
+            if resp.status_code >= 400:
+                raise TempMailError(
+                    f"mail.tm {method} {path} -> HTTP {resp.status_code}: "
+                    f"{resp.text[:120]}"
+                )
+            return resp
+        raise TempMailError(f"mail.tm {method} {path}: retry exhausted")
 
     @staticmethod
     def _hydra_list(data: Any) -> List[Dict[str, Any]]:
@@ -159,17 +185,72 @@ class TempMailClient:
     # Tiện ích tìm link xác nhận email (CTFd /confirm/<token>)
     # ------------------------------------------------------------------ #
     CONFIRM_LINK_RE = re.compile(
-        r"https?://[^\s\"'<>\\]+?/confirm/[A-Za-z0-9]+")
+        r"https?://[^\s\"'<>\\]+?/confirm/[^\s\"'<>\\/?#]+(?:\?[^\s\"'<>\\]+)?")
+    URL_RE = re.compile(r"https?://[^\s\"'<>\\]+")
+
+    @classmethod
+    def find_urls(cls, content: str) -> List[str]:
+        """Extract HTTP(S) URLs from text/HTML-ish email content."""
+        out = []
+        for match in cls.URL_RE.finditer(content or ""):
+            url = match.group(0).rstrip(".,);]")
+            # Common HTML entity inside query strings.
+            url = url.replace("&amp;", "&")
+            if url not in out:
+                out.append(url)
+        return out
 
     @classmethod
     def find_confirm_link(cls, content: str) -> Optional[str]:
         match = cls.CONFIRM_LINK_RE.search(content or "")
-        return match.group(0) if match else None
+        return match.group(0).replace("&amp;", "&") if match else None
 
     def fetch_message_text(self, msg_id: str) -> str:
         """Text + html ghép lại để scan link xác nhận."""
         data = self.get_message_content(msg_id)
         parts = [str(data.get("text") or "")]
-        for chunk in (data.get("html") or []):
+        html = data.get("html") or []
+        if isinstance(html, str):
+            html = [html]
+        for chunk in html:
             parts.append(str(chunk))
         return "\n".join(parts)
+
+    def wait_for_content_match(
+        self,
+        matcher: Callable[[str], Any],
+        *,
+        timeout_s: float = 120.0,
+        interval: float = 5.0,
+        sleep_fn: Callable[[float], None] = time.sleep,
+        token: Optional[str] = None,
+    ) -> Optional[Tuple[Dict[str, Any], str, Any]]:
+        """Poll until one message's full body satisfies ``matcher``.
+
+        Unlike ``wait_for_message(predicate=None)``, this does not get stuck on
+        an unrelated first email. Each message ID is fetched at most once unless
+        listing/fetch itself failed, and matching is performed on full text+HTML.
+        Returns ``(message, content, matcher_result)`` or ``None`` on timeout.
+        """
+        deadline = time.monotonic() + timeout_s
+        checked = set()
+        while time.monotonic() < deadline:
+            try:
+                messages = self.list_messages(token=token)
+                for msg in messages:
+                    msg_id = str(msg.get("id") or "")
+                    if not msg_id or msg_id in checked:
+                        continue
+                    try:
+                        content = self.fetch_message_text(msg_id)
+                    except TempMailError as exc:
+                        Logger.warning(f"tempmail đọc message {msg_id} lỗi: {exc}")
+                        continue
+                    checked.add(msg_id)
+                    hit = matcher(content)
+                    if hit:
+                        return msg, content, hit
+            except TempMailError as exc:
+                Logger.warning(f"tempmail poll lỗi (sẽ thử lại): {exc}")
+            sleep_fn(interval)
+        return None

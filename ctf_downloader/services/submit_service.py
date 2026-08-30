@@ -20,7 +20,7 @@ from ..platforms.base import BasePlatform  # noqa: F401  (giữ kiểu tham chi�
 from ..platforms.registry import UnknownPlatformError, get_spec
 from ..storage.constants import SOLVE_RANK
 from ..storage.fileio import atomic_write_text, locked_path
-from ..storage.workspace_repo import WorkspaceRepo
+from ..storage.workspace_repo import WorkspaceRepo, is_superseded
 
 NO_FORMAT_MESSAGE = (
     "Chưa xác định được flag format cho giải này. "
@@ -141,7 +141,8 @@ class SubmitService:
         self.session = create_session(
             cookie=cookie,
             token=token,
-            timeout=timeout
+            timeout=timeout,
+            base_url=self.url,
         )
         try:
             self.platform = PlatformDetector.detect_platform(self.url, self.session)
@@ -162,7 +163,8 @@ class SubmitService:
 
     def _resolve_url_from_workspace(self) -> Optional[str]:
         # WorkspaceRepo hợp nhất ctf_info.url + fallback submit_endpoint
-        if not self.workspace_dir or not os.path.exists(self.workspace_dir):
+        if (not self.workspace_dir or not os.path.exists(self.workspace_dir)
+                or self.repo is None):
             return None
         return self.repo.resolve_platform_url()
 
@@ -175,15 +177,21 @@ class SubmitService:
         Chỉ fetch live khi không đọc được file (thiếu / lỗi đọc).
         """
         # Try local challenges.json first
-        if self.workspace_dir:
+        if self.workspace_dir and self.repo is not None:
             if self.repo.challenges_path.exists():
                 data = self.repo.read_challenges()
                 challs = data.get("challenges", [])
                 if challs:
+                    # Hai lượt chèn: id-key TRƯỚC, name-key SAU — khi một
+                    # tên challenge trùng chuỗi với id của bài khác,
+                    # NAME-KEY thắng đè (quy ước batch-3: tên toàn số ưu
+                    # tiên trước id trùng). Một dict phẳng chèn xen kẽ thì
+                    # thứ tự danh sách server quyết định ngầm ai thắng.
                     for c in challs:
                         cid = c.get("id")
-                        name = c.get("name", "")
                         self.challenges_cache[str(cid)] = c
+                    for c in challs:
+                        name = c.get("name", "")
                         self.challenges_cache[name.lower().strip()] = c
                 return
 
@@ -191,19 +199,35 @@ class SubmitService:
         try:
             self.platform.authenticate()
             challs = self.platform.fetch_challenges()
-            for c in challs:
-                self.challenges_cache[str(c.id)] = {"id": c.id, "name": c.name, "category": c.category}
-                self.challenges_cache[c.name.lower().strip()] = {"id": c.id, "name": c.name, "category": c.category}
+            ids = {str(c.id): {"id": c.id, "name": c.name, "category": c.category}
+                   for c in challs}
+            names = {c.name.lower().strip(): {"id": c.id, "name": c.name,
+                                              "category": c.category}
+                     for c in challs}
+            # name-key ghi sau -> thắng id-key trùng chuỗi (như nhánh trên)
+            self.challenges_cache.update(ids)
+            self.challenges_cache.update(names)
         except Exception as e:
             Logger.warning(f"Không tải được danh sách challenges: {e}")
 
     def resolve_challenge_id(self, identifier: Union[int, str]) -> Tuple[Optional[Any], str]:
         """
         Resolves challenge ID and Name from ID or Challenge Name string.
+
+        Cache phẳng chứa CẢ id-key lẫn name-key (review-6): khi một tên
+        challenge trùng chuỗi với id bài khác, name-key ghi sau thắng chỗ
+        trong dict (quy ước batch-3 — consumer muốn theo tên đọc
+        ``cache[name]``, xem ``cli_commands._hoard_identifier``). Nhánh
+        id-route ở đây phải SO SÁNH CHỦ SỞ HỮU: entry dưới key không đúng
+        id đích là của challenge khác, không được rò tên/id của nó vào
+        kết quả.
         """
         if isinstance(identifier, int) or str(identifier).isdigit():
             cid = int(identifier)
             c_info = self.challenges_cache.get(str(cid), {})
+            # Key bị name-key trùng chuỗi chiếm chỗ -> coi như không tra được
+            if str(c_info.get("id")) != str(cid):
+                c_info = {}
             name = c_info.get("name", f"Challenge_{cid}")
             return cid, name
 
@@ -383,6 +407,100 @@ class SubmitService:
     # Core submit
     # ------------------------------------------------------------------
 
+    def _submit_gate_path(self, challenge_id: Any):
+        """Dedicated per-challenge lock key for cross-process submissions.
+
+        It deliberately does NOT reuse submit_history.json's lock: the gate
+        must stay held from the final blacklist/status re-check through the
+        network POST and history/status commit, while history persistence may
+        acquire its own lock internally.
+        """
+        if not self.repo:
+            return None
+        token = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(challenge_id)).strip("._")
+        token = (token or "unknown")[:96]
+        return self.repo.root / f".submit-gate-{token}"
+
+    def _recheck_before_network_submit(self, cid: Any, flag: str, force: bool) -> Optional[str]:
+        """Re-read mutable state after acquiring the cross-process gate."""
+        self._load_submit_history()
+        entry = self._find_history_entry(flag)
+        if entry:
+            prev_result = entry.get("result")
+            prev_cid = entry.get("challenge_id")
+            if prev_result == "correct" and str(prev_cid) == str(cid):
+                return "⏭️ Đã solved: flag này đã đúng cho challenge này."
+            if prev_result == "incorrect" and not force:
+                return f"🚫 Bị blacklist: flag này đã submit SAI trước đó (challenge {prev_cid})."
+
+        # Khóa theo CHALLENGE chứ không chỉ theo flag: process khác có thể vừa
+        # solve bài bằng một candidate khác trong lúc ta chờ. Không gửi thêm
+        # candidate sau khi local status đã lên solved_by_me.
+        meta_path = self._find_meta_path(cid)
+        if meta_path is not None and self.repo is not None:
+            try:
+                st = self.repo.read_status(meta_path)
+                if SOLVE_RANK.get(st.get("solve"), 0) >= SOLVE_RANK["solved_by_me"]:
+                    return "⏭️ Đã solved: challenge đã được đánh dấu solved_by_me trong workspace."
+            except Exception:
+                pass
+        return None
+
+    def _submit_network_and_commit(self, cid: Any, name: str, flag: str) -> Tuple[bool, str]:
+        """Perform exactly one platform POST and commit its typed verdict."""
+        self._throttle()
+        success, message = self.platform.submit_flag(cid, flag)
+
+        verdict = getattr(self.platform, "last_verdict", None) or ("correct" if success else "unknown")
+
+        non_judgement = {
+            "ratelimited",
+            "auth_failed",
+            "event_not_started",
+            "event_paused",
+            "event_closed",
+            "cheat_detected",
+            "challenge_not_found",
+        }
+        if verdict in non_judgement:
+            Logger.warning(
+                f"Submit chưa có phán quyết ({verdict}) — "
+                f"không ghi lịch sử/blacklist: {message}"
+            )
+            return success, message
+
+        if verdict == "already_solved":
+            Logger.success(f"Kết quả: {message}")
+            if self.workspace_dir:
+                self._apply_verdict_to_status(cid, flag, verdict)
+            return success, message
+
+        if verdict == "unknown" and self._stdout_isatty():
+            try:
+                ans = input(f"Không xác định được kết quả chấm. Flag '{flag}' có ĐÚNG không? [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                ans = ""
+            if ans.startswith("y"):
+                verdict = "correct"
+            elif ans.startswith("n"):
+                verdict = "incorrect"
+
+        self._record_submit_result(flag, cid, verdict)
+
+        if verdict == "correct":
+            Logger.success(f"Kết quả: {message}")
+            if self.workspace_dir:
+                self._update_local_workspace(cid, name, flag)
+        elif verdict == "incorrect":
+            Logger.error(f"Kết quả: {message}")
+        else:
+            Logger.warning(f"Kết quả: {message} (không rõ đúng/sai — chưa blacklist)")
+
+        if verdict in ("correct", "incorrect"):
+            self._apply_verdict_to_status(cid, flag, verdict)
+
+        return success, message
+
     def submit(self, challenge_identifier: Union[int, str], flag: str, force: bool = False) -> Tuple[bool, str]:
         """
         Submits a flag for a given challenge, với:
@@ -431,57 +549,35 @@ class SubmitService:
         except Exception as e:
             render_diagnostic(diag_auth_warning(e))
 
-        self._throttle()
+        gate_path = self._submit_gate_path(cid)
+        if gate_path is not None:
+            with locked_path(gate_path):
+                blocked = self._recheck_before_network_submit(cid, flag, force)
+                if blocked:
+                    Logger.info(blocked)
+                    return False, blocked
+                return self._submit_network_and_commit(cid, name, flag)
 
-        success, message = self.platform.submit_flag(cid, flag)
-
-        verdict = getattr(self.platform, "last_verdict", None) or ("correct" if success else "unknown")
-
-        # Rate-limited: KHÔNG ghi lịch sử / blacklist
-        if verdict == "ratelimited":
-            Logger.warning(f"Bị rate-limit — không ghi lịch sử/blacklist: {message}")
-            return success, message
-
-        # Unknown: hỏi user (nếu có tty) trước khi ghi kết quả
-        if verdict == "unknown" and self._stdout_isatty():
-            try:
-                ans = input(f"Không xác định được kết quả chấm. Flag '{flag}' có ĐÚNG không? [y/N]: ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                ans = ""
-            if ans.startswith("y"):
-                verdict = "correct"
-            elif ans.startswith("n"):
-                verdict = "incorrect"
-
-        self._record_submit_result(flag, cid, verdict)
-
-        if verdict == "correct":
-            Logger.success(f"Kết quả: {message}")
-            if self.workspace_dir:
-                self._update_local_workspace(cid, name, flag)
-        elif verdict == "incorrect":
-            Logger.error(f"Kết quả: {message}")
-        else:
-            Logger.warning(f"Kết quả: {message} (không rõ đúng/sai — chưa blacklist)")
-
-        # Hook status đa chiều (spec §7): correct/incorrect đổi trục flag/solve;
-        # ratelimited/unknown KHÔNG đổi.
-        if verdict in ("correct", "incorrect"):
-            self._apply_verdict_to_status(cid, flag, verdict)
-
-        return success, message
+        # Không có workspace => không có state dùng chung để lock; vẫn giữ
+        # đúng contract một POST duy nhất và KHÔNG auto-retry POST.
+        return self._submit_network_and_commit(cid, name, flag)
 
     # ------------------------------------------------------------------
     # Status đa chiều hooks
     # ------------------------------------------------------------------
 
     def _find_meta_path(self, challenge_id: Any):
-        """Tìm metadata.json của challenge theo id (None nếu không có workspace)."""
+        """Tìm metadata.json của challenge theo id (None nếu không có workspace).
+
+        Review-6 HIGH: bản tombstone ``superseded_by`` (thư mục chết sau
+        rename) không được khớp theo id — phán quyết submit/hoard phải ghi
+        vào bản sống."""
         if not self.repo:
             return None
         for meta_path in self.repo.iter_challenges():
             meta = self.repo.read_metadata(meta_path)
-            if meta and str(meta.get("id")) == str(challenge_id):
+            if (meta and not is_superseded(meta)
+                    and str(meta.get("id")) == str(challenge_id)):
                 return meta_path
         return None
 
@@ -493,17 +589,22 @@ class SubmitService:
         - incorrect: flag → submitted_wrong (+value để biết flag nào chết)
         """
         meta_path = self._find_meta_path(challenge_id)
-        if meta_path is None:
+        repo = self.repo
+        if meta_path is None or repo is None:
             return
         try:
             def _mut(st):
+                if verdict == "already_solved":
+                    if SOLVE_RANK.get(st["solve"], 0) < SOLVE_RANK["solved_by_me"]:
+                        st["solve"] = "solved_by_me"
+                    return st
                 st["flag"]["value"] = flag
                 st["flag"]["state"] = "submitted_correct" if verdict == "correct" else "submitted_wrong"
                 if verdict == "correct" and SOLVE_RANK.get(st["solve"], 0) < SOLVE_RANK["solved_by_me"]:
                     st["solve"] = "solved_by_me"
                 return st
 
-            self.repo.update_status(meta_path, _mut)
+            repo.update_status(meta_path, _mut)
         except Exception as e:
             Logger.warning(f"Không thể cập nhật status đa chiều: {e}")
 
@@ -517,7 +618,8 @@ class SubmitService:
             return False, "Flag không được để trống."
         cid, name = self.resolve_challenge_id(challenge_identifier)
         meta_path = self._find_meta_path(cid)
-        if meta_path is None:
+        repo = self.repo
+        if meta_path is None or repo is None:
             return False, f"Không tìm thấy challenge khớp: '{challenge_identifier}'"
         try:
             def _mut(st):
@@ -527,7 +629,7 @@ class SubmitService:
                     st["solve"] = "working"
                 return st
 
-            self.repo.update_status(meta_path, _mut)
+            repo.update_status(meta_path, _mut)
             Logger.success(f"🏴 Đã hoard flag cho [info]{escape(str(name))}[/info] (chưa submit).", markup=True)
             return True, "Đã lưu flag vào kho."
         except Exception as e:
@@ -579,8 +681,11 @@ class SubmitService:
         từ đĩa (block status qua migrate-on-read của repo) — gate giữa các
         candidate flag: submit() vừa đánh dấu solved thì các candidate còn
         lại CÙNG challenge phải bị bỏ qua."""
+        repo = self.repo
+        if repo is None:
+            return False
         try:
-            st = self.repo.read_status(meta_path)
+            st = repo.read_status(meta_path)
         except Exception:
             return False
         return SOLVE_RANK.get(st.get("solve"), 0) >= SOLVE_RANK["solved_by_me"]
@@ -593,6 +698,10 @@ class SubmitService:
         """
         if not self.workspace_dir or not os.path.exists(self.workspace_dir):
             Logger.error("Không tìm thấy thư mục workspace để auto-scan.")
+            return []
+        repo = self.repo
+        if repo is None:
+            Logger.error("WorkspaceRepo chưa được khởi tạo cho auto-scan.")
             return []
 
         Logger.info(f"Đang quét workspace tìm flag chưa nộp: [info]{escape(self.workspace_dir)}[/info]", markup=True)
@@ -618,14 +727,16 @@ class SubmitService:
                 found.append(m.group(0))
             return found
 
-        for meta_path in self.repo.iter_challenges():
+        for meta_path in repo.iter_challenges():
             root = meta_path.parent
 
             try:
-                meta = self.repo.read_metadata(meta_path)
+                meta = repo.read_metadata(meta_path)
             except Exception:
                 continue
-            if not meta:
+            if not meta or is_superseded(meta):
+                # Review-6 HIGH: thư mục tombstone không tham gia auto-scan
+                # (flag trong dir chết đã được restore sang dir sống).
                 continue
 
             chall_id = meta.get("id")
@@ -692,12 +803,14 @@ class SubmitService:
         """
         Marks challenge as solved in metadata.json, README.md, writeup/README.md, and SUMMARY.md.
         """
-        if not self.workspace_dir:
+        if not self.workspace_dir or self.repo is None:
             return
+        repo = self.repo
 
-        for meta_path in self.repo.iter_challenges():
-            meta = self.repo.read_metadata(meta_path)
-            if not meta or str(meta.get("id")) != str(challenge_id):
+        for meta_path in repo.iter_challenges():
+            meta = repo.read_metadata(meta_path)
+            if (not meta or is_superseded(meta)
+                    or str(meta.get("id")) != str(challenge_id)):
                 continue
 
             try:
@@ -709,13 +822,13 @@ class SubmitService:
                     current["submitted_flag"] = flag
                     return current
 
-                self.repo.update_metadata(meta_path, _mut)
+                repo.update_metadata(meta_path, _mut)
 
                 root = meta_path.parent
                 r_candidates = [root / "writeup" / "README.md", root / "README.md"]
                 # Marker solved + placeholder flag trong README
                 existing = [r for r in r_candidates if r.exists()]
-                self.repo.write_solved_state(existing, solved=True)
+                repo.write_solved_state(existing, solved=True)
                 for r_candidate in existing:
                     # Hunt-c18 BUG-3 (MED): đọc/ghi README qua storage/fileio
                     # (khóa flock + atomic os.replace) thay vì open() thô —

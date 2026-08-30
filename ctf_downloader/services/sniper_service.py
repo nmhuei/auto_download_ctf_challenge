@@ -32,12 +32,14 @@ VAN AN TOÀN (spec P2-6 §3):
    thủ rules.
 
 Verdict xử lý mỗi phát bắn:
-- ``correct``     : ◆ FB first-blood (solved green) — bỏ khỏi hàng chờ.
-- ``incorrect``   : SubmitService đã ghi blacklist (submit_history) — bỏ khỏi
-                    hàng chờ (trừ khi ``retry_wrong``).
-- ``ratelimited`` : KHÔNG tiêu lượt thử — backoff luỹ thừa (tôn trọng throttle
-                    platform; SubmitService._throttle vẫn chạy bình thường
-                    bên trong), rồi thử lại.
+- ``correct`` / ``already_solved``: challenge đã đạt mục tiêu — bỏ hàng chờ.
+- ``incorrect``   : SubmitService đã ghi blacklist — bỏ hàng chờ trừ khi
+                    ``retry_wrong``.
+- ``ratelimited`` : KHÔNG tiêu lượt thử — exponential backoff rồi thử lại.
+- ``event_not_started`` / ``event_paused``: transient/deferred, KHÔNG tiêu
+                    lượt thử, backoff có trần để không spam platform.
+- auth/event-ended/cheat/not-found: blocked terminal — KHÔNG retry dù bật
+                    ``retry_wrong`` vì đó không phải bằng chứng flag sai.
 - khác/unknown    : tính như đã tiêu lượt thử (tránh vòng lặp vô hạn).
 
 Dừng khi hết target hoặc Ctrl-C (bắt KeyboardInterrupt sạch, in trạng thái
@@ -258,12 +260,11 @@ class SniperService:
         message: str,
         prev_verdict: Optional[str],
     ) -> Tuple[str, str]:
-        """Phân loại kết quả một phát bắn → ('correct'|'incorrect'|'ratelimited'|'unknown', msg).
+        """Phân loại typed verdict từ SubmitService/platform.
 
-        Nguồn chân lý theo thứ tự:
-        1. Entry submit_history của flag (SubmitService vừa ghi) — correct/incorrect.
-        2. ``platform.last_verdict`` == 'ratelimited' (không ghi lịch sử).
-        3. Còn lại → unknown.
+        History vẫn là nguồn chân lý cho correct/incorrect. Các verdict không
+        ghi history (already_solved, auth/event/rate-limit/cheat) được giữ
+        nguyên semantics để sniper không retry mù như thể flag sai.
         """
         result = ((self._history_entry(flag) or {}).get("result")) or ""
         if result == "correct":
@@ -271,12 +272,19 @@ class SniperService:
         if result == "incorrect":
             return "incorrect", message
         verdict = getattr(getattr(self.submitter, "platform", None), "last_verdict", None)
-        if verdict == "ratelimited" and verdict != prev_verdict:
-            return "ratelimited", message
+        if verdict == "already_solved":
+            return "correct", message
         if verdict == "ratelimited":
-            # last_verdict kẹt ở ratelimited từ phát trước mà lịch sử không đổi:
-            # vẫn coi là ratelimited (nhưng run() có trần liên tiếp để thoát).
+            # last_verdict có thể kẹt từ phát trước; vẫn coi là rate-limit
+            # vì không có history judgement mới, nhưng run() có trần để thoát.
             return "ratelimited", message
+        if verdict in ("event_not_started", "event_paused"):
+            return "deferred", message
+        if verdict in (
+            "auth_failed", "event_closed", "cheat_detected",
+            "challenge_not_found",
+        ):
+            return "blocked", message
         return "unknown", message
 
     def _fire(self, target: Dict[str, Any], force: bool) -> Tuple[str, str]:
@@ -395,6 +403,7 @@ class SniperService:
             backoff_until = 0.0
             backoff_step = BACKOFF_BASE_SECONDS
             consecutive_ratelimits = 0
+            consecutive_deferrals = 0
 
             while pending:
                 now = time.time()
@@ -425,6 +434,8 @@ class SniperService:
 
                 if kind == "correct":
                     consecutive_ratelimits = 0
+                    consecutive_deferrals = 0
+                    backoff_step = BACKOFF_BASE_SECONDS
                     pending.remove(target)
                     solved.append(target)
                     console.print(
@@ -436,6 +447,8 @@ class SniperService:
 
                 elif kind == "incorrect":
                     consecutive_ratelimits = 0
+                    consecutive_deferrals = 0
+                    backoff_step = BACKOFF_BASE_SECONDS
                     # SubmitService ĐÃ tự blacklist flag này trong submit_history
                     # (gate sẵn có). Không retry trừ khi --retry-wrong.
                     if retry_wrong and target["attempts"] < MAX_ATTEMPTS_PER_TARGET:
@@ -452,6 +465,10 @@ class SniperService:
                                "submit_history — bỏ khỏi hàng chờ.")
 
                 elif kind == "ratelimited":
+                    # 429 = request bị rate limiter từ chối, không phải một
+                    # lần chấm flag. Hoàn lại attempt đã increment trước POST.
+                    target["attempts"] = max(0, target["attempts"] - 1)
+                    consecutive_deferrals = 0
                     consecutive_ratelimits += 1
                     if consecutive_ratelimits >= MAX_CONSECUTIVE_RATELIMITS:
                         _fail(
@@ -466,8 +483,44 @@ class SniperService:
                     backoff_until = time.time() + backoff_step
                     backoff_step = min(backoff_step * 2, BACKOFF_MAX_SECONDS)
 
+                elif kind == "deferred":
+                    # Event chưa mở/đang pause: flag chưa được chấm. Giữ target
+                    # + hoàn attempt, nhưng backoff/cap để clock skew hay pause
+                    # dài không biến thành request storm vô hạn.
+                    target["attempts"] = max(0, target["attempts"] - 1)
+                    consecutive_ratelimits = 0
+                    consecutive_deferrals += 1
+                    if consecutive_deferrals >= MAX_CONSECUTIVE_RATELIMITS:
+                        _fail(
+                            f"Platform trì hoãn submit {consecutive_deferrals} "
+                            "lần liên tiếp — dừng sniper, giữ target pending."
+                        )
+                        break
+                    _warn(
+                        f"Platform chưa nhận submit ({message}) — backoff "
+                        f"{backoff_step:.0f}s, không tiêu lượt thử."
+                    )
+                    backoff_until = time.time() + backoff_step
+                    backoff_step = min(backoff_step * 2, BACKOFF_MAX_SECONDS)
+
+                elif kind == "blocked":
+                    consecutive_ratelimits = 0
+                    consecutive_deferrals = 0
+                    backoff_step = BACKOFF_BASE_SECONDS
+                    pending.remove(target)
+                    failed.append(target)
+                    _fail(
+                        f"Submit bị chặn bởi trạng thái platform — "
+                        f"{target['challenge']}: {message}"
+                    )
+                    _cause(
+                        "không retry tự động vì đây không phải bằng chứng flag sai."
+                    )
+
                 else:  # unknown — tính như đã tiêu lượt thử để tránh vòng lặp
                     consecutive_ratelimits = 0
+                    consecutive_deferrals = 0
+                    backoff_step = BACKOFF_BASE_SECONDS
                     if retry_wrong and target["attempts"] < MAX_ATTEMPTS_PER_TARGET:
                         _warn(
                             f"Kết quả không rõ — sẽ thử lại "

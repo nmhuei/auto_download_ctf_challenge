@@ -227,10 +227,13 @@ class BaseCTFPlatform(ABC):
         """
         return {"status": "unsupported", "entry": None, "time_left": None}
 
-    def fetch_scoreboard(self) -> Dict[str, Any]:
-        """
-        Fetches scoreboard and ranking standings from platform.
-        Returns dict containing standings, my_rank, my_score, etc.
+    def fetch_scoreboard(self, if_none_match: Optional[str] = None) -> Dict[str, Any]:
+        """Fetch scoreboard data.
+
+        ``if_none_match`` is an optional watch-mode cache validator. Adapters
+        that can expose HTTP metadata return private keys ``_http_status``,
+        ``_etag``, ``_retry_after`` and ``_not_modified``; normal rank callers
+        can ignore them.
         """
         return {
             "title": "Scoreboard",

@@ -309,7 +309,70 @@ class TestRateLimitedBackoff(SniperBase):
         summary = self.run_sniper(svc, poll_interval=10)
         self.assertEqual(len(self.submitter.calls), MAX_CONSECUTIVE_RATELIMITS)
         self.assertEqual(len(summary["pending"]), 1)   # không tiêu lượt thử
+        self.assertEqual(summary["pending"][0]["attempts"], 0)
         self.assertEqual(summary["solved"], [])
+
+    def test_ratelimit_does_not_turn_first_judged_retry_into_force(self):
+        self.write_challenges(event_start=str(int(self.start_epoch)))
+        svc = self.make_service([
+            ("ratelimited", "Slow down"),
+            ("incorrect", "wrong"),
+            ("incorrect", "wrong"),
+            ("incorrect", "wrong"),
+        ])
+        self.write_sniper([{"challenge": 1, "flag": "FLAG{x}"}])
+        summary = self.run_sniper(
+            svc, poll_interval=10, retry_wrong=True
+        )
+        self.assertEqual(len(summary["failed"]), 1)
+        # 429 không phải một judgement; lần submit được chấm đầu tiên vẫn là
+        # attempt #1 nên KHÔNG được force qua blacklist gate.
+        self.assertEqual(
+            [call[2] for call in self.submitter.calls],
+            [False, False, True, True],
+        )
+
+
+class TestTypedVerdicts(SniperBase):
+    def test_already_solved_counts_as_goal_reached_not_failure(self):
+        self.write_challenges(event_start=str(int(self.start_epoch)))
+        svc = self.make_service([("already_solved", "already solved")])
+        self.write_sniper([{"challenge": 1, "flag": "FLAG{maybe}"}])
+        summary = self.run_sniper(svc, poll_interval=10)
+        self.assertEqual(len(summary["solved"]), 1)
+        self.assertEqual(summary["failed"], [])
+        self.assertEqual(summary["pending"], [])
+
+    def test_auth_failure_is_terminal_even_with_retry_wrong(self):
+        self.write_challenges(event_start=str(int(self.start_epoch)))
+        svc = self.make_service([
+            ("auth_failed", "cookie expired"),
+            ("correct", "must never be called"),
+        ])
+        self.write_sniper([{"challenge": 1, "flag": "FLAG{x}"}])
+        summary = self.run_sniper(
+            svc, poll_interval=10, retry_wrong=True
+        )
+        self.assertEqual(len(self.submitter.calls), 1)
+        self.assertEqual(len(summary["failed"]), 1)
+        self.assertEqual(summary["pending"], [])
+
+    def test_event_not_started_is_deferred_without_consuming_attempt(self):
+        self.write_challenges(event_start=str(int(self.start_epoch)))
+        svc = self.make_service([
+            ("event_not_started", "server clock says not started"),
+            ("correct", "accepted"),
+        ])
+        self.write_sniper([{"challenge": 1, "flag": "FLAG{x}"}])
+        summary = self.run_sniper(
+            svc, poll_interval=10, retry_wrong=True
+        )
+        self.assertEqual(len(summary["solved"]), 1)
+        self.assertEqual(
+            [call[2] for call in self.submitter.calls], [False, False]
+        )
+        gap = self.submitter.call_times[1] - self.submitter.call_times[0]
+        self.assertGreaterEqual(gap, sn_mod.BACKOFF_BASE_SECONDS)
 
 
 class TestKeyboardInterrupt(SniperBase):

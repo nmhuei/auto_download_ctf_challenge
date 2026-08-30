@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..services.platform_resolver import PlatformResolver
 from ..storage.constants import TARGET_CONNECTION_FMT
-from ..storage.workspace_repo import WorkspaceRepo
+from ..storage.workspace_repo import WorkspaceRepo, is_superseded
 from ..utils.logger import Logger
 from ..ui.diagnostics import Diagnostic, render as render_diagnostic
 from rich.markup import escape
@@ -93,7 +93,8 @@ class InstanceService:
         # 2. Fallback: metadata.json trong các thư mục challenge
         for meta_path in self.repo.iter_challenges():
             m = self.repo.read_metadata(meta_path)
-            if not m:
+            # Review-6 HIGH: tombstone (dir chết sau rename) không khớp theo id/name
+            if not m or is_superseded(m):
                 continue
             if challenge_id is not None and str(m.get('id')) == str(challenge_id):
                 m['_local_path'] = str(meta_path.parent)
@@ -183,7 +184,7 @@ class InstanceService:
         results = []
         for meta_path in self.repo.iter_challenges():
             m = self.repo.read_metadata(meta_path)
-            if not m:
+            if not m or is_superseded(m):
                 continue
             if self.repo.is_container(m):
                 m['_local_path'] = str(meta_path.parent)
@@ -262,7 +263,8 @@ class InstanceService:
         # 1. Update challenge metadata.json, writeup/README.md, and solver/solve.py
         for meta_path in self.repo.iter_challenges():
             m = self.repo.read_metadata(meta_path)
-            if not m or str(m.get('id')) != str(challenge_id):
+            if (not m or is_superseded(m)
+                    or str(m.get('id')) != str(challenge_id)):
                 continue
 
             try:

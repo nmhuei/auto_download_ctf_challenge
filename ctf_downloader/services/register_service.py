@@ -12,6 +12,7 @@ import os
 import random
 import string
 import time
+import urllib.parse
 from typing import Any, Callable, Dict, Optional
 
 from rich.markup import escape
@@ -275,42 +276,136 @@ class RegisterService:
 
     def _make_verify_hook(self, client: Optional[TempMailClient],
                           timeout_s: float = 120.0):
-        """Hook xác minh email (CTFd): poll tempmail <=120s, GET link /confirm/<token>."""
+        """Build a platform-aware tempmail verifier.
+
+        Backward-compatible call: ``hook(session)`` performs the CTFd
+        ``/confirm/<token>`` GET flow. Modern adapters may call
+        ``hook(session, platform='gzctf'|'rctf', base_url=...)`` and receive a
+        small dict containing ``ok`` plus the verification API response.
+        """
         if client is None:
             return None
 
-        def hook(session) -> bool:
+        def _host_matches(url: str, base_url: Optional[str]) -> bool:
+            if not base_url:
+                return True
+            try:
+                return (urllib.parse.urlparse(url).hostname or "").lower() == \
+                    (urllib.parse.urlparse(base_url).hostname or "").lower()
+            except Exception:
+                return False
+
+        def _extract(content: str, platform: str, base_url: Optional[str]):
+            urls = TempMailClient.find_urls(content)
+            if platform == "ctfd":
+                legacy = TempMailClient.find_confirm_link(content)
+                if legacy and _host_matches(legacy, base_url):
+                    return legacy
+            for url in urls:
+                if not _host_matches(url, base_url):
+                    continue
+                parsed = urllib.parse.urlparse(url)
+                query = urllib.parse.parse_qs(parsed.query)
+                path = parsed.path.rstrip("/").lower()
+                if platform == "gzctf" and path.endswith("/account/verify"):
+                    token = (query.get("token") or [""])[0]
+                    email = (query.get("email") or [""])[0]
+                    if token and email:
+                        return {"url": url, "token": token, "email": email}
+                elif platform == "rctf" and path.endswith("/verify"):
+                    token = (query.get("token") or [""])[0]
+                    if token:
+                        return {"url": url, "token": token}
+            return None
+
+        def hook(session, platform: str = "ctfd",
+                 base_url: Optional[str] = None):
+            platform = str(platform or "ctfd").strip().lower()
             Logger.info("Đang chờ thư xác nhận từ platform (tối đa "
                         f"{int(timeout_s)}s)...")
-            msg = client.wait_for_message(timeout_s=timeout_s)
-            if msg is None:
-                Logger.error("Hết giờ chưa nhận được thư xác nhận — kiểm tra "
-                             "thủ công hộp thư tạm hoặc đăng nhập web để resend.")
-                return False
-            content = client.fetch_message_text(msg.get("id", ""))
-            link = TempMailClient.find_confirm_link(content)
-            if not link:
-                Logger.error("Thư xác nhận không chứa link /confirm/<token> — "
-                             "xác minh thủ công.")
-                return False
+
+            # New client path: ignore unrelated first emails and inspect full
+            # message bodies until one contains the expected platform link.
+            if hasattr(client, "wait_for_content_match"):
+                found = client.wait_for_content_match(
+                    lambda content: _extract(content, platform, base_url),
+                    timeout_s=timeout_s,
+                )
+                hit = found[2] if found else None
+            else:
+                # Compatibility for lightweight test/plugin tempmail objects.
+                msg = client.wait_for_message(timeout_s=timeout_s)
+                if msg is None:
+                    hit = None
+                else:
+                    content = client.fetch_message_text(msg.get("id", ""))
+                    hit = _extract(content, platform, base_url)
+
+            if not hit:
+                Logger.error("Hết giờ/chưa tìm thấy link xác nhận phù hợp — "
+                             "xác minh thủ công hoặc resend email.")
+                return False if platform == "ctfd" else {"ok": False}
+
             try:
-                resp = session.get(link, timeout=20)
-                # Hunt-c18 BUG-6 (LOW): biểu thức cũ kết thúc ``or True`` —
-                # mọi HTTP status đều được tính là verified (check chết).
-                # requests tự follow redirect nên chuỗi confirm chuẩn luôn
-                # kết thúc 200; 404/500 phải trả False để user biết phải
-                # xác minh thủ công.
+                if platform == "gzctf":
+                    verify_base = (base_url or "").rstrip("/")
+                    resp = session.post(
+                        f"{verify_base}/api/account/verify",
+                        json={"token": hit["token"], "email": hit["email"]},
+                        timeout=20,
+                    )
+                    ok = getattr(resp, "status_code", 0) == 200
+                    verify_data: Dict[str, Any] = {}
+                    try:
+                        parsed = resp.json() or {}
+                        if isinstance(parsed, dict):
+                            verify_data = parsed
+                    except Exception:
+                        pass
+                    if ok:
+                        Logger.success("GZCTF: email đã xác minh qua /api/account/verify.")
+                    else:
+                        Logger.error(
+                            f"GZCTF verify trả HTTP {getattr(resp, 'status_code', '?')}.")
+                    return {"ok": ok, "response": verify_data, "url": hit["url"]}
+
+                if platform == "rctf":
+                    verify_base = (base_url or "").rstrip("/")
+                    resp = session.post(
+                        f"{verify_base}/api/v2/auth/verify",
+                        json={"verifyToken": hit["token"]},
+                        timeout=20,
+                    )
+                    rctf_data: Dict[str, Any] = {}
+                    try:
+                        parsed = resp.json() or {}
+                        if isinstance(parsed, dict):
+                            rctf_data = parsed
+                    except Exception:
+                        pass
+                    ok = getattr(resp, "status_code", 0) == 200 and str(
+                        rctf_data.get("kind") or ""
+                    ).startswith("good")
+                    if ok:
+                        Logger.success("rCTF: pending registration đã xác minh.")
+                    else:
+                        Logger.error(
+                            f"rCTF verify thất bại: HTTP {getattr(resp, 'status_code', '?')} "
+                            f"kind={rctf_data.get('kind')!r}.")
+                    return {"ok": ok, "response": rctf_data, "url": hit["url"]}
+
+                # CTFd: clicking /confirm/<token> performs the verification.
+                resp = session.get(hit, timeout=20)
                 status = getattr(resp, "status_code", 0)
                 if status == 200:
-                    Logger.success(f"Đã mở link xác nhận ({link}) "
-                                   f"-> HTTP {status}.")
+                    Logger.success(f"Đã mở link xác nhận ({hit}) -> HTTP 200.")
                     return True
                 Logger.error(f"Link xác nhận trả HTTP {status or '?'} — "
                              "chưa xác minh được email, kiểm tra thủ công.")
                 return False
             except Exception as exc:
-                Logger.error(f"Mở link xác nhận thất bại: {exc}")
-                return False
+                Logger.error(f"Xác minh email thất bại: {exc}")
+                return False if platform == "ctfd" else {"ok": False}
 
         return hook
 
@@ -322,7 +417,8 @@ class RegisterService:
             use_tempmail: bool = False,
             username_prefix: str = "player",
             password: Optional[str] = None,
-            workspace: Optional[str] = None) -> Dict[str, Any]:
+            workspace: Optional[str] = None,
+            cf_clearance: Optional[str] = None) -> Dict[str, Any]:
         """Chạy auto-register. Returns dict trạng thái; raise RuntimeError khi
         đầu vào sai / bị rate-limit; PlatformRegisterUnsupported khi platform
         chặn (captcha...) — caller (CLI) map sang exit code."""
@@ -346,7 +442,13 @@ class RegisterService:
         reg_email = mail["email"]
 
         from ..services.session_factory import create_session
-        session = create_session()
+        cf_cookie = None
+        if cf_clearance:
+            clearance = str(cf_clearance).strip()
+            if clearance:
+                cf_cookie = (clearance if clearance.lower().startswith('cf_clearance=')
+                             else f'cf_clearance={clearance}')
+        session = create_session(cookie=cf_cookie, base_url=url)
 
         Logger.info(f"Phát hiện loại platform tại {url} ...")
         platform, info = self._detect(url, session)
@@ -356,21 +458,32 @@ class RegisterService:
             f"[{FG_MUTED}](confidence={info.confidence})[/{FG_MUTED}]")
 
         hook = self._make_verify_hook(mail["tempmail"])
+
+        # Reserve the one-account attempt BEFORE the first platform register
+        # POST. The old code committed only after network creation, so two
+        # concurrent CLIs could both create real accounts and only then notice
+        # the race. Fail closed if reservation cannot be persisted: without a
+        # durable cross-process marker the one-account safety contract cannot
+        # be guaranteed.
+        reservation = self._commit_attempt(url)
+        if reservation == COMMIT_PREEMPTED:
+            raise RuntimeError(
+                "Rate limit: một tiến trình khác đã reserve register cho URL "
+                "này — dừng TRƯỚC network POST để tránh tạo trùng tài khoản."
+            )
+        if reservation == COMMIT_UNPERSISTED:
+            raise RuntimeError(
+                "Không persist được register reservation — dừng TRƯỚC network "
+                "POST để tránh tạo trùng tài khoản khi chạy song song."
+            )
+
         try:
             result = platform.register(
                 username=creds["username"], email=reg_email,
                 password=creds["password"], verify_email_hook=hook)
         except PlatformRegisterUnsupported as exc:
-            # Hunt-c18 BUG-7 (LOW): nhánh captcha CŨNG là MỘT lần attempt —
-            # trước đây re-raise KHÔNG ghi nhận nên chạy lại liền nhau bypass
-            # rate limit. Ghi NGAY (atomic anti-TOCTOU) trước khi re-raise;
-            # thua cuộc race thì giữ nguyên attempt của tiến trình thắng.
-            if self._commit_attempt(url) == COMMIT_PREEMPTED:
-                Logger.warning(
-                    "Một tiến trình khác vừa ghi nhận register cùng URL khi "
-                    "lần chạy này đang diễn ra — giữ nguyên attempt của "
-                    "tiến trình đó.")
-            # COMMIT_UNPERSISTED: warning đã log tại _commit_attempt.
+            # Reservation đã persist TRƯỚC network/captcha probe. Không commit
+            # lần hai ở đây; attempt bị chặn captcha vẫn chịu cooldown 60s.
             # Diagnostic-style (spec §4.6): ✗ kết quả → ╰─▶ hướng dẫn thủ công.
             console.print(
                 f"[bold {ERROR}]✗[/bold {ERROR}] "
@@ -383,34 +496,15 @@ class RegisterService:
                                     created=False)
             raise
         except Exception as exc:
-            # Van-an-toàn R2: exception thường giữa flow (mạng/tempmail chết
-            # giữa xác minh email...) — account CÓ THỂ đã tồn tại server-side
-            # nên credentials KHÔNG được mất, và attempt vẫn phải được ghi
-            # nhận để rate-limit không bị bypass.
+            # Reservation đã persist trước network. Account có thể đã được tạo
+            # phía server, nên luôn in credentials để người dùng có thể recover.
             Logger.error(f"Register lỗi giữa chừng: {str(exc)[:200]}")
-            if self._commit_attempt(url) == COMMIT_PREEMPTED:
-                Logger.warning(
-                    "Một tiến trình khác vừa ghi nhận register cùng URL khi "
-                    "lần chạy này đang diễn ra — giữ nguyên attempt của "
-                    "tiến trình đó.")
-            # COMMIT_UNPERSISTED: warning đã log tại _commit_attempt.
             self._print_credentials({**creds, "url": url, "email": reg_email},
                                     created=False)
             raise
 
-        # Van-an-toàn: ghi nhận MỌI lần attempt để siết rate limit — giờ là
-        # atomic: re-check trên state mới nhất TRONG khóa (hunt-c18 BUG-2);
-        # thua cuộc race nghĩa là một CLI song song vừa tạo tài khoản cùng
-        # URL → dừng sạch thay vì tạo trùng.
-        if self._commit_attempt(url) == COMMIT_PREEMPTED:
-            raise RuntimeError(
-                "Rate limit: một tiến trình khác vừa đăng ký cùng URL trong "
-                "khi lần chạy này đang diễn ra — dừng để tránh tạo trùng "
-                "tài khoản.")
-        # COMMIT_UNPERSISTED (review c18-2, LOW): account ĐÃ tạo phía server
-        # — KHÔNG chặn flow ở đây (trước đây OSError lan qua run() che
-        # exit-code mapping và nuốt mất credentials); warning đã log rõ,
-        # credentials vẫn được in + auth vẫn thử lưu bên dưới.
+        # Attempt đã được reserve atomic trước network, nên không ghi lại
+        # timestamp ở đây (ghi lần hai sẽ tự rate-limit chính process này).
 
         if not result.get("ok"):
             Logger.error(f"Register thất bại: {result.get('message')}")
@@ -428,12 +522,22 @@ class RegisterService:
             "registered_at": int(self._now()),
         }
         token = result.get("token")
-        cookies = result.get("cookies") or {
-            c.name: c.value for c in session.cookies}
+        # Preserve transport cookies such as cf_clearance alongside platform
+        # cookies returned explicitly by the register adapter. Using `or`
+        # here used to discard cf_clearance whenever the platform returned
+        # its own non-empty cookie dict, so the next pull/submit could fall
+        # straight back into Cloudflare.
+        cookies = {c.name: c.value for c in session.cookies}
+        cookies.update(result.get("cookies") or {})
         if cookies:
             auth_entry["cookie"] = self._cookies_to_header(cookies)
         if token:
             auth_entry["token"] = token
+        team_token = result.get("team_token")
+        if team_token:
+            # rCTF v2 returns a long-lived team token alongside the auth token.
+            # Keep it for recovery/login refresh instead of discarding it.
+            auth_entry["team_token"] = team_token
 
         # Hunt-c18 BUG-2: auth map merge NGUYÊN TỬ qua updater (đọc-mutate-
         # ghi trong khóa) thay vì load-stale-save; attempt đã commit ở bước

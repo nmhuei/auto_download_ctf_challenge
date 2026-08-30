@@ -1,7 +1,19 @@
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
-Verdict = Literal["correct", "incorrect", "unknown", "ratelimited"]
+Verdict = Literal[
+    "correct",
+    "incorrect",
+    "already_solved",
+    "ratelimited",
+    "auth_failed",
+    "event_not_started",
+    "event_paused",
+    "event_closed",
+    "cheat_detected",
+    "challenge_not_found",
+    "unknown",
+]
 
 @dataclass
 class Challenge:

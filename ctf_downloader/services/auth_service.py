@@ -31,6 +31,26 @@ def auth_key(workspace: Optional[str], url: Optional[str] = None) -> Optional[st
 
 class AuthService:
     @staticmethod
+    def resolve_cookie_arg(cookie_arg: Optional[str]) -> Optional[str]:
+        """Resolve a literal cookie or a path to a cookie file.
+
+        An existing file that cannot be read is an input error, not a cookie
+        literal: raise a clear RuntimeError so callers never send the pathname
+        itself as an HTTP Cookie header after an I/O failure.
+        """
+        if not cookie_arg:
+            return cookie_arg
+        if os.path.isfile(cookie_arg):
+            try:
+                with open(cookie_arg, 'r', encoding='utf-8') as f:
+                    return f.read().strip()
+            except OSError as exc:
+                raise RuntimeError(
+                    f"Không đọc được cookie file '{cookie_arg}': {exc}"
+                ) from exc
+        return cookie_arg
+
+    @staticmethod
     def resolve(
         workspace: str,
         cookie_arg: Optional[str] = None,
@@ -44,10 +64,7 @@ class AuthService:
         Nếu cookie_arg trỏ tới file thật thì đọc nội dung file làm cookie.
         """
         if cookie_arg:
-            if os.path.isfile(cookie_arg):
-                with open(cookie_arg, 'r', encoding='utf-8') as f:
-                    return f.read().strip(), token_arg
-            return cookie_arg, token_arg
+            return AuthService.resolve_cookie_arg(cookie_arg), token_arg
 
         cfg = load_global_config()
         saved = AuthService.lookup_auth_entry(workspace, cfg.get('auth', {}))

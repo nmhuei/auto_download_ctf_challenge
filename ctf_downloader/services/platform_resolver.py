@@ -50,7 +50,7 @@ class PlatformResolver:
             raise ValueError(
                 "Could not determine CTF platform URL from workspace.")
 
-        session = create_session(cookie=cookie, token=token)
+        session = create_session(cookie=cookie, token=token, base_url=url)
 
         declared = str(ctf_info.get("platform", "") or "").strip().lower()
         spec = None

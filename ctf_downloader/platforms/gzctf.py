@@ -9,11 +9,46 @@ from rich.markup import escape
 from .base import (BasePlatform, Challenge, CTFInfo, EventTimes,
                    PlatformRegisterUnsupported, SolveAttribution, epoch_ms,
                    normalize_epoch_to_utc, safe_get_json)
+from ..utils.gzctf_crypto import GZCTFCryptoError, encrypt_api_data
 from ..utils.logger import Logger
 from .registry import register
 
-# Bộ field đặc trưng của GZCTF ClientConfig (GET /api/config)
-_GZCTF_CONFIG_FIELDS = ("Title", "Slogan", "PortMapping", "DefaultLifetime")
+# Semantic fields của GZCTF ClientConfig. Upstream hiện tại serialize camelCase,
+# các bản cũ/test fixtures từng dùng PascalCase -> luôn đọc tương thích cả hai.
+_GZCTF_CONFIG_FIELDS = ("title", "slogan", "portMapping", "defaultLifetime")
+
+
+def _gz_get(data: Dict[str, Any], *names: str, default=None):
+    if not isinstance(data, dict):
+        return default
+    by_lower = {str(k).lower(): v for k, v in data.items()}
+    for name in names:
+        if name in data:
+            return data[name]
+        hit = by_lower.get(str(name).lower())
+        if hit is not None:
+            return hit
+    return default
+
+
+def _gz_client_config(platform, max_age: float = 300.0) -> Dict[str, Any]:
+    now = time.monotonic()
+    cached = getattr(platform, "_register_client_config", None)
+    cached_at = getattr(platform, "_register_client_config_ts", None)
+    if (isinstance(cached, dict) and cached_at is not None
+            and now - float(cached_at) < max_age):
+        return cached
+    data, status = safe_get_json(
+        platform.session, f"{platform.origin}/api/config", statuses=(200,)
+    )
+    if not isinstance(data, dict):
+        raise PlatformRegisterUnsupported(
+            f"Không đọc được GZCTF /api/config (HTTP {status}) — "
+            "không thể xác minh API encryption/captcha an toàn."
+        )
+    platform._register_client_config = data
+    platform._register_client_config_ts = now
+    return data
 
 
 def probe_api_config(origin: str, session, info, done: set) -> bool:
@@ -22,17 +57,20 @@ def probe_api_config(origin: str, session, info, done: set) -> bool:
         return False
     done.add("gzctf_config")
     data, status = safe_get_json(session, f"{origin}/api/config")
-    if isinstance(data, dict) and all(f in data for f in _GZCTF_CONFIG_FIELDS):
+    if isinstance(data, dict) and all(
+        _gz_get(data, field) is not None for field in _GZCTF_CONFIG_FIELDS
+    ):
         caps = info.capabilities
-        info.version_hints["title"] = data.get("Title")
-        caps["rules_via_api"] = bool(data.get("Rules"))
-        public_key = data.get("ApiPublicKey")
+        info.version_hints["title"] = _gz_get(data, "title", "Title")
+        caps["rules_via_api"] = bool(_gz_get(data, "rules", "Rules"))
+        public_key = _gz_get(data, "apiPublicKey", "ApiPublicKey")
+        port_mapping = _gz_get(data, "portMapping", "PortMapping")
         caps["api_encryption"] = bool(public_key)
-        caps["port_mapping_proxy"] = data.get("PortMapping") == "PlatformProxy"
+        caps["port_mapping_proxy"] = port_mapping == "PlatformProxy"
         info.add_signal(
             f"/api/config khớp ClientConfig GZCTF "
-            f"(ApiPublicKey={'có' if public_key else 'null'}, "
-            f"PortMapping={data.get('PortMapping')!r})"
+            f"(apiPublicKey={'có' if public_key else 'null'}, "
+            f"portMapping={port_mapping!r})"
         )
         return True
     info.add_signal(f"GET /api/config -> không khớp GZCTF (HTTP {status})")
@@ -66,23 +104,21 @@ _CAPTCHA_PROVIDER_VALUES = ("turnstile", "recaptchav2", "recaptchav3",
                             "recaptcha", "hcaptcha")
 
 
-def solve_hash_pow(challenge_id: str, difficulty: int,
+def solve_hash_pow(challenge_hex: str, difficulty: int,
                    max_iter: int = 50_000_000) -> Optional[str]:
-    """Giải HashPow của GZCTF đúng wire-format upstream:
+    """Solve current GZCTF HashPow against the *challenge bytes*.
 
-    - ``challenge_id``: hex string từ PowChallenge (vd 12-hex = 6 bytes).
-    - Preimage server hash: ``SHA256(unhexlify(challenge) + answer_bytes)``
-      (KHÔNG phải ASCII string).
-    - Answer ĐÚNG ``AnswerLength * 2`` = 16 hex (8 bytes).
-
-    Trả answer dạng 16-hex lowercase, hoặc None nếu vượt ``max_iter``.
+    Upstream returns two distinct values: ``id`` is only the cache/ticket key,
+    while ``challenge`` is the random 8-byte preimage prefix that the browser
+    worker hashes. Server verification computes SHA256(challenge + answer).
+    The answer is always exactly 8 bytes / 16 hex chars, even difficulty=0.
     """
-    if difficulty <= 0:
-        return ""
     try:
-        prefix = bytes.fromhex(challenge_id)
+        prefix = bytes.fromhex(str(challenge_hex))
     except ValueError:
-        prefix = challenge_id.encode()  # fallback: id không phải hex
+        prefix = str(challenge_hex).encode()
+    if difficulty <= 0:
+        return (0).to_bytes(8, "big").hex()
     for i in range(max_iter):
         answer_bytes = i.to_bytes(8, "big")
         digest = hashlib.sha256(prefix + answer_bytes).digest()
@@ -112,37 +148,55 @@ def gzctf_probe_captcha(platform) -> Optional[Dict[str, Any]]:
     """
     origin, sess = platform.origin, platform.session
 
-    # 1. ClientConfig (/api/config): provider/site-key bật -> dừng sạch.
-    cfg, _status = safe_get_json(sess, f"{origin}/api/config", statuses=(200,))
-    if isinstance(cfg, dict):
-        provider = str(cfg.get("CaptchaProvider") or "").strip().lower()
-        site_key_on = any(str(cfg.get(k) or "").strip()
-                          for k in _CAPTCHA_SITEKEY_FIELDS)
-        if provider and provider not in ("none", "hashpow", "pow"):
-            raise PlatformRegisterUnsupported(
-                "⚠️ Platform bật captcha "
-                f"({cfg.get('CaptchaProvider')}) — đăng ký thủ công tại "
-                f"{origin}/register. Tool không bypass captcha.")
-        if site_key_on:
-            raise PlatformRegisterUnsupported(
-                "⚠️ Platform cấu hình site-key captcha (Turnstile/reCAPTCHA/"
-                "hCaptcha) — đăng ký thủ công. Tool không bypass captcha.")
+    # 1. ClientConfig: cache + support both old PascalCase/new camelCase.
+    cfg = _gz_client_config(platform)
+    # Historical deployments exposed provider/site keys here; current upstream
+    # exposes provider via /api/captcha. Keep the old checks for compatibility.
+    provider = str(_gz_get(cfg, "captchaProvider", "CaptchaProvider") or "").strip().lower()
+    site_key_on = any(str(_gz_get(cfg, k, k[0].lower() + k[1:]) or "").strip()
+                      for k in _CAPTCHA_SITEKEY_FIELDS)
+    if provider and provider not in ("none", "hashpow", "pow"):
+        raise PlatformRegisterUnsupported(
+            "⚠️ Platform bật captcha "
+            f"({provider}) — đăng ký thủ công tại {origin}/register. "
+            "Tool không bypass captcha.")
+    if site_key_on:
+        raise PlatformRegisterUnsupported(
+            "⚠️ Platform cấu hình site-key captcha (Turnstile/reCAPTCHA/"
+            "hCaptcha) — đăng ký thủ công. Tool không bypass captcha.")
 
     # 2. GET /api/captcha: 404/204/rỗng (GZCTF cũ) HOẶC 200 {"type":"None",
     #    "siteKey":""} (GZCTF hiện đại) -> không cần captcha, đi tiếp.
     try:
         resp = sess.get(f"{origin}/api/captcha", timeout=15)
     except Exception as exc:
-        Logger.warning(f"GZCTF register: GET /api/captcha lỗi ({exc}) — "
-                       "tiếp tục như không có captcha.")
-        return {}
+        # Fail closed. Treating a network failure as "captcha disabled" can
+        # submit a registration without the required token and burn the
+        # platform's register rate limit.
+        raise PlatformRegisterUnsupported(
+            f"Không kiểm tra được captcha GZCTF ({type(exc).__name__}: {exc}) — "
+            "dừng trước khi POST register."
+        ) from exc
     if resp.status_code in (404, 204):
+        # Compatibility with older GZCTF versions where the captcha endpoint
+        # did not exist when disabled.
         return {}
+    if resp.status_code != 200:
+        raise PlatformRegisterUnsupported(
+            f"GET /api/captcha trả HTTP {resp.status_code} — "
+            "không thể xác minh captcha an toàn."
+        )
     try:
         data = resp.json()
-    except Exception:
-        return {}
-    if not isinstance(data, dict) or not data:
+    except Exception as exc:
+        raise PlatformRegisterUnsupported(
+            "GET /api/captcha trả dữ liệu không phải JSON — dừng an toàn."
+        ) from exc
+    if not isinstance(data, dict):
+        raise PlatformRegisterUnsupported(
+            "GET /api/captcha trả shape không hợp lệ — dừng an toàn."
+        )
+    if not data:
         return {}
 
     ctype = str(data.get("type") or data.get("captchaType") or "").strip()
@@ -162,17 +216,29 @@ def gzctf_probe_captcha(platform) -> Optional[Dict[str, Any]]:
 
     # HashPow -> lấy challenge từ /api/captcha/PowChallenge và giải.
     if "pow" in ctype_low or "hashpow" in ctype_low:
+        # ASP.NET routing is case-insensitive; keep historical casing so
+        # older reverse proxies/fixtures do not let the generic /api/captcha
+        # handler swallow this more-specific request.
         chal_url = f"{origin}/api/captcha/PowChallenge"
         chal_resp = sess.get(chal_url, timeout=15)
         if chal_resp.status_code != 200:
             raise PlatformRegisterUnsupported(
                 f"Lấy PowChallenge thất bại (HTTP {chal_resp.status_code}).")
         chal = chal_resp.json() or {}
-        chal_id = str(chal.get("id") or chal.get("challenge") or "")
+        chal_id = str(_gz_get(chal, "id", "Id") or "")
+        challenge_raw = _gz_get(chal, "challenge", "Challenge")
         if not chal_id:
             raise PlatformRegisterUnsupported(
-                f"PowChallenge thiếu id/challenge: {chal}")
-        raw_diff = chal.get("difficulty")
+                f"PowChallenge thiếu id: {chal}")
+        # Current upstream always sends a distinct random challenge. Very old
+        # builds/fixtures exposed only id; retain a legacy fallback without
+        # affecting modern servers where challenge is present.
+        challenge = str(challenge_raw or chal_id)
+        if challenge_raw is None:
+            Logger.warning(
+                "GZCTF PowChallenge legacy thiếu field challenge — fallback hash id."
+            )
+        raw_diff = _gz_get(chal, "difficulty", "Difficulty")
         try:
             difficulty = int(raw_diff or 0)
         except (TypeError, ValueError):
@@ -184,8 +250,11 @@ def gzctf_probe_captcha(platform) -> Optional[Dict[str, Any]]:
                 raise PlatformRegisterUnsupported(
                     f"⚠️ PowChallenge difficulty không hợp lệ ({raw_diff!r}) — "
                     f"đăng ký thủ công tại {origin}/register.")
-        return {"challenge_id": chal_id,
-                "difficulty": difficulty}
+        return {
+            "challenge_id": chal_id,
+            "challenge": challenge,
+            "difficulty": difficulty,
+        }
 
     # Loại captcha khác/không rõ -> an toàn là dừng
     raise PlatformRegisterUnsupported(
@@ -193,25 +262,62 @@ def gzctf_probe_captcha(platform) -> Optional[Dict[str, Any]]:
         "đăng ký thủ công. Tool không bypass captcha.")
 
 
+def _gz_captcha_ticket(platform) -> Optional[str]:
+    """Get a fresh single-use captcha ticket for exactly one protected action."""
+    task = gzctf_probe_captcha(platform)
+    if not task:
+        return None
+    solution = solve_hash_pow(task["challenge"], task["difficulty"])
+    if solution is None:
+        raise PlatformRegisterUnsupported(
+            "Không giải được GZCTF HashPow trong giới hạn vòng lặp."
+        )
+    if len(solution) != 16:
+        raise PlatformRegisterUnsupported(
+            f"GZCTF HashPow solver trả answer sai độ dài: {solution!r}"
+        )
+    return f"{task['challenge_id']}:{solution}"
+
+
+def _gz_capture_auth(session) -> Dict[str, Any]:
+    cookies = {c.name: c.value for c in getattr(session, "cookies", [])}
+    token = cookies.get("GZCTF_Token")
+    out: Dict[str, Any] = {}
+    if cookies:
+        out["cookies"] = cookies
+    if token:
+        out["token"] = token
+    return out
+
+
 def gzctf_register(platform, *, username: str, email: str, password: str,
                    verify_email_hook=None) -> Dict[str, Any]:
-    """Flow auto-register GZCTF (spec auto-register §2)."""
+    """Auto-register against current GZCTF while retaining old-server fallback.
+
+    Current upstream requires API encryption when ``apiPublicKey`` is present,
+    a fresh single-use captcha ticket for every protected action, and returns a
+    RegisterStatus that tells us whether login/email/admin confirmation is next.
+    """
     origin, sess = platform.origin, platform.session
 
-    pow_task = gzctf_probe_captcha(platform)
-    payload: Dict[str, Any] = {"userName": username, "email": email,
-                               "password": password}
-    if pow_task:
-        solution = solve_hash_pow(pow_task["challenge_id"],
-                                  pow_task["difficulty"])
-        if solution is None:
-            return {"ok": False,
-                    "message": "Không giải được HashPow trong giới hạn vòng lặp."}
-        # Wire-format upstream: server bind ModelWithCaptcha.Challenge và split
-        # theo ':' -> ticket = "<challenge_ID>:<answer 16-hex>", field JSON
-        # tên "challenge".
-        payload["challenge"] = f"{pow_task['challenge_id']}:{solution}"
-        Logger.info("GZCTF: đã giải HashPow (PoW) — tiếp tục register.")
+    cfg = _gz_client_config(platform)
+    public_key = _gz_get(cfg, "apiPublicKey", "ApiPublicKey")
+    try:
+        wire_password = encrypt_api_data(password, public_key)
+    except GZCTFCryptoError as exc:
+        raise PlatformRegisterUnsupported(
+            f"Không mã hoá được password theo GZCTF apiPublicKey: {exc}"
+        ) from exc
+
+    payload: Dict[str, Any] = {
+        "userName": username,
+        "email": email,
+        "password": wire_password,
+    }
+    ticket = _gz_captcha_ticket(platform)
+    if ticket:
+        payload["challenge"] = ticket
+        Logger.info("GZCTF: đã giải HashPow cho register.")
 
     try:
         resp = sess.post(f"{origin}/api/account/register", json=payload,
@@ -220,41 +326,89 @@ def gzctf_register(platform, *, username: str, email: str, password: str,
         return {"ok": False, "message": f"Lỗi mạng khi register: {exc}"}
 
     if resp.status_code != 200:
-        detail = (resp.text or "").strip().strip('"')[:200]
+        detail = (resp.text or "").strip().strip('"')[:300]
         return {"ok": False,
                 "message": f"Register thất bại (HTTP {resp.status_code}): {detail}"}
 
-    Logger.success("GZCTF: register OK (HTTP 200) — tiến hành login lấy token.")
-    result: Dict[str, Any] = {"ok": True, "message": "Đã register"}
-
-    if verify_email_hook is not None:
-        verified = verify_email_hook(sess)
-        result["email_verified"] = bool(verified)
-
-    # Login NGAY để lấy GZCTF_Token (cookie hoặc body trả JWT).
-    # Ghi chú upstream: LoginModel cũng kế thừa captcha — platform BẬT captcha
-    # thì bước login cần challenge RIÊNG (single-use, không tái dùng ticket
-    # register); chỉ warning, xử lý đầy đủ ở đợt sau.
-    if pow_task:
-        Logger.warning(
-            "GZCTF: platform dùng HashPow — login-sau-register có thể bị đòi "
-            "captcha riêng; nếu vậy hãy đăng nhập thủ công bằng credentials "
-            "đã in.")
+    body: Dict[str, Any] = {}
     try:
-        login = sess.post(f"{origin}/api/account/login",
-                          json={"name": username, "password": password},
-                          timeout=20)
+        parsed = resp.json() or {}
+        if isinstance(parsed, dict):
+            body = parsed
+    except Exception:
+        pass
+    register_status = str(_gz_get(body, "data", "Data") or "").strip()
+    title = str(_gz_get(body, "title", "Title") or "Đã register")
+    result: Dict[str, Any] = {
+        "ok": True,
+        "message": title,
+        "register_status": register_status or None,
+    }
+
+    if register_status == "LoggedIn":
+        Logger.success("GZCTF: register OK và server đã đăng nhập session.")
+        result.update(_gz_capture_auth(sess))
+        return result
+
+    if register_status == "AdminConfirmationRequired":
+        result["pending_admin_confirmation"] = True
+        Logger.warning(
+            "GZCTF: account đã tạo nhưng đang chờ admin phê duyệt; "
+            "không thử login lặp lại."
+        )
+        return result
+
+    if register_status == "EmailConfirmationRequired":
+        result["pending_email_verification"] = True
+        if verify_email_hook is None:
+            Logger.warning(
+                "GZCTF: account đang chờ email verification; hãy mở email thủ công."
+            )
+            return result
+        verified = verify_email_hook(
+            sess, platform="gzctf", base_url=origin
+        )
+        verified_ok = bool(
+            verified.get("ok") if isinstance(verified, dict) else verified
+        )
+        result["email_verified"] = verified_ok
+        result["pending_email_verification"] = not verified_ok
+        if verified_ok:
+            # AccountController.Verify signs the user in server-side.
+            result.update(_gz_capture_auth(sess))
+        return result
+
+    # Compatibility fallback for older GZCTF builds that returned HTTP 200
+    # without RegisterStatus. They may need a separate login request. LoginModel
+    # is also ModelWithCaptcha, so fetch a FRESH ticket and use current key name.
+    Logger.info(
+        "GZCTF register trả status legacy/không rõ — thử login tương thích."
+    )
+    login_payload: Dict[str, Any] = {
+        "userName": username,
+        "password": wire_password,
+    }
+    login_ticket = _gz_captcha_ticket(platform)
+    if login_ticket:
+        login_payload["challenge"] = login_ticket
+        Logger.info("GZCTF: đã lấy HashPow mới riêng cho login.")
+    try:
+        login = sess.post(
+            f"{origin}/api/account/login", json=login_payload, timeout=20
+        )
         if login.status_code == 200:
-            token = (login.text or "").strip().strip('"')
-            cookies = {c.name: c.value for c in sess.cookies}
-            gz_token = cookies.get("GZCTF_Token") or (token or None)
-            if gz_token:
-                result["token"] = gz_token
-                result["cookies"] = cookies
+            result.update(_gz_capture_auth(sess))
+            # Some old deployments returned a raw token body instead of cookie.
+            raw_token = (login.text or "").strip().strip('"')
+            if raw_token and raw_token not in ("{}", "null") and not result.get("token"):
+                result["token"] = raw_token
         else:
             Logger.warning(
                 f"GZCTF: login sau register thất bại (HTTP {login.status_code}) "
-                "— dùng credentials vừa in để đăng nhập thủ công.")
+                "— dùng credentials vừa in để đăng nhập thủ công."
+            )
+    except PlatformRegisterUnsupported:
+        raise
     except Exception as exc:
         Logger.warning(f"GZCTF: login sau register lỗi: {exc}")
     return result
@@ -430,7 +584,7 @@ class GZCTFPlatform(BasePlatform):
                     hints_list = []
                     files_list = []
                     chall_type = item.get("type", "Standard")
-                    single_data = {}
+                    single_data: Dict[str, Any] = {}
 
                     if chall_resp.status_code == 200:
                         try:
@@ -519,7 +673,18 @@ class GZCTFPlatform(BasePlatform):
             return False, "GZCTF: không xác định được game_id từ URL."
 
         url = f"{self.origin}/api/game/{self.game_id}/challenges/{challenge_id}"
-        payload = {"flag": flag.strip()}
+        # Current GZCTF encrypts flag submissions with the same apiPublicKey
+        # used for account secrets. Sending plaintext when ApiEncryption is on
+        # makes DecryptApiData return null and can consume an attempt. Fail
+        # closed if config/key is unreadable instead of guessing plaintext.
+        try:
+            cfg = _gz_client_config(self)
+            public_key = _gz_get(cfg, "apiPublicKey", "ApiPublicKey")
+            wire_flag = encrypt_api_data(flag.strip(), public_key)
+        except (PlatformRegisterUnsupported, GZCTFCryptoError) as exc:
+            self.last_verdict = "unknown"
+            return False, f"Không chuẩn bị được GZCTF flag payload an toàn: {exc}"
+        payload = {"flag": wire_flag}
 
         try:
             resp = self.session.post(url, json=payload, timeout=15)
@@ -544,6 +709,9 @@ class GZCTFPlatform(BasePlatform):
                     if "wronganswer" in status_low or "wrong_answer" in status_low or "wrong answer" in status_low:
                         self.last_verdict = "incorrect"
                         return False, f"❌ Flag không đúng (Submission ID: {sub_id})."
+                    if "cheatdetected" in status_low or "cheat_detected" in status_low:
+                        self.last_verdict = "cheat_detected"
+                        return False, f"⚠️ GZCTF phát hiện flag không thuộc team hiện tại (Submission ID: {sub_id})."
 
                     time.sleep(self.SUBMISSION_POLL_INTERVAL)
 
@@ -555,10 +723,22 @@ class GZCTFPlatform(BasePlatform):
 
             elif resp.status_code == 400:
                 err_text = resp.text.strip().strip('"') or "Invalid Flag"
+                if "cheat" in err_text.lower():
+                    self.last_verdict = "cheat_detected"
+                    return False, f"⚠️ GZCTF phát hiện flag không thuộc team ({err_text})."
                 self.last_verdict = "incorrect"
                 return False, f"❌ Flag không đúng ({err_text})."
+            elif resp.status_code == 401:
+                self.last_verdict = "auth_failed"
+                return False, "🚫 Phiên xác thực hết hạn hoặc không hợp lệ."
             elif resp.status_code == 403:
-                self.last_verdict = "unknown"
+                err_text = (resp.text or "").strip().lower()
+                if "not started" in err_text or "notstarted" in err_text:
+                    self.last_verdict = "event_not_started"
+                elif "ended" in err_text or "closed" in err_text:
+                    self.last_verdict = "event_closed"
+                else:
+                    self.last_verdict = "unknown"
                 return False, "🚫 Bị từ chối truy cập / giải chưa hoạt động."
             elif resp.status_code == 429:
                 self.last_verdict = "ratelimited"
@@ -575,6 +755,8 @@ class GZCTFPlatform(BasePlatform):
         """
         Starts or retrieves container instance for challenge on GZCTF.
         """
+        if not self.game_id:
+            return False, {"message": "GZCTF: chưa xác định game_id."}
         url = f"{self.origin}/api/game/{self.game_id}/container/{challenge_id}"
         try:
             resp = self.session.post(url, timeout=15)
@@ -600,6 +782,8 @@ class GZCTFPlatform(BasePlatform):
         """
         Stops/destroys container instance for challenge on GZCTF.
         """
+        if not self.game_id:
+            return False, "GZCTF: chưa xác định game_id."
         url = f"{self.origin}/api/game/{self.game_id}/container/{challenge_id}"
         try:
             resp = self.session.delete(url, timeout=15)
@@ -613,6 +797,8 @@ class GZCTFPlatform(BasePlatform):
         """
         Extends active container instance lifetime.
         """
+        if not self.game_id:
+            return False, "GZCTF: chưa xác định game_id."
         url = f"{self.origin}/api/game/{self.game_id}/container/{challenge_id}/extend"
         try:
             resp = self.session.post(url, timeout=15)
@@ -626,6 +812,9 @@ class GZCTFPlatform(BasePlatform):
         """
         Fetches current container instance status and entry info.
         """
+        if not self.game_id:
+            return {"status": "unknown", "entry": None, "close_time": None,
+                    "reason": "missing_game_id"}
         url = f"{self.origin}/api/game/{self.game_id}/challenges/{challenge_id}"
         try:
             resp = self.session.get(url, timeout=10)
@@ -640,9 +829,17 @@ class GZCTFPlatform(BasePlatform):
                     "close_time": close_time,
                     "type": data.get("type")
                 }
-        except Exception:
-            pass
-        return {"status": "unknown", "entry": None, "close_time": None}
+            return {
+                "status": "unknown",
+                "entry": None,
+                "close_time": None,
+                "http_status": resp.status_code,
+                "reason": "auth_failed" if resp.status_code in (401, 403)
+                          else "http_error",
+            }
+        except Exception as exc:
+            return {"status": "unknown", "entry": None, "close_time": None,
+                    "reason": f"transport:{type(exc).__name__}"}
 
     # ------------------------------------------------------------------
     # Solve attribution (spec §4) — scoreboard là nguồn chính
@@ -760,6 +957,7 @@ class GZCTFPlatform(BasePlatform):
                 first_blood=bool(sol.get("firstBlood")),
                 solved_at=epoch_ms(sol.get("time") or sol.get("date")),
             )
+        return net_clean
 
     def fetch_solve_attribution(self, challenge_ids) -> Dict[Any, SolveAttribution]:
         """1–2 requests: /scoreboard (+ /team/{id} xác nhận membership).
@@ -787,7 +985,7 @@ class GZCTFPlatform(BasePlatform):
                 cache = {}   # chưa từng fetch thành công: trả rỗng
         return {orig: cache[k] for k, orig in wanted.items() if k in cache}
 
-    def fetch_scoreboard(self) -> Dict[str, Any]:
+    def fetch_scoreboard(self, if_none_match: Optional[str] = None) -> Dict[str, Any]:
         """
         Fetches scoreboard and ranking standings from GZCTF.
         """
@@ -798,7 +996,11 @@ class GZCTFPlatform(BasePlatform):
             "my_rank": None,
             "my_score": None,
             "total_teams": 0,
-            "standings": []
+            "standings": [],
+            "_http_status": None,
+            "_etag": None,
+            "_retry_after": None,
+            "_not_modified": False,
         }
 
         if not self.game_id:
@@ -806,7 +1008,15 @@ class GZCTFPlatform(BasePlatform):
 
         url = f"{self.origin}/api/game/{self.game_id}/scoreboard"
         try:
-            resp = self.session.get(url, timeout=15)
+            req_headers = {"If-None-Match": if_none_match} if if_none_match else {}
+            resp = self.session.get(url, timeout=15, headers=req_headers)
+            result["_http_status"] = resp.status_code
+            resp_headers = getattr(resp, "headers", None) or {}
+            result["_etag"] = resp_headers.get("ETag") or if_none_match
+            result["_retry_after"] = resp_headers.get("Retry-After")
+            if resp.status_code == 304:
+                result["_not_modified"] = True
+                return result
             if resp.status_code == 200:
                 data = resp.json() or {}
                 items = data.get("items", []) if isinstance(data, dict) else data
@@ -842,6 +1052,7 @@ class GZCTFPlatform(BasePlatform):
                     })
                 result["standings"] = standings
         except Exception as e:
+            result["_error"] = f"{type(e).__name__}: {e}"
             Logger.warning(f"Không tải được scoreboard từ GZCTF: {e}")
 
         return result

@@ -323,6 +323,48 @@ class TestRankServicePath(unittest.TestCase):
         self.assertIn("ConnectionError", errs[0].cause)
         self.assertTrue(any("kết nối mạng" in h for d in errs for h in d.hints))
 
+    def test_normalized_http_500_is_error_not_empty_scoreboard_success(self):
+        plat = MagicMock()
+        plat.authenticate.return_value = True
+        plat.fetch_scoreboard.return_value = {
+            "standings": [], "_http_status": 500,
+        }
+        svc = self._make_service(plat)
+        with patch("ctf_downloader.services.rank_service.render_diagnostic") as rd:
+            with self.assertRaisesRegex(RuntimeError, "HTTP 500"):
+                svc.fetch_ranking()
+        self.assertTrue(any(d.severity == "error" for d in self._diags(rd)))
+
+    def test_normalized_transport_error_is_reraised(self):
+        plat = MagicMock()
+        plat.authenticate.return_value = True
+        plat.fetch_scoreboard.return_value = {
+            "standings": [], "_error": "ConnectionError: reset",
+        }
+        svc = self._make_service(plat)
+        with self.assertRaisesRegex(RuntimeError, "transport.*ConnectionError"):
+            svc.fetch_ranking()
+
+    def test_429_preserves_retry_after_in_error(self):
+        plat = MagicMock()
+        plat.authenticate.return_value = True
+        plat.fetch_scoreboard.return_value = {
+            "standings": [], "_http_status": 429, "_retry_after": "90",
+        }
+        svc = self._make_service(plat)
+        with self.assertRaisesRegex(RuntimeError, "429.*Retry-After=90"):
+            svc.fetch_ranking()
+
+    def test_304_without_cached_snapshot_is_protocol_error(self):
+        plat = MagicMock()
+        plat.authenticate.return_value = True
+        plat.fetch_scoreboard.return_value = {
+            "standings": [], "_http_status": 304, "_not_modified": True,
+        }
+        svc = self._make_service(plat)
+        with self.assertRaisesRegex(RuntimeError, "304.*snapshot"):
+            svc.fetch_ranking()
+
 class TestRankScoreboardPhosphor(unittest.TestCase):
     """Render PHOSPHOR của bảng xếp hạng (design-system spec §4):
 

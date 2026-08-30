@@ -103,11 +103,16 @@ class RankService:
         if not self.url:
             raise ValueError("Platform URL not specified and could not be detected from workspace.")
 
-        self.session = create_session(cookie=self.cookie, token=self.token, timeout=self.timeout)
+        self.session = create_session(
+            cookie=self.cookie, token=self.token, timeout=self.timeout,
+            base_url=self.url,
+        )
         self.platform = PlatformDetector.detect_platform(self.url, self.session)
 
     def _resolve_url(self) -> Optional[str]:
         if not self.workspace_path or not os.path.exists(self.workspace_path):
+            return None
+        if self.repo is None:
             return None
         return self.repo.resolve_platform_url()
 
@@ -155,7 +160,41 @@ class RankService:
             ))
 
         try:
-            return fetcher()
+            data = fetcher() or {}
+            if not isinstance(data, dict):
+                raise TypeError(
+                    f"fetch_scoreboard() trả {type(data).__name__}, cần dict"
+                )
+            # Watch-mode adapters intentionally normalize transport/HTTP
+            # failures into metadata fields so one bad tick does not crash the
+            # loop. Rank is a one-shot command and has NO prior snapshot, so
+            # those same responses must surface as errors rather than being
+            # mislabeled "scoreboard chưa có standings".
+            if data.get("_error"):
+                raise RuntimeError(
+                    f"scoreboard transport: {data.get('_error')}"
+                )
+            status = data.get("_http_status")
+            try:
+                status = int(status) if status is not None else None
+            except (TypeError, ValueError):
+                raise RuntimeError(
+                    f"scoreboard trả HTTP status không hợp lệ: {status!r}"
+                )
+            if status == 304 or data.get("_not_modified"):
+                raise RuntimeError(
+                    "scoreboard trả 304 nhưng lệnh rank không có snapshot trước để dùng"
+                )
+            if status == 429:
+                retry_after = data.get("_retry_after")
+                detail = (
+                    f"; Retry-After={retry_after}"
+                    if retry_after not in (None, "") else ""
+                )
+                raise RuntimeError(f"scoreboard HTTP 429{detail}")
+            if status is not None and status >= 400:
+                raise RuntimeError(f"scoreboard HTTP {status}")
+            return data
         except Exception as exc:
             render_diagnostic(Diagnostic(
                 "error",
@@ -280,6 +319,9 @@ class RankService:
         )
 
     def _save_ranking_docs(self, data: Dict[str, Any]):
+        if self.repo is None or not self.workspace_path:
+            raise RuntimeError("Không có workspace repo để ghi ranking docs.")
+        repo = self.repo
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         # Hunter-c14 BUG-C14-2: mọi giá trị server-control nhúng vào
         # RANKING.md đi qua md_cell — '|' sinh cột ảo, newline sinh hàng
@@ -336,8 +378,8 @@ class RankService:
                              f"{score_cell} |")
 
         lines.append("")
-        self.repo.write_ranking_md("\n".join(lines))
-        ranking_md_path = str(self.repo.ranking_md_path)
+        repo.write_ranking_md("\n".join(lines))
+        ranking_md_path = str(repo.ranking_md_path)
 
         Logger.info(f"Đã cập nhật bảng xếp hạng live: [path]{os.path.relpath(ranking_md_path, self.workspace_path)}[/path]", markup=True)
 
@@ -352,4 +394,4 @@ class RankService:
             f" / {_md_code_span(teams_cell)}"
             f" (Team: {_md_code_span(team_cell)})"
         )
-        self.repo.patch_summary_live_rank(rank_badge)
+        repo.patch_summary_live_rank(rank_badge)

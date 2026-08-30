@@ -163,7 +163,8 @@ class DoctorReport:
         vòng cli ↔ services)."""
         try:
             now = _dt.datetime.now().astimezone()
-            off_h = int(now.utcoffset().total_seconds() // 3600)
+            offset = now.utcoffset() or _dt.timedelta(0)
+            off_h = int(offset.total_seconds() // 3600)
             return f"{now:%H:%M} UTC{off_h:+d}"
         except Exception:
             return ""
@@ -292,8 +293,10 @@ class HealthService:
         cookie_eff, token_eff = self._resolve_auth(workspace, cookie, token)
 
         if session is None:
-            session = create_session(cookie=cookie_eff, token=token_eff,
-                                     timeout=self.timeout)
+            session = create_session(
+                cookie=cookie_eff, token=token_eff,
+                timeout=self.timeout, base_url=url,
+            )
             # Doctor cần phản hồi NHANH: bỏ retry của session dùng chung
             # (Retry total=3 + backoff nhân thời gian chết mạng lên hàng phút).
             from requests.adapters import HTTPAdapter
@@ -306,7 +309,7 @@ class HealthService:
         self._check_auth(report, platform, cookie_eff=cookie_eff, token_eff=token_eff)
         self._check_capabilities(report, info)
         self._check_event_window(report, platform)
-        self._check_flag_format(report, platform)
+        self._check_flag_format(report, platform, workspace=workspace)
         return report
 
     # ------------------------------------------------------------------ #
@@ -328,6 +331,20 @@ class HealthService:
         try:
             resp = session.get(url, timeout=min(self.timeout, 5))
             status = getattr(resp, "status_code", 0)
+            try:
+                from ..utils.http_client import is_cloudflare_challenge
+                cf_challenge = is_cloudflare_challenge(resp)
+            except Exception:
+                cf_challenge = False
+            if cf_challenge:
+                report.add(
+                    "URL sống", False,
+                    f"HTTP {status} — Cloudflare Challenge Page đang chặn client tự động",
+                    fix=("Tool đã thử browser fingerprint. Nếu vẫn bị chặn bởi Managed "
+                         "Challenge/Turnstile, mở site bằng browser và truyền cookie "
+                         "cf_clearance cùng cookie platform (-c 'cf_clearance=...; ...')."),
+                )
+                return False
             ok = 200 <= status < 400
             report.add("URL sống", ok,
                        f"HTTP {status}" if ok else f"HTTP {status} (server trả lỗi)")
@@ -417,12 +434,30 @@ class HealthService:
             report.add("Event window", False,
                        "Platform không khai báo start/end giải")
             return
-        report.add("Event window", True,
-                   f"Bắt đầu {_fmt_dt(times.start_utc)} — kết thúc "
-                   f"{_fmt_dt(times.end_utc)} → {_window_status(times)}")
+        start, end = times.start_utc, times.end_utc
+        if start is None and end is None:
+            report.add("Event window", False,
+                       "Platform trả event window rỗng (không có start/end)")
+            return
+        if start is not None and end is not None and start > end:
+            report.add(
+                "Event window", False,
+                f"Event window không hợp lệ: start {_fmt_dt(start)} > end {_fmt_dt(end)}"
+            )
+            return
+        status = _window_status(times)
+        ended = status == "ĐÃ KẾT THÚC"
+        report.add(
+            "Event window",
+            not ended,
+            f"Bắt đầu {_fmt_dt(start)} — kết thúc {_fmt_dt(end)} → {status}",
+            fix=("Giải đã kết thúc; kiểm tra URL/event hiện tại trước khi dùng "
+                 "watch/sniper/submit.") if ended else "",
+        )
 
     # ---------------------- 6. 🏴 Flag format ------------------------- #
-    def _check_flag_format(self, report: DoctorReport, platform):
+    def _check_flag_format(self, report: DoctorReport, platform,
+                           workspace: Optional[str] = None):
         if platform is None:
             report.add("Flag format", False,
                        "Bỏ qua — không có platform adapter")
@@ -438,8 +473,31 @@ class HealthService:
                 fmt = extract_flag_format(rules)
             except Exception:
                 fmt = None
+
+        local_fmt = None
+        if workspace:
+            try:
+                from ..storage.workspace_repo import WorkspaceRepo
+                data = WorkspaceRepo(str(workspace)).read_challenges()
+                candidate = ((data.get("ctf_info") or {}).get("flag_format"))
+                if isinstance(candidate, str) and candidate.strip():
+                    # Reject a corrupt local regex instead of turning a stale
+                    # workspace value into a false-green readiness check.
+                    import re as _re
+                    _re.compile(candidate)
+                    local_fmt = candidate.strip()
+            except Exception as exc:
+                Logger.warning(
+                    f"Không đọc/validate được flag_format từ workspace: {exc}"
+                )
+
         if fmt:
-            report.add("Flag format", True, f"Tìm thấy: {fmt}")
+            report.add("Flag format", True, f"Tìm thấy từ rules: {fmt}")
+        elif local_fmt:
+            report.add(
+                "Flag format", True,
+                f"Dùng baseline workspace: {local_fmt} (rules không cho format rõ)"
+            )
         elif rules:
             report.add(
                 "Flag format", False,
