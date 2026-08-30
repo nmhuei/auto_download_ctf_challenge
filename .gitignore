@@ -63,11 +63,26 @@ venv.bak/
 
 # CTF Downloads / Output data
 PTIT_CTF_2026/
+COMPFEST_18/
+ASIS_CTF_2026/
 test_workspace/
 *.log
+
+# Local auth/session material and crash artifacts
+*_cookies.txt
+*.cookies.txt
+core
+core.*
 
 # Tool-generated artifacts at repo root (ctf rank/pull/archive chạy ở cwd=root)
 /RANKING.md
 /SUMMARY.md
 /challenges.json
 /_archives/
+
+# Local reverse/debug scratch artifacts accidentally created in repo root
+/call_log.txt
+/decrypted_stage2.bin
+/out_10ff4.txt
+/params.txt
+/trace_output.txt

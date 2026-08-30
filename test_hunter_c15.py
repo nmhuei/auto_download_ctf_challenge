@@ -215,7 +215,8 @@ class TestCaseBLocalOnlyAndCorrupt(SyncBase):
         plat = FakePlatform([make_chall(1, "Alpha", "web"),
                              make_chall(2, "Beta", "pwn", points=200)])
         res = self.quiet_sync(plat)     # không được nổ exception
-        self.assertTrue(res["ok"])
+        self.assertFalse(res["ok"],
+                         "metadata corrupt phải làm sync partial-failure")
         self.assertEqual(res["new_on_server"],
                          [{"id": 1, "name": "Alpha", "category": "web"}],
                          "BUG-C15-4: metadata corrupt → challenge bị coi là "
@@ -241,7 +242,8 @@ class TestCaseCReadOnly(SyncBase):
         finally:
             for name in ("web/alpha", "pwn/beta"):
                 os.chmod(os.path.join(self.ws, name), 0o755)
-        self.assertTrue(res["ok"])
+        self.assertFalse(res["ok"],
+                         "persist error phải làm CLI sync exit non-zero")
         self.assertEqual(res["updated"], 0)
         # EXPECTED ĐÚNG: có tín hiệu lỗi ghi (write_errors / ok=False /
         # warning). HIỆN TẠI: ok=True sạch sẽ — user tưởng sync thành công.

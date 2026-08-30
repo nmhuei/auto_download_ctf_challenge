@@ -136,6 +136,21 @@ class TestBeforeSleepFloor(_TempWsCase):
 # ---------------------------------------------------------------------- #
 class TestTargetLocksBounded(unittest.TestCase):
 
+    def setUp(self):
+        # Global weak registry is shared by every downloader test in this
+        # process. Previous tests may keep a temporary strong reference alive
+        # through traceback/mock frames until a later GC cycle, so these unit
+        # tests must start from an isolated registry instead of depending on
+        # execution order. No production lock semantics are changed.
+        gc.collect()
+        with hd._TARGET_LOCKS_GUARD:
+            hd._TARGET_LOCKS.clear()
+
+    def tearDown(self):
+        gc.collect()
+        with hd._TARGET_LOCKS_GUARD:
+            hd._TARGET_LOCKS.clear()
+
     @staticmethod
     def _key(tag):
         return os.path.join(tempfile.mkdtemp(prefix=f"tlock_{tag}_"),

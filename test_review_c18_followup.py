@@ -306,23 +306,19 @@ class TestF4OserrorKeepsCredentials(unittest.TestCase):
         self.addCleanup(setattr, Logger, "warning", orig_warn)
         return warns
 
-    def test_f4_commit_oserror_still_prints_credentials_returns_ok(self):
-        # RED (LOW): account ĐÃ tạo phía server; global config hỏng
-        # (PermissionError khi đọc file). OSError cũ lan qua run() -> CLI map
-        # exit-code sai + user MẤT credentials. Phải: log warning rõ, vẫn in
-        # credentials, run() trả ok để exit-code mapping đúng.
+    def test_f4_reservation_storage_error_fails_closed_before_account_creation(self):
+        # One-account safety now reserves BEFORE network. If global config
+        # cannot persist that reservation, creating an account would re-open
+        # the duplicate-account race, so the correct behavior is fail-closed.
         warns = self._capture_warnings()
 
         def broken_updater(mutator):
             raise PermissionError("config.json không đọc được")
 
         svc = self._svc(broken_updater)
-        result = svc.run(url=_URL, email="a@b.c")
-
-        self.assertTrue(result["ok"])
-        creds = result["credentials"]
-        self.assertTrue(creds.get("username") and creds.get("password"),
-                        "credentials không được mất dù storage hỏng")
+        with self.assertRaises(RuntimeError) as ctx:
+            svc.run(url=_URL, email="a@b.c")
+        self.assertIn("TRƯỚC network POST", str(ctx.exception))
         self.assertTrue(any("register_state" in w or "global config" in w
                             for w in warns),
                         f"phải log warning rõ về việc không persist: {warns}")

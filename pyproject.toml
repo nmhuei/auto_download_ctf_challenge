@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+extend-exclude = [
+  "ASIS_CTF_2026",
+  "COMPFEST_18",
+  "PTIT_CTF_2026",
+  ".git",
+  ".venv",
+]
+
+[tool.ruff.lint]
+# Correctness baseline for the legacy tree. These are pyflakes/pycodestyle
+# classes that signal syntax/undefined-name/control-flow failures, not style
+# churn such as unused imports accumulated by compatibility shims.
+select = ["E9", "F63", "F7", "F82"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+follow_imports = "normal"
+check_untyped_defs = true
+warn_unused_configs = true
+show_error_codes = true
+pretty = true
+exclude = [
+  "^ASIS_CTF_2026/",
+  "^COMPFEST_18/",
+  "^PTIT_CTF_2026/",
+]
+
+[tool.bandit]
+exclude_dirs = [
+  "ASIS_CTF_2026",
+  "COMPFEST_18",
+  "PTIT_CTF_2026",
+]
+# Assertions are heavily used by the test suite; production code is still
+# scanned for the security checks that Bandit considers actionable.
+skips = ["B101"]

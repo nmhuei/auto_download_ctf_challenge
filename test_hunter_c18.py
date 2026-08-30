@@ -228,32 +228,33 @@ class RegisterCaseBase(unittest.TestCase):
 
 
 class TestRateLimitTOCTOU(RegisterCaseBase):
-    def test_c18_06_race_lost_commit_does_not_overwrite_winner(self):
-        # RED (BUG-c18-2, M): hai CLI song song cùng URL đều pass check ban
-        # đầu; đối thủ commit attempt GIỮA lúc mình chạy network (mô phỏng
-        # bằng side-effect của platform.register). Khi mình commit phải THUA
-        # cuộc: raise RuntimeError, KHÔNG đè timestamp/auth của đối thủ.
+    def test_c18_06_race_lost_reservation_stops_before_network(self):
+        # Hai CLI có thể cùng pass snapshot _check_rate_limit(). Atomic
+        # reservation phải re-read fresh state và phát hiện rival TRƯỚC khi
+        # platform.register() tạo side effect phía server.
         rival_ts = self.now[0] + 25.0
+        original_updater = self.svc._update_cfg
+        injected = {"done": False}
 
-        def rival_commits_mid_run(**kw):
-            state = self.store.setdefault("register_state", {})
-            state.setdefault(_URL, {})["last_attempt_ts"] = rival_ts
-            self.store.setdefault("auth", {})["rival-key"] = {
-                "username": "rival"}
-            return {"ok": True}
+        def rival_wins_before_reservation(mutator):
+            if not injected["done"]:
+                self.store.setdefault("register_state", {}).setdefault(
+                    _URL, {})["last_attempt_ts"] = rival_ts
+                self.store.setdefault("auth", {})["rival-key"] = {
+                    "username": "rival"}
+                injected["done"] = True
+            return original_updater(mutator)
 
-        self.platform._side_effect = rival_commits_mid_run
+        self.svc._update_cfg = rival_wins_before_reservation
         with self.assertRaises(RuntimeError) as ctx:
             self.svc.run(url=_URL, email="a@b.c")
-        self.assertIn("tiến trình khác", str(ctx.exception))
+        self.assertIn("TRƯỚC network POST", str(ctx.exception))
         saved_ts = self.store.get("register_state", {}).get(_URL, {}) \
             .get("last_attempt_ts")
-        self.assertEqual(rival_ts, saved_ts,
-                         "timestamp của tiến trình thắng cuộc bị đè bởi "
-                         "bản stale")
-        self.assertIn("rival-key", self.store.get("auth", {}),
-                      "auth entry của tiến trình khác bị lost update")
-        self.assertEqual(1, self.platform.calls)
+        self.assertEqual(rival_ts, saved_ts)
+        self.assertIn("rival-key", self.store.get("auth", {}))
+        self.assertEqual(0, self.platform.calls,
+                         "thua reservation phải dừng trước register POST")
 
     def test_c18_07_sequential_after_60s_still_allowed(self):
         # Regression: đường commit mới vẫn cho phép chạy tuần tự chuẩn.
