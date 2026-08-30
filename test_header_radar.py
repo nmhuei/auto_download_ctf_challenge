@@ -9,7 +9,7 @@ from ctf_downloader.ui.banner import app_header
 
 
 class TestUCSExOdiaCommandHeader(unittest.TestCase):
-    def test_height_exactly_three_lines(self):
+    def test_height_exactly_one_line(self):
         for w in (40, 60, 80, 120):
             with self.subTest(width=w):
                 lines = app_header(
@@ -18,7 +18,7 @@ class TestUCSExOdiaCommandHeader(unittest.TestCase):
                     timestamp="10:13 UTC+7",
                     width=w,
                 ).plain.splitlines()
-                self.assertEqual(3, len(lines), f"w={w}: {lines!r}")
+                self.assertEqual(1, len(lines), f"w={w}: {lines!r}")
 
     def test_every_line_fits_width_and_has_no_trailing_padding(self):
         for w in (40, 60, 80, 120):
@@ -36,20 +36,20 @@ class TestUCSExOdiaCommandHeader(unittest.TestCase):
         self.assertIn("// status", first)
         self.assertIn("v3", first)
 
-    def test_line2_is_segmented_operation_rail(self):
+    def test_inline_segmented_operation_rail(self):
         t = app_header("status", timestamp="10:13", width=80)
-        second = t.plain.splitlines()[1]
-        self.assertEqual(32, second.count("▰"))
+        line = t.plain.splitlines()[0]
+        self.assertGreaterEqual(line.count("▰"), 16)
         rail_styles = {
             span.style
             for span in t.spans
             if "▰" in t.plain[span.start:span.end]
         }
-        self.assertGreaterEqual(len(rail_styles), 24)
+        self.assertGreaterEqual(len(rail_styles), 8)
 
     def test_payload_context_timestamp_present(self):
         plain = app_header(
-            "sync", context="ws:PTIT", timestamp="10:13 UTC+7", width=80
+            "sync", context="ws:PTIT", timestamp="10:13 UTC+7", width=120
         ).plain
         for piece in ("sync", "ws:PTIT", "10:13 UTC+7"):
             self.assertIn(piece, plain)
@@ -62,14 +62,14 @@ class TestUCSExOdiaCommandHeader(unittest.TestCase):
             width=40,
         )
         lines = t.plain.splitlines()
-        self.assertEqual(3, len(lines))
-        self.assertIn("…", lines[-1])
-        self.assertLessEqual(cell_len(lines[-1]), 40)
+        self.assertEqual(1, len(lines))
+        self.assertIn("…", lines[0])
+        self.assertLessEqual(cell_len(lines[0]), 40)
 
-    def test_no_timestamp_context_falls_back_to_framework_label(self):
+    def test_no_context_does_not_add_redundant_tagline(self):
         t = app_header("pull", width=80)
-        self.assertEqual(3, len(t.plain.splitlines()))
-        self.assertIn("CTF OPERATIONS FRAMEWORK", t.plain)
+        self.assertEqual(1, len(t.plain.splitlines()))
+        self.assertNotIn("CTF OPERATIONS FRAMEWORK", t.plain)
 
 
 if __name__ == "__main__":

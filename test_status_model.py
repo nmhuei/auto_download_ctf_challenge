@@ -617,10 +617,10 @@ class TestRenderIcons(TempWorkspaceCase):
         # nghĩa spec §4.3 — ✔ solved, ✎ draft; hoarded/drafts về dashboard sub.
         self.assertIn("✔", out)
         self.assertIn("✎", out)
-        # SPEC UI v2 §L1: 2 panel overview — TIẾN ĐỘ + GIẢI; hoarded/drafts
-        # về dòng sub điểm của panel TIẾN ĐỘ.
+        # Compact overview: một panel TIẾN ĐỘ duy nhất; activity chỉ xuất
+        # hiện khi có dữ liệu thật, không dựng panel GIẢI rỗng.
         self.assertIn("TIẾN ĐỘ", out)
-        self.assertIn("GIẢI", out)
+        self.assertNotIn("GIẢI", out)
         self.assertIn("hoarded 1 · drafts 1", out)
         # Dòng note (cột cuối, giữ ngoặc kép)
         self.assertIn('"SSTI sandbox escape — đang bypass"', out)
@@ -1320,50 +1320,39 @@ class TestChallengeRowSchemaWholeScreen(TempWorkspaceCase):
 
 
 class TestOverviewShellLayout(TempWorkspaceCase):
-    """SPEC UI v2 §L1 shell layout — 2 panel overview + category tile vuông.
-
-    - ≥96 cols: panel TIẾN ĐỘ + GIẢI xếp NGANG trên cùng một dòng (trái
-      tối thiểu 38 cell, phải phần còn lại).
-    - <96 cols: 2 panel XẾP DỌC — mỗi panel một khung riêng.
-    - Sparkline nhịp 24h LUÔN render trong panel GIẢI (không còn hack
-      responsive bỏ cột); không có lịch sử submit → baseline braille ⣀
-      visible kèm "+0 flags 24h".
-    - Category heading là tile corner-glyph ``┌┐ NAME ─── d/d [meter] pts``.
-    """
+    """Compact status shell: one responsive overview panel, no empty activity chrome."""
 
     def _render_with_cols(self, cols) -> str:
         buf = io.StringIO()
-        with redirect_stdout(buf), \
-                patch.object(StatusService, "_tty_columns", return_value=cols):
+        with redirect_stdout(buf),                 patch.object(StatusService, "_tty_columns", return_value=cols):
             StatusService.render_tree(self.repo)
         return buf.getvalue()
 
-    def test_wide_terminal_pairs_panels_on_one_line(self):
+    def test_wide_terminal_uses_single_overview_panel(self):
         out = self._render_with_cols(120)
         title_line = next(ln for ln in out.splitlines() if "TIẾN ĐỘ" in ln)
-        self.assertIn("GIẢI", title_line)      # 2 panel NGANG cùng dòng
-        self.assertIn("╭", title_line)         # khung ROUNDED viền accent.deep
+        self.assertIn("╭", title_line)
+        self.assertNotIn("GIẢI", out)
+        self.assertLessEqual(len(title_line), 88)
 
-    def test_narrow_terminal_stacks_panels(self):
+    def test_narrow_terminal_keeps_same_single_panel_model(self):
         out = self._render_with_cols(80)
-        ti_line = next(ln for ln in out.splitlines() if "TIẾN ĐỘ" in ln)
-        self.assertNotIn("GIẢI", ti_line)      # XẾP DỌC: khác khối
-        self.assertIn("GIẢI", out)
+        self.assertIn("TIẾN ĐỘ", out)
+        self.assertNotIn("GIẢI", out)
 
-    def test_solve_pulse_always_rendered_both_widths(self):
+    def test_zero_activity_is_not_rendered_as_fake_sparkline(self):
         for cols in (120, 80):
             out = self._render_with_cols(cols)
-            # Workspace không có submit history → đếm 0 nhưng vẫn visible.
-            self.assertIn("+0 flags 24h", out)
-            self.assertIn("⣀", out)
+            self.assertNotIn("+0 flags 24h", out)
+            self.assertNotIn("⣀" * 12, out)
 
     def test_category_tile_corner_frame(self):
         _add_challenge(self.root, 2, "B", "Crypto", points=500)
         out = self._render_with_cols(120)
         web_line = next(ln for ln in out.splitlines() if "WEB" in ln)
-        self.assertIn("┌┐ WEB", web_line)      # corner-glyph tile
-        self.assertIn("─", web_line)           # divider fill tới cột tail
-        self.assertIn("0/1", web_line)         # tail d/d
+        self.assertIn("┌┐ WEB", web_line)
+        self.assertIn("─", web_line)
+        self.assertIn("0/1", web_line)
         crypto_line = next(ln for ln in out.splitlines() if "CRYPTO" in ln)
         self.assertIn("┌┐ CRYPTO", crypto_line)
 
@@ -1376,15 +1365,26 @@ class TestOverviewShellLayout(TempWorkspaceCase):
                         "flag": {"value": "FLAG{x}", "state": "hoarded"}})
         out = self._render_with_cols(120)
         pts_line = next(ln for ln in out.splitlines() if "hoarded" in ln)
-        self.assertIn("100/600 pts", pts_line)     # earned accent.hi / total
+        self.assertIn("100/600 pts", pts_line)
         self.assertIn("hoarded 1 · drafts 1", pts_line)
+
+    def test_status_has_no_blank_separator_rows(self):
+        _add_challenge(self.root, 2, "B", "Crypto", points=500)
+        out = self._render_with_cols(120)
+        self.assertNotIn("\n\n", out)
+
+    def test_zero_signal_overview_is_exactly_three_lines(self):
+        out = self._render_with_cols(120)
+        lines = out.splitlines()
+        first_category = next(i for i, line in enumerate(lines) if "┌┐ WEB" in line)
+        self.assertEqual(3, first_category, lines[:first_category])
 
 
 class TestNonTTYColumnDefault(TempWorkspaceCase):
     """synthesis uiv2 #9 — non-TTY KHÔNG còn ép layout tới trần.
 
-    - Trước đây ``_tty_columns`` trả 10**6 khi pipe → layout NGANG bị ép
-      tới trần ``OVERVIEW_MAX_COLS`` (dòng ~89 cells) bất kể terminal đích.
+    - Trước đây ``_tty_columns`` trả 10**6 khi pipe → chrome status bị
+      kéo rộng bất kể terminal đích.
     - Giờ: non-TTY + không env COLUMNS → mặc định **80 cols** (overview
       XẾP DỌC, heading divider co, mọi dòng ≤80 cells). Env ``COLUMNS``
       set rõ vẫn được tôn trọng (capture/script ép rộng có kiểm soát).
@@ -1420,8 +1420,8 @@ class TestNonTTYColumnDefault(TempWorkspaceCase):
             StatusService.render_tree(self.repo)
         lines = buf.getvalue().splitlines()
         ti_line = next(ln for ln in lines if "TIẾN ĐỘ" in ln)
-        self.assertNotIn("GIẢI", ti_line)          # <96 → XẾP DỌC
-        self.assertIn("GIẢI", buf.getvalue())
+        self.assertNotIn("GIẢI", ti_line)
+        self.assertNotIn("GIẢI", buf.getvalue())
         widest = max(cell_len(ln) for ln in lines)
         self.assertLessEqual(widest, 80)
 
@@ -1433,7 +1433,7 @@ class TestNonTTYColumnDefault(TempWorkspaceCase):
             StatusService.render_tree(self.repo)
         ti_line = next(ln for ln in buf.getvalue().splitlines()
                        if "TIẾN ĐỘ" in ln)
-        self.assertIn("GIẢI", ti_line)             # ≥96 → NGANG như TTY rộng
+        self.assertNotIn("GIẢI", ti_line)
 
 
 # ----------------------------------------------------------------------

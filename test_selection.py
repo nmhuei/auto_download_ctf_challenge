@@ -216,7 +216,7 @@ class MenuHeaderRadarTests(unittest.TestCase):
             if hasattr(pr.call_args_list[0].args[0], "renderables") \
             else str(pr.call_args_list[0].args[0])
         self.assertIn("UCS_ExOdia // menu", rendered)
-        self.assertIn("▰▰▰▰", rendered)
+        self.assertIn("▰▰▰", rendered)
         self.assertNotIn("██╗   ██╗", rendered, "compact header không được lặp full splash")
 
 

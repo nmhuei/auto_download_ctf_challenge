@@ -15,9 +15,6 @@ from rich.text import Text
 from .widgets import gradient
 
 BRAND_NAME = "UCS_ExOdia"
-BRAND_TAGLINE = "CTF OPERATIONS FRAMEWORK"
-BRAND_SUBTITLE = "capture · workspace · submit · monitor · automate"
-
 OPERATIONS: tuple[str, ...] = (
     "detect",
     "pull",
@@ -139,15 +136,8 @@ def operation_rail(
     return out
 
 
-def operation_labels(width: int = FULL_LOGO_WIDTH) -> Text:
-    line = "   ".join(OPERATIONS)
-    if cell_len(line) > width:
-        line = "  ".join(("DET", "PULL", "WORK", "SUB", "WATCH", "SNP", "RANK", "AUTO"))
-    return Text(line, style="dim")
-
-
 def compact_brand(width: int | None = None, *, command: str = "", version: str = "") -> Text:
-    """Compact three-line brand for ordinary subcommands and narrow terminals."""
+    """Compact two-line brand for narrow terminals and lightweight surfaces."""
     cols = terminal_width(width)
     out = Text()
 
@@ -166,22 +156,20 @@ def compact_brand(width: int | None = None, *, command: str = "", version: str =
     sep = " " if cols < 60 else "  "
     available = max(8, cols - (len(OPERATIONS) - 1) * cell_len(sep))
     cells = max(1, min(4, available // len(OPERATIONS)))
-    rail = operation_rail(cells_per_stage=cells, separator=sep)
-    _append_centered(out, rail, cols)
-    out.append("\n")
-
-    subtitle = BRAND_TAGLINE if cell_len(BRAND_TAGLINE) <= cols else "CTF OPS"
-    _append_centered(out, Text(subtitle, style="dim"), cols)
+    _append_centered(
+        out,
+        operation_rail(cells_per_stage=cells, separator=sep),
+        cols,
+    )
     return out
 
 
 def full_brand(width: int | None = None, *, version: str = "") -> Text:
-    """Full brutalist UCS_ExOdia splash for terminals at least 80 columns."""
+    """Seven-line brutalist splash: logo plus one compact identity/rail footer."""
     cols = terminal_width(width)
     if cols < WIDE_THRESHOLD:
         return compact_brand(cols, version=version)
 
-    canvas = min(cols, FULL_LOGO_WIDTH)
     out = Text()
     for idx, line in enumerate(FULL_LOGO):
         _append_centered_block_line(
@@ -190,33 +178,15 @@ def full_brand(width: int | None = None, *, version: str = "") -> Text:
             block_width=FULL_LOGO_WIDTH,
             viewport_width=cols,
         )
-        if idx < len(FULL_LOGO) - 1:
-            out.append("\n")
+        out.append("\n")
 
-    out.append("\n\n")
-    brand = Text(BRAND_NAME, style=f"bold {_style(LOGO_MID)}")
+    footer = Text()
+    footer.append(BRAND_NAME, style=f"bold {_style(LOGO_MID)}")
     if version:
-        brand.append(f"  {version}", style="dim")
-    _append_centered(out, brand, cols)
-
-    out.append("\n\n")
-    indent = max(0, (cols - canvas) // 2)
-    out.append(" " * indent)
-    out.append(BRAND_TAGLINE, style="bold")
-    out.append("\n")
-    out.append(" " * indent)
-    out.append("─" * canvas, style="dim")
-    out.append("\n")
-    _append_centered(out, operation_labels(canvas), cols)
-    out.append("\n")
-    _append_centered(out, operation_rail(cells_per_stage=4, separator="  "), cols)
-    out.append("\n")
-    out.append(" " * indent)
-    out.append("─" * canvas, style="dim")
-    out.append("\n")
-    out.append(" " * indent)
-    out.append("READY", style="bold")
-    out.append(" ●", style="#62C97E")
+        footer.append(f"  {version}", style="dim")
+    footer.append("   ", style="dim")
+    footer.append_text(operation_rail(cells_per_stage=4, separator="  "))
+    _append_centered(out, footer, cols)
     return out
 
 
@@ -229,15 +199,12 @@ def splash(width: int | None = None, *, version: str = "") -> Text:
 
 __all__ = [
     "BRAND_NAME",
-    "BRAND_TAGLINE",
-    "BRAND_SUBTITLE",
     "OPERATIONS",
     "FULL_LOGO",
     "FULL_LOGO_WIDTH",
     "WIDE_THRESHOLD",
     "OPERATION_RAMPS",
     "operation_rail",
-    "operation_labels",
     "compact_brand",
     "full_brand",
     "splash",

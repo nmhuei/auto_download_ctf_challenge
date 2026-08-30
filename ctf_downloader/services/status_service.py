@@ -71,17 +71,11 @@ ROW_GLYPHS = {
 # emoji 2-cell như 🐧🪟 không lệch cột), pts>4, solves>3, badge cố định.
 CHALLENGE_NAME_MAX_CELLS = 24
 
-# Shell layout overview (SPEC UI v2 §L1): 2 panel TIẾN ĐỘ + GIẢI.
-# ≥96 cols → xếp NGANG trên cùng một dòng (trái tối thiểu 38 cell, phải
-# phần còn lại); <96 cols → XẾP DỌC từng khung (bỏ hack responsive-sparkline
-# cũ — sparkline giờ LUÔN render trong panel GIẢI).
-OVERVIEW_SIDE_BY_SIDE_MIN_COLS = 96
-#: Cell tối thiểu của panel TIẾN ĐỘ khi xếp ngang (spec: "trái min 38 cell").
-OVERVIEW_LEFT_MIN_COLS = 38
-#: Trần layout khi xếp NGANG (TTY rộng hoặc pipe có env COLUMNS set rõ) —
-#: chỉ chặn độ rộng dòng, không ẩn thông tin (synthesis uiv2 #9: non-TTY
-#: KHÔNG còn tự ép tới trần này — mặc định 80 cols xem ``_tty_columns``).
-OVERVIEW_MAX_COLS = 120
+# Compact status overview: one responsive panel aligned with category frames.
+# Activity/window data is appended only when it actually exists; no empty
+# secondary panel or fake zero sparkline is rendered.
+OVERVIEW_MAX_TOTAL_COLS = 88
+OVERVIEW_MIN_TOTAL_COLS = 40
 
 
 class ChallengeNotFoundError(Exception):
@@ -607,8 +601,8 @@ class StatusService:
         - TTY thật → đo cửa sổ thật (``shutil.get_terminal_size``).
         - Non-TTY (pipe/redirect) → KHÔNG còn cửa sổ thật để đo: mặc định
           **80 cols** thay vì số cực đại cũ (10**6) — trước đây pipe ra
-          terminal hẹp vẫn nhận dòng ~89 cells vì layout NGANG bị ép tới
-          trần ``OVERVIEW_MAX_COLS`` (synthesis uiv2 #9). Env ``COLUMNS``
+          terminal hẹp vẫn nhận layout quá rộng (synthesis uiv2 #9). Env
+          ``COLUMNS``
           set rõ vẫn được tôn trọng qua ``shutil.get_terminal_size``
           (vd ``COLUMNS=120 python3 main.py status | cat``) để capture/
           script giữ quyền ép độ rộng.
@@ -753,37 +747,20 @@ class StatusService:
 
     @classmethod
     def _identity_subtitle(cls, stats: Dict[str, Any], inner_width: int) -> Text:
-        """Subtitle đáy panel TIẾN ĐỘ mang danh tính workspace (parity thông
-        tin với dashboard cũ — spec §0: pipe non-TTY vẫn đầy đủ thông tin):
-        ``title · platform[ · user][ · team]``. Window không còn ở đây — đã
-        chuyển vào panel GIẢI (§L1). Khi vượt bề ngang panel thì THẢ BỚT
-        phần đuôi nguyên vẹn (không cắt giữa cặp ``value · separator``)."""
-        parts = [str(stats['title'])]
-        parts.append(str(stats['platform']).lower())
-        if stats['user']:
-            parts.append(str(stats['user']))
-        if stats['team']:
-            parts.append(f"team {stats['team']}")
-        kept: List[str] = []
-        used = 0
-        for p in parts:
-            extra = cell_len(p) + (3 if kept else 0)   # " · " trước phần sau
-            if kept and used + extra > inner_width:
-                break
-            kept.append(p)
-            used += extra
-        joined = " · ".join(kept)
-        # Guard cuối: chính title quá dài cũng không được làm nở khung.
-        return Text(cls._truncate_cells_plain(joined, inner_width),
-                    style="fg.muted")
+        """Compact overview identity: event title + platform only."""
+        parts = [
+            str(stats['title']),
+            str(stats['platform']).lower(),
+        ]
+        joined = " · ".join(part for part in parts if part)
+        return Text(
+            cls._truncate_cells_plain(joined, inner_width),
+            style="fg.muted",
+        )
 
     @classmethod
     def _progress_lines(cls, stats: Dict[str, Any]) -> List[Text]:
-        """3 dòng content panel TIẾN ĐỘ (SPEC UI v2 §L1):
-
-        ``▰▱×22 d/d`` · ``d/d solved · x.x%`` · ``earned/total pts ·
-        hoarded n · drafts n`` (earned accent.hi, sub muted).
-        """
+        """One dense progress row: meter, solve rate, points, hoard and drafts."""
         from ..ui.widgets import meter as _meter
 
         rate = stats['completion_rate']
@@ -795,88 +772,79 @@ class StatusService:
         else:
             bar = cls._meter_only(rate, 22)
 
-        l1 = Text()
-        l1.append_text(bar)
-        l1.append(" ")
-        l1.append(f"{solved_n}/{total_n}", style=f"bold {FG_BASE}")
-
-        l2 = Text()
-        l2.append(f"{solved_n}/{total_n}", style=f"bold {FG_BASE}")
-        l2.append(" solved · ", style="fg.muted")
-        l2.append(f"{rate:.1f}%", style="fg.base")
-
-        l3 = Text()
-        l3.append(str(stats['earned_points']), style="accent.hi")
-        l3.append(f"/{stats['total_points']} pts", style="fg.muted")
-        l3.append(f" · hoarded {stats.get('hoarded_flags', 0)}"
-                  f" · drafts {stats.get('writeup_drafts', 0)}",
-                  style="fg.muted")
-        return [l1, l2, l3]
+        row = Text()
+        row.append_text(bar)
+        row.append(" ")
+        row.append(f"{solved_n}/{total_n}", style=f"bold {FG_BASE}")
+        row.append(" · ", style="fg.muted")
+        row.append(f"{rate:.1f}%", style="fg.base")
+        row.append("   ")
+        row.append(str(stats['earned_points']), style="accent.hi")
+        row.append(f"/{stats['total_points']} pts", style="fg.muted")
+        row.append(
+            f" · hoarded {stats.get('hoarded_flags', 0)}"
+            f" · drafts {stats.get('writeup_drafts', 0)}",
+            style="fg.muted",
+        )
+        return [row]
 
     @classmethod
     def _solve_lines(cls, repo: WorkspaceRepo) -> List[Text]:
-        """Dòng content panel GIẢI (SPEC UI v2 §L1): window LIVE/Countdown/
-        Ended (style error/warn/muted như cũ) + nhịp 24h ``+n flags`` kèm
-        sparkline braille. Sparkline LUÔN render (kể cả non-TTY) — không có
-        dữ liệu thì baseline ``⣀`` visible thay vì ô trống."""
+        """Optional event/activity rows; emit nothing for a zero-signal state."""
         from ..ui.widgets import braille_graph
 
         lines: List[Text] = []
         window_str = StatusService._render_window(repo)
         if window_str:
-            win_style = ("error" if window_str.startswith("LIVE")
-                         else "warn" if window_str.startswith("Countdown")
-                         else "fg.muted")
+            win_style = (
+                "error" if window_str.startswith("LIVE")
+                else "warn" if window_str.startswith("Countdown")
+                else "fg.muted"
+            )
             lines.append(Text(window_str, style=win_style))
 
         pulse, pulse_total = cls._solve_pulse(repo)
-        row = Text()
-        row.append(f"+{pulse_total} flags 24h ", style="fg.muted")
-        if pulse and pulse_total > 0:
+        if pulse_total > 0:
+            row = Text()
+            row.append(f"+{pulse_total} flags 24h ", style="fg.muted")
             spark = braille_graph(pulse, 12)
             spark.stylize("accent")
-        else:
-            # Không có dữ liệu → baseline braille visible (không để ô trống).
-            spark = Text("⣀" * 12, style="accent.deep")
-        row.append_text(spark)
-        lines.append(row)
+            row.append_text(spark)
+            lines.append(row)
         return lines
 
     @classmethod
     def _render_overview(cls, repo: WorkspaceRepo,
                          stats: Dict[str, Any]) -> None:
-        """Emit 2 panel overview (SPEC UI v2 §L1):
-
-        - cols ≥ ``OVERVIEW_SIDE_BY_SIDE_MIN_COLS``: NGANG trên cùng một
-          dòng — trái TIẾN ĐỘ tối thiểu ``OVERVIEW_LEFT_MIN_COLS`` cell,
-          phải GIẢI phần còn lại tới ``min(cols, OVERVIEW_MAX_COLS)``; hai
-          khung dính nhau (``╮╭``) đúng nhịp frame spec.
-        - cols < ngưỡng: XẾP DỌC từng khung, mỗi khung co theo nội dung.
-
-        Nội dung dài hơn allotment vẫn in đủ (soft-wrap ở tầng emit)."""
-        left = cls._progress_lines(stats)
-        right = cls._solve_lines(repo)
-
-        inner_l = max(max(cell_len(ln.plain) for ln in left),
-                      OVERVIEW_LEFT_MIN_COLS - 4)
-        need_r = max(cell_len(ln.plain) for ln in right)
-
+        """Render one responsive overview panel with only meaningful data."""
+        lines = cls._progress_lines(stats) + cls._solve_lines(repo)
         cols = cls._tty_columns()
-        if cols >= OVERVIEW_SIDE_BY_SIDE_MIN_COLS:
-            usable = min(cols, OVERVIEW_MAX_COLS)
-            inner_r = max(need_r, usable - (inner_l + 4) - 4)
-            pair = Table.grid()
-            pair.add_row(
-                cls._lines_panel(left, inner_l, "TIẾN ĐỘ",
-                                 subtitle=cls._identity_subtitle(stats, inner_l)),
-                cls._lines_panel(right, inner_r, "GIẢI"),
+        total_width = min(
+            OVERVIEW_MAX_TOTAL_COLS,
+            max(OVERVIEW_MIN_TOTAL_COLS, cols),
+        )
+        inner_width = max(20, total_width - 4)
+
+        fitted: List[Text] = []
+        for line in lines:
+            item = line.copy()
+            if cell_len(item.plain) > inner_width:
+                item.truncate(inner_width, overflow="ellipsis", pad=False)
+            fitted.append(item)
+
+        identity_budget = max(8, inner_width - cell_len("TIẾN ĐỘ · "))
+        identity = cls._identity_subtitle(stats, identity_budget).plain
+        title = cls._truncate_cells_plain(
+            f"TIẾN ĐỘ · {identity}",
+            max(8, inner_width - 2),
+        )
+        cls._emit(
+            cls._lines_panel(
+                fitted,
+                inner_width,
+                title,
             )
-            cls._emit(pair)
-        else:
-            cls._emit(cls._lines_panel(
-                left, inner_l, "TIẾN ĐỘ",
-                subtitle=cls._identity_subtitle(stats, inner_l)))
-            cls._emit(cls._lines_panel(right, need_r, "GIẢI"))
+        )
 
     @classmethod
     def _category_heading(cls, cat: str, solved: int, total: int,
@@ -924,11 +892,9 @@ class StatusService:
         cols = cls._tty_columns()
         narrow = cols < 80
 
-        # SPEC UI v2 §L1: overview 2 panel — NGANG khi ≥96 cols, XẾP DỌC
-        # khi hẹp hơn. Masthead (app_header) và footer chrome thuộc cli.py,
-        # không nằm trong render_tree.
+        # Compact shell: một overview panel duy nhất; activity/window chỉ
+        # xuất hiện khi có tín hiệu thật. Masthead và footer thuộc cli.py.
         cls._render_overview(repo, stats)
-        cls._emit(Text())
 
         # ChallengeRow schema TOÀN MÀN (codex-r2 P1): gom row của MỌI category
         # rồi căn qua MỘT lưới duy nhất — vị trí pts/solves/badge không đổi
@@ -999,7 +965,6 @@ class StatusService:
                 indented.append_text(_line)
                 cls._emit(indented)
             idx += len(rows)
-            cls._emit(Text())
 
     @staticmethod
     def _aligned_grid(rows: List[List[Text]],

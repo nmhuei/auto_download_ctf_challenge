@@ -2,7 +2,7 @@
 
 The old PHOSPHOR radar and duplicate hand-built bitmap banner are replaced by
 one brand system from ui.brand.  Full splash is reserved for interactive entry;
-ordinary commands get a compact three-line header so repeated CLI use stays
+ordinary commands get a single-line header so repeated CLI use stays
 fast and uncluttered.
 """
 from __future__ import annotations
@@ -12,15 +12,11 @@ from rich.text import Text
 
 from .brand import (
     BRAND_NAME,
-    BRAND_SUBTITLE,
-    BRAND_TAGLINE,
     compact_brand,
     full_brand,
     operation_rail,
     terminal_width,
 )
-
-TAGLINE = BRAND_SUBTITLE
 
 
 def _major_version() -> str:
@@ -41,72 +37,49 @@ def banner_a(width: int | None = None) -> Text:
     return full_brand(width, version=_major_version())
 
 
-def tagline_text() -> Text:
-    return Text(TAGLINE, style="dim italic")
-
-
-def _fit_plain(value: str, width: int) -> str:
-    value = str(value or "")
-    if width <= 0:
-        return ""
-    if cell_len(value) <= width:
-        return value
-    if width == 1:
-        return "…"
-    # Current command/context payloads are overwhelmingly ASCII paths/names.
-    # Keep truncation deterministic and add an ellipsis rather than wrapping.
-    return value[: max(0, width - 1)] + "…"
-
-
 def app_header(
     command: str,
     context: str = "",
     timestamp: str = "",
     width: int | None = None,
 ) -> Text:
-    """Three-line UCS_ExOdia command header.
-
-    Line 1: product + command on the left, major version on the right.
-    Line 2: eight-stage segmented spectral rail (every stage its own gradient).
-    Line 3: workspace/context on the left and local timestamp on the right.
-
-    The header never wraps; narrow terminals reduce each rail segment to one
-    cell and truncate context with an ellipsis.
-    """
+    """Single-line UCS_ExOdia command header with an inline spectral rail."""
     cols = terminal_width(width)
-    out = Text()
+    ver = _major_version()
 
     left = Text(BRAND_NAME, style="bold #5EEAD4")
     left.append(" // ", style="dim")
     left.append(str(command or "console"), style="bold")
-    ver = _major_version()
-    gap = max(1, cols - cell_len(left.plain) - cell_len(ver))
-    if cell_len(left.plain) + 1 + cell_len(ver) > cols:
-        left = Text(_fit_plain(left.plain, max(1, cols - cell_len(ver) - 1)), style="bold")
-        gap = 1
+    ctx = str(context or "").strip()
+    if ctx:
+        left.append(" · ", style="dim")
+        left.append(ctx, style="dim")
+
+    cells = 1 if cols < 60 else 2 if cols < 100 else 3
+    rail = operation_rail(cells_per_stage=cells, separator=" ")
+
+    right = Text()
+    stamp = str(timestamp or "").strip()
+    if stamp and cols >= 100:
+        right.append(stamp, style="dim")
+        right.append(" · ", style="dim")
+    right.append(ver, style="bold #C084FC")
+
+    rail_w = cell_len(rail.plain)
+    right_w = cell_len(right.plain)
+    left_budget = max(1, cols - rail_w - right_w - 2)
+    if cell_len(left.plain) > left_budget:
+        left.truncate(left_budget, overflow="ellipsis", pad=False)
+
+    left_w = cell_len(left.plain)
+    free = max(2, cols - left_w - rail_w - right_w)
+    out = Text()
     out.append_text(left)
-    out.append(" " * gap)
-    out.append(ver, style="bold #C084FC")
-    out.append("\n")
-
-    sep = " " if cols < 60 else "  "
-    available = max(8, cols - (7 * cell_len(sep)))
-    cells = max(1, min(4, available // 8))
-    rail = operation_rail(cells_per_stage=cells, separator=sep)
-    rail_pad = max(0, cols - cell_len(rail.plain))
-    out.append(" " * (rail_pad // 2))
+    out.append(" ")
     out.append_text(rail)
-    out.append("\n")
-
-    stamp = str(timestamp or "")
-    ctx_budget = cols - (cell_len(stamp) + 2 if stamp else 0)
-    ctx = _fit_plain(str(context or BRAND_TAGLINE), max(1, ctx_budget))
-    out.append(ctx, style="dim")
-    if stamp:
-        gap = max(1, cols - cell_len(ctx) - cell_len(stamp))
-        out.append(" " * gap)
-        out.append(stamp, style="dim")
+    out.append(" " * max(1, free - 1))
+    out.append_text(right)
     return out
 
 
-__all__ = ["banner_a", "banner_b", "tagline_text", "app_header", "TAGLINE"]
+__all__ = ["banner_a", "banner_b", "app_header"]

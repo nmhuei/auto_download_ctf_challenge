@@ -26,24 +26,26 @@ class TestSplashTierByWidth(unittest.TestCase):
         for w in (WIDE_THRESHOLD, 100, 120):
             with self.subTest(width=w):
                 lines = splash(w).plain.splitlines()
-                self.assertEqual(15, len(lines))
+                self.assertEqual(7, len(lines))
                 self.assertIn("██╗   ██╗", lines[0])
                 self.assertIn("UCS_ExOdia", "\n".join(lines))
-                self.assertEqual("READY ●", lines[-1].strip())
+                self.assertIn("UCS_ExOdia", lines[-1])
+                self.assertIn("v3", lines[-1])
+                self.assertIn("▰", lines[-1])
 
-    def test_below_80_get_compact_three_line_brand(self):
+    def test_below_80_get_compact_two_line_brand(self):
         for w in (40, 46, 70, 79):
             with self.subTest(width=w):
                 lines = splash(w).plain.splitlines()
-                self.assertEqual(3, len(lines))
+                self.assertEqual(2, len(lines))
                 self.assertIn("UCS_ExOdia", lines[0])
                 self.assertIn("▰", lines[1])
-                self.assertIn("CTF OPERATIONS", lines[2])
+                self.assertIn("v3", lines[0])
 
     def test_exact_boundary_79_vs_80(self):
         self.assertNotEqual(splash(79).plain, splash(80).plain)
-        self.assertEqual(3, len(splash(WIDE_THRESHOLD - 1).plain.splitlines()))
-        self.assertEqual(15, len(splash(WIDE_THRESHOLD).plain.splitlines()))
+        self.assertEqual(2, len(splash(WIDE_THRESHOLD - 1).plain.splitlines()))
+        self.assertEqual(7, len(splash(WIDE_THRESHOLD).plain.splitlines()))
 
     def test_width_none_uses_brand_terminal_probe(self):
         with mock.patch.dict(os.environ, {"COLUMNS": "120", "LINES": "40"}):
@@ -52,13 +54,13 @@ class TestSplashTierByWidth(unittest.TestCase):
                 "get_terminal_size",
                 return_value=os.terminal_size((120, 40)),
             ):
-                self.assertEqual(15, len(splash().plain.splitlines()))
+                self.assertEqual(7, len(splash().plain.splitlines()))
             with mock.patch.object(
                 brand_mod.shutil,
                 "get_terminal_size",
                 return_value=os.terminal_size((70, 24)),
             ):
-                self.assertEqual(3, len(splash().plain.splitlines()))
+                self.assertEqual(2, len(splash().plain.splitlines()))
 
     def test_full_logo_uses_letter_O_not_zero_glyph(self):
         raw = "\n".join(FULL_LOGO)
@@ -91,7 +93,6 @@ class TestSplashGeometryAndGradient(unittest.TestCase):
             with self.subTest(width=w):
                 plain = splash(w).plain
                 self.assertIn("UCS_ExOdia", plain)
-                self.assertIn("CTF OPERATIONS FRAMEWORK", plain)
                 self.assertIn("▰", plain)
                 self.assertIn("v3", plain)
 
@@ -101,6 +102,14 @@ class TestSplashGeometryAndGradient(unittest.TestCase):
         self.assertEqual(7, rail.plain.count("  "))
         styles = {span.style for span in rail.spans}
         self.assertGreaterEqual(len(styles), 24)
+
+
+    def test_full_splash_drops_redundant_chrome(self):
+        plain = splash(80).plain
+        self.assertNotIn("CTF OPERATIONS FRAMEWORK", plain)
+        self.assertNotIn("READY", plain)
+        self.assertNotIn("detect   pull", plain)
+        self.assertEqual(1, plain.count("UCS_ExOdia"))
 
     def test_plain_text_contains_no_embedded_ansi(self):
         for w in (80, 79):
@@ -153,10 +162,9 @@ class TestNonTTY(unittest.TestCase):
             return_value=os.terminal_size((80, 24)),
         ):
             t = splash()
-        self.assertEqual(15, len(t.plain.splitlines()))
+        self.assertEqual(7, len(t.plain.splitlines()))
         out = _render(t)
         self.assertIn("UCS_ExOdia", out)
-        self.assertIn("CTF OPERATIONS FRAMEWORK", out)
         self.assertNotIn("\x1b", out)
 
     def test_print_via_stderr_console_like_menu_does_not_crash(self):

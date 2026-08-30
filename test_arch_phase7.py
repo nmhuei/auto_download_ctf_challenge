@@ -798,7 +798,7 @@ class TestPhosphorHelpScreen(unittest.TestCase):
 
     def test_spec_markers_present(self):
         for marker in ("CÚ PHÁP", "LỆNH",
-                       "UCS_ExOdia", "CTF OPERATIONS FRAMEWORK",
+                       "UCS_ExOdia",
                        "ctf <lệnh> [tuỳ chọn]"):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.out)
@@ -812,7 +812,6 @@ class TestPhosphorHelpScreen(unittest.TestCase):
         # Help landing surface dùng full banner, không lặp compact header.
         self.assertIn("██╗   ██╗", lines[0])
         self.assertIn("UCS_ExOdia", self.out)
-        self.assertIn("CTF OPERATIONS FRAMEWORK", self.out)
         self.assertIn("▰▰▰▰", self.out)
         self.assertNotIn("UCS_ExOdia // help", self.out)
 

@@ -56,10 +56,8 @@ class Logger:
     @staticmethod
     def banner():
         """Compact UCS_ExOdia identity block for action-oriented logs."""
-        from rich.console import Group
-
-        from ..ui.banner import banner_b, tagline_text
-        console.print(Group(banner_b(), tagline_text()))
+        from ..ui.banner import banner_b
+        console.print(banner_b())
 
     @staticmethod
     def print_table(title: str, columns: list, rows: list):

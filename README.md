@@ -102,29 +102,20 @@ ctf git finish -w ~/Workspace/CTF/Example_CTF_2026
 Brand CLI dùng **UCS_ExOdia** theo hướng brutalist + cyber minimal. Màu brand chạy từ teal/cyan → blue → violet → fuchsia → amber; mỗi stage `detect / pull / workspace / submit / watch / sniper / rank / automate` có một micro-gradient riêng. Màu semantic của dữ liệu vẫn dùng theme Amber Refit (`#FFB000`, ✔ solved, ✗ error, ! warning), nên màu trang trí không làm lẫn nghĩa trạng thái.
 
 ```text
-UCS_ExOdia // status                                                          v3
-                 ▰▰▰▰  ▰▰▰▰  ▰▰▰▰  ▰▰▰▰  ▰▰▰▰  ▰▰▰▰  ▰▰▰▰  ▰▰▰▰
-PTIT_CTF_2026                                                        22:05 UTC+7
-
-╭─────────────  TIẾN ĐỘ  ─────────────╮╭───────────────────  GIẢI  ────────────────────╮
-│ ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 1/35         ││ +0 flags 24h ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀                     │
-│ 1/35 solved · 2.9%                  │╰───────────────────────────────────────────────╯
-│ 500/8135 pts · hoarded 0 · drafts 1 │
-╰── Vòng loại PTIT CTF 2026 · gzctf ──╯
-
-┌┐ CRYPTO ───────────────────────────────────────────────────  0/7 ▱▱▱▱▱▱▱▱▱▱ 0/1880
+UCS_ExOdia // status · ~/Workspace/CTF/PTIT_CTF_2026 ▰▰▰ ▰▰▰ ▰▰▰ ▰▰▰ ▰▰▰ ▰▰▰ ▰▰▰ ▰▰▰  22:49 UTC+7 · v3
+╭──────────────  TIẾN ĐỘ · Vòng loại PTIT CTF 2026 · gzctf  ──────────────╮
+│ ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 1/35 · 2.9%   500/8135 pts · hoarded 0 · drafts 0 │
+╰──────────────────────────────────────────────────────────────────────────╯
+┌┐ CRYPTO ─────────────────────────────────────────────  0/7 ▱▱▱▱▱▱▱▱▱▱ 0/1880
   ·  12  SSSH                      180 pts    9 giải   ⛁ ⎘
   ·   5  Signaling                 108 pts   20 giải   ⎘
-
-┌┐ REVERSE ────────────────────────────────────────────────  1/7 ▰▱▱▱▱▱▱▱▱▱ 500/1587
-  ✔  18  Tiger Bạc                 500 pts    0 giải   ✎
-
-[số] chọn · ❯ mục mặc định · ? help · q thoát
+┌┐ REVERSE ──────────────────────────────────────────  1/7 ▰▱▱▱▱▱▱▱▱▱ 500/1587
+  ✔  18  Tiger Bạc                 500 pts    0 giải   ⎘
 ```
 
-AppHeader của lệnh thường chỉ còn 3 dòng: `UCS_ExOdia // <command>` + version, spectral rail 8 stage, rồi context + timestamp. Header tự co stage xuống khi terminal hẹp, truncate context bằng `…`, không wrap và không pad trắng cuối dòng. Hai panel overview TIẾN ĐỘ + GIẢI vẫn xếp ngang khi terminal ≥ 96 cột, xếp dọc khi hẹp hơn; meter trạng thái giữ gradient semantic hiện có và non-TTY vẫn render plain an toàn.
+AppHeader của lệnh thường chỉ còn **1 dòng**: `UCS_ExOdia // <command> · <context>` + spectral rail 8 stage + version; từ 100 cột trở lên mới thêm timestamp để ưu tiên giữ context ở terminal hẹp. Header tự co rail theo width, truncate context bằng `…`, không wrap. `status` dùng **một** panel `TIẾN ĐỘ`; activity/window chỉ xuất hiện khi có tín hiệu thật, không dựng panel `GIẢI` rỗng hay sparkline `+0`. Các category nối liền nhau, bỏ blank separator. Capture thật PTIT 35 challenge vừa đúng 45 dòng ở terminal 120×45; 80 và 60 cột đều không overflow.
 
-Mở `ctf` hoặc `ctf menu`, full splash **UCS_ExOdia** xuất hiện đúng một lần: terminal ≥ 80 cột dùng logo brutalist 77 cột với chữ **O** rõ trong `ExOdia`, terminal < 80 tự rơi về compact 3 dòng. `ctf --help` dùng full brand một lần; các subcommand chỉ dùng compact header để không chiếm màn hình khi thao tác lặp lại.
+Mở `ctf` hoặc `ctf menu`, full splash **UCS_ExOdia** xuất hiện đúng một lần: terminal ≥ 80 cột dùng splash 7 dòng (6 dòng logo brutalist + 1 footer brand/rail), terminal < 80 tự rơi về compact 2 dòng. `ctf --help` dùng full brand một lần; các subcommand dùng AppHeader 1 dòng để hạn chế scroll.
 
 Chạy `ctf <lệnh> --help` để xem đầy đủ tuỳ chọn của từng lệnh.
 

@@ -179,7 +179,7 @@ class CTFInteractiveConsole:
         khối context WORKSPACE."""
         con = _menu_console()
         con.print(app_header('menu', context=self.workspace_path,
-                             timestamp=_frame_timestamp()))
+                             timestamp=_frame_timestamp(), width=con.width))
 
         ws_name = os.path.basename(self.workspace_path)
         dash = CTFDashboard(self.workspace_path)
