@@ -9,7 +9,7 @@ _ctf() {
 
     local GLOBAL_OPTS="-v --version -i --interactive -w --workspace"
 
-    local SUBCOMMANDS="pull download clone status tree ls dashboard note ghi-chu tag tags workspaces scan instance container spawn submit flag hoard flag-stash rank scoreboard leaderboard watch register reg doctor health checkup menu ui console storage du archive sync resync history log open sniper serve web git config"
+    local SUBCOMMANDS="pull download clone status tree ls dashboard note ghi-chu tag tags workspaces scan instance container spawn submit flag hoard flag-stash rank scoreboard leaderboard watch register reg doctor health checkup menu ui console storage du archive sync resync history log open sniper serve web git config bridge ext"
 
     # Tìm subcommand cuối (bỏ qua option và giá trị của nó)
     local cmd=""
@@ -34,6 +34,7 @@ _ctf() {
             open)                         cmd="open" ;;
             git)                          cmd="git" ;;
             config)                       cmd="config" ;;
+            bridge|ext)                   cmd="bridge" ;;
             sniper)                       cmd="sniper" ;;
             serve|web)                    cmd="serve" ;;
         esac
@@ -41,6 +42,7 @@ _ctf() {
 
     local opts=""
     case "$cmd" in
+        bridge)      opts="status start stop token" ;;
         pull)        opts="-u --url -c --cookie -t --token -o --output -j --threads -C --category -E --exclude --no-third-party --no-template -f --force --verify-downloads --allow-private-redirects --update --refresh-meta --timeout --no-git --git-base --git-remote --no-git-push -i --interactive" ;;
         status)      opts="-w --workspace -u --unsolved -s --solved -C --category --container --label --search" ;;
         note)        opts="-w --workspace --remove" ;;

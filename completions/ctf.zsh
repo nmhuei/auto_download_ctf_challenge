@@ -40,6 +40,7 @@ _ctf() {
                 'config:Xem/đặt cấu hình toàn cục (vd: ctf config auto-sync off)'
                 'sniper:Nộp flag tự động đúng giờ G'
                 'serve:Dashboard web read-only cho workspace'
+                'bridge:Quản lý Browser Extension Bridge (vượt Cloudflare)'
             )
             # alias map về lệnh chuẩn
             local -a aliases=(
@@ -56,6 +57,7 @@ _ctf() {
                 'resync:alias of sync'
                 'log:alias of history'
                 'web:alias of serve'
+                'ext:alias of bridge'
             )
             _describe -t commands 'command' cmds && return 0
             _describe -t commands 'alias' aliases && return 0
@@ -259,6 +261,10 @@ _ctf() {
                     _arguments \
                         '(-w --workspace)'{-w,--workspace}'[CTF workspace directory]:dir:_directories' \
                         '--port[port HTTP]:port:'
+                    ;;
+                bridge|ext)
+                    _arguments \
+                        '1:action:(status start stop token)'
                     ;;
                 *)
                     _arguments $global_opts

@@ -27,11 +27,13 @@ class BrowserBridgeTransport:
         self,
         host: str = DEFAULT_BRIDGE_HOST,
         port: int = DEFAULT_BRIDGE_PORT,
+        token: Optional[str] = None,
         auto_start_daemon: bool = True,
         timeout: float = 30.0,
     ):
         self.host = host
         self.port = port
+        self.token = token
         self.auto_start_daemon = auto_start_daemon
         self.timeout = timeout
         self.daemon = BridgeDaemon(host=host, port=port)
@@ -41,7 +43,7 @@ class BrowserBridgeTransport:
         if self.auto_start_daemon and not self.daemon.is_port_open():
             self.daemon.ensure_running()
 
-        token = self.daemon.get_or_create_token()
+        token = self.token or self.daemon.get_or_create_token()
 
         async def _async_dispatch() -> BridgeResponse:
             uri = f"ws://{self.host}:{self.port}/ws"
@@ -70,11 +72,10 @@ class BrowserBridgeTransport:
 
                 raise TimeoutError(f"Timeout waiting for bridge response for {bridge_req.url}")
 
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(_async_dispatch())
-        finally:
-            loop.close()
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(lambda: asyncio.run(_async_dispatch()))
+            return future.result()
 
     def send(self, request: requests.PreparedRequest, **kwargs: Any) -> requests.Response:
         """Convert requests.PreparedRequest -> BridgeRequest, dispatch, and return requests.Response."""
