@@ -18,6 +18,7 @@ from .storage.global_config import (  # noqa: F401 — re-export để giữ tư
     CONFIG_DIR,
     GLOBAL_CONFIG_FILE,
     load_global_config,
+    resolve_workspace_root,
     save_global_config,
     update_global_config,
 )
@@ -150,7 +151,7 @@ class CTFInteractiveConsole:
         def_ws = self.config.get('default_workspace')
         if def_ws and os.path.exists(def_ws):
             return def_ws
-        base_ctf = os.path.expanduser('~/Workspace/CTF')
+        base_ctf = resolve_workspace_root()
         if os.path.exists(base_ctf):
             for d in os.listdir(base_ctf):
                 p = os.path.join(base_ctf, d)
@@ -314,7 +315,8 @@ class CTFInteractiveConsole:
         elif ach == '2':
             token = _prompt('Dán Token: ').strip()
 
-        out = _prompt('Thư mục lưu (Enter để tự lưu vào ~/Workspace/CTF/<Tên_Giải>): ').strip()
+        root_hint = resolve_workspace_root()
+        out = _prompt(f'Thư mục lưu (Enter để tự lưu vào {root_hint}/<Tên_Giải>): ').strip()
         out_dir = out if out else None
 
         cfg = DownloaderConfig(
@@ -340,7 +342,7 @@ class CTFInteractiveConsole:
             Logger.error(f'Quá trình tải thất bại: {e}')
 
     def _menu_switch_workspace(self):
-        base_ctf = os.path.expanduser('~/Workspace/CTF')
+        base_ctf = resolve_workspace_root()
         workspaces = []
         if os.path.exists(base_ctf):
             for d in sorted(os.listdir(base_ctf)):
@@ -353,7 +355,7 @@ class CTFInteractiveConsole:
 
         _section('Chọn workspace giải đấu đang làm việc')
         if not workspaces:
-            Logger.warning('Chưa có workspace nào trong ~/Workspace/CTF.')
+            Logger.warning(f'Chưa có workspace nào trong {base_ctf}.')
             custom_p = _prompt('Nhập đường dẫn thư mục giải đấu: ').strip()
             if os.path.exists(custom_p):
                 self.workspace_path = os.path.abspath(custom_p)
@@ -620,7 +622,7 @@ class CTFInteractiveConsole:
         _pause()
 
     def _menu_scan_workspaces(self):
-        base_dir = os.path.expanduser('~/Workspace/CTF')
+        base_dir = resolve_workspace_root()
         # Bản duy nhất của bảng scan nằm ở StatusService.scan_all_workspaces
         # (dùng chung với cli handle_workspaces / manage.py -A)
         StatusService.scan_all_workspaces(base_dir)

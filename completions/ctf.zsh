@@ -33,8 +33,8 @@ _ctf() {
                 'doctor:Health-check platform trước giờ giải'
                 'menu:Launch full interactive CTF suite dashboard'
                 'storage:Kiểm soát dung lượng workspace + archive'
+                'git:Quản lý branch/push/merge lifecycle của workspace CTF'
                 'sync:Đồng bộ metadata workspace ↔ platform'
-                'export-pack:Đóng gói writeup đã solve thành pack zip'
                 'history:Lịch sử submit flag của workspace'
                 'open:Mở thư mục challenge trong file manager/terminal'
                 'config:Xem/đặt cấu hình toàn cục (vd: ctf config auto-sync off)'
@@ -74,9 +74,15 @@ _ctf() {
                         '--no-third-party[disable downloading 3rd party links]' \
                         '--no-template[disable generating solve.py templates]' \
                         '(-f --force)'{-f,--force}'[force re-download existing files]' \
+                        '--verify-downloads[revalidate file đã có]:mode:(fast normal strict)' \
+                        '--allow-private-redirects[cho phép redirect public sang private/loopback]' \
                         '--update[pull tăng dần: chỉ tải challenge mới + cập nhật metadata]' \
                         '--refresh-meta[như --update nhưng tải lại attachment khi thiếu]' \
                         '--timeout[request timeout in seconds]:seconds:' \
+                        '--no-git[tắt Git lifecycle cho lượt pull này]' \
+                        '--git-base[base branch nhận merge]:branch:' \
+                        '--git-remote[tên remote dùng push]:remote:' \
+                        '--no-git-push[tạo/commit branch nhưng không auto push]' \
                         '(-i --interactive)'{-i,--interactive}'[launch interactive download wizard]'
                     ;;
                 status|tree|ls|dashboard)
@@ -175,6 +181,7 @@ _ctf() {
                         '--tempmail[dùng mailbox tạm mail.tm]' \
                         '--username[prefix username]:prefix:' \
                         '--password[mật khẩu muốn đặt]:password:' \
+                        '--cf-clearance[cookie cf_clearance từ browser khi Cloudflare chặn]:cookie:' \
                         '(-w --workspace)'{-w,--workspace}'[workspace gắn credentials]:dir:_directories'
                     ;;
                 doctor|health|checkup)
@@ -209,17 +216,14 @@ _ctf() {
                         '(-w --workspace)'{-w,--workspace}'[CTF workspace directory]:dir:_directories' \
                         '--verify[chạy thêm verify drift solved server/local]'
                     ;;
-                export-pack)
-                    _arguments \
-                        '(-w --workspace)'{-w,--workspace}'[CTF workspace directory]:dir:_directories' \
-                        '--out[thư mục lưu pack zip]:dir:_directories'
-                    ;;
                 history|log)
                     _arguments \
                         '(-w --workspace)'{-w,--workspace}'[CTF workspace directory]:dir:_directories' \
                         '--all[hiện flag đầy đủ (kèm in toàn bộ history)]' \
                         '(--tail --limit)'--tail'[N entry mới nhất (0 = tất cả)]:N:' \
-                        '(--tail --limit)'--limit'[như --tail: N entry mới nhất]:N:'
+                        '(--tail --limit)'--limit'[như --tail: N entry mới nhất]:N:' \
+                        '(--clear)--prune[xoá entry khớp chính xác challenge ID, tên hoặc flag]:target:' \
+                        '(--prune)--clear[xoá toàn bộ lịch sử submit]'
                     ;;
                 sniper)
                     _arguments \
@@ -233,10 +237,23 @@ _ctf() {
                         ':target:(challenge id/name)' \
                         '(-w --workspace)'{-w,--workspace}'[CTF workspace directory]:dir:_directories'
                     ;;
+                git)
+                    _arguments \
+                        '1:git action:(init status push finish end merge)' \
+                        '(-d --dir)'{-d,--dir}'[shared CTF git repo directory]:dir:_directories' \
+                        '(-w --workspace)'{-w,--workspace}'[CTF workspace directory]:dir:_directories' \
+                        '--remote-url[remote URL for init]:url:' \
+                        '--remote[remote name]:remote:' \
+                        '--base[base branch]:branch:' \
+                        '--no-push[do not push remote]' \
+                        '--import-existing[import current directory contents into main baseline]' \
+                        '--keep-remote[keep remote event branch after merge]' \
+                        '(-m --message)'{-m,--message}'[checkpoint commit message]:message:'
+                    ;;
                 config)
                     _arguments \
-                        ':key:(auto-sync)' \
-                        ':value:(on off)'
+                        ':key:(auto-sync workspace-root)' \
+                        ':value:'
                     ;;
                 serve|web)
                     _arguments \

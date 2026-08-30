@@ -33,7 +33,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ctf_downloader.generator.summary_generator import SummaryGenerator
 from ctf_downloader.models import Challenge, CTFInfo
 from ctf_downloader.services import rank_service as rs
-from ctf_downloader.services import writeup_exporter as we
 from ctf_downloader.services.rank_service import RankService
 from ctf_downloader.storage.workspace_repo import WorkspaceRepo
 from ctf_downloader.utils.sanitize import escape_markdown, md_cell
@@ -163,21 +162,6 @@ class TestUnifiedMarkdownEscape(unittest.TestCase):
         raw = self.ALL_SPECIALS
         expected = re.sub(r"([\\`*_\[\]|])", r"\\\1", raw)
         self.assertEqual(expected, escape_markdown(raw))
-
-    def test_exporter_md_escape_delegates_to_sanitize(self):
-        # _md_escape phải là thin delegate — patch implementation chung phải
-        # thấy được từ phía exporter (chứng minh MỘT nguồn).
-        with unittest.mock.patch.object(
-                we, "escape_markdown", return_value="X") as mock_esc:
-            self.assertEqual("X", we._md_escape("anything"))
-            mock_esc.assert_called_once_with("anything")
-
-    def test_exporter_output_behavior_unchanged(self):
-        # Toàn bộ ký tự đặc biệt cũ vẫn backslash-escape y hệt.
-        raw = self.ALL_SPECIALS + " Mi[sc] *bold* `code` \\ path | end"
-        expected = re.sub(r"([\\`*_\[\]|])", r"\\\1", raw)
-        self.assertEqual(expected, we._md_escape(raw))
-        self.assertNotIn("[sc]", we._md_escape("Mi[sc]"))
 
     def test_md_cell_routes_through_same_table(self):
         # md_cell cũng đi qua bảng escape chung (subset '[]' — pipe xử lý

@@ -93,6 +93,7 @@ class TestLoggerPhosphorTokens(unittest.TestCase):
             logger_mod.console.get_style("highlight")
 
 
+
 class TestLoggerMarkupContract(unittest.TestCase):
     """Follow-up C11-04: call-site CHỦ Ý trang trí bằng rich markup của tool
     truyền ``markup=True`` để màu quay lại; default ``markup=False`` vẫn

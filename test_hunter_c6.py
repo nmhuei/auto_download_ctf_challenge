@@ -29,7 +29,6 @@ import pytest
 from ctf_downloader.cli import build_unified_parser
 from ctf_downloader.cli_commands import (
     handle_doctor,
-    handle_export_pack,
     handle_history,
     handle_open,
     handle_serve,
@@ -184,30 +183,6 @@ class TestCorruptStateFiles:
                            parse(["history", "-w", str(ws), "--all"]))
         assert "super_secret" in out_all
 
-    def test_export_pack_empty_workspace_clean_error(self, tmp_path):
-        ws = tmp_path / "ws"
-        ws.mkdir()
-        out, code = captured_exit(
-            handle_export_pack,
-            parse(["export-pack", "-w", str(ws), "--out", str(tmp_path)]))
-        assert code == 1
-        assert ("Export thất bại" in out) or ("Không có challenge nào" in out)
-        assert "Traceback" not in out
-
-    def test_export_pack_survives_corrupt_challenges_json(self, tmp_path):
-        ws = tmp_path / "ws"
-        ws.mkdir()
-        (ws / "challenges.json").write_text("[not a dict{", encoding="utf-8")
-        seed_challenge(str(ws), 1, "Solo", "Web", status={
-            "solve": "solved_by_me", "writeup": "draft"},
-            writeup_text="# Solo\nFlag: `FLAG{solo12345}`")
-        captured(handle_export_pack,
-                 parse(["export-pack", "-w", str(ws),
-                        "--out", str(tmp_path)]))
-        assert (ws / "challenges.json.bak").exists()
-        zips = [p for p in tmp_path.iterdir() if p.suffix == ".zip"]
-        assert zips, "phải vẫn build được pack dù challenges.json hỏng"
-
     def test_open_empty_workspace_clean_error(self, tmp_path):
         ws = tmp_path / "ws"
         ws.mkdir()
@@ -283,48 +258,6 @@ class TestBoundaryParams:
         with pytest.raises(SystemExit) as ei:
             captured(handle_open, parse(["open", "Alpha", "-w", str(ws)]))
         assert ei.value.code == 1
-
-    def test_export_pack_name_collision_suffixed_not_overwritten(self, tmp_path):
-        """BUG-HUNTER-C6-01 (FIXED): hai tên khác nhau nhưng sanitize về cùng
-        dirname ('Pwn Me' vs 'Pwn_Me') -> bài sau phải vào subdir hậu tố
-        ``_2``, KHÔNG đè README của bài trước; INDEX + zip trỏ đúng subdir."""
-        ws = tmp_path / "ws"
-        ws.mkdir()
-        seed_challenge(str(ws), 1, "Pwn Me", "Web", status={
-            "solve": "solved_by_me", "writeup": "draft"},
-            writeup_text="# writeup A\nFlag: `FLAG{aaaa11112222}`")
-        seed_challenge(str(ws), 2, "Pwn_Me", "Web", status={
-            "solve": "solved_by_me", "writeup": "draft"},
-            writeup_text="# writeup B\nFlag: `FLAG{bbbb33334444}`")
-
-        captured(handle_export_pack,
-                 parse(["export-pack", "-w", str(ws),
-                        "--out", str(tmp_path)]))
-
-        pack_dirs = [p for p in tmp_path.iterdir()
-                     if p.is_dir() and "_writeup_" in p.name]
-        assert len(pack_dirs) == 1
-        subs = sorted(d.name for d in pack_dirs[0].iterdir() if d.is_dir())
-        # Hai entry -> hai thư mục con riêng biệt (bài sau hậu tố _2).
-        assert subs == ["Web_Pwn_Me", "Web_Pwn_Me_2"]
-        # Cả hai writeup còn nguyên vẹn — không ai đè ai.
-        readmes = "\n".join(
-            (pack_dirs[0] / s / "README.md").read_text(encoding="utf-8")
-            for s in subs)
-        assert "# writeup A" in readmes
-        assert "# writeup B" in readmes
-        # INDEX liệt kê cả 2 và link đúng subdir thật tồn tại.
-        index = (pack_dirs[0] / "INDEX.md").read_text(encoding="utf-8")
-        assert "Pwn Me" in index and "Pwn_Me" in index
-        for s in subs:
-            assert f"[{s}/README.md]({s}/README.md)" in index
-        # Zip chứa README của cả hai subdir.
-        zip_path = tmp_path / (pack_dirs[0].name + ".zip")
-        assert zip_path.exists()
-        with zipfile.ZipFile(zip_path) as zf:
-            names = zf.namelist()
-        for s in subs:
-            assert f"{pack_dirs[0].name}/{s}/README.md" in names
 
     def test_history_missing_cid_shows_placeholder_no_substring(self, tmp_path):
         """BUG-HUNTER-C6-02 (FIXED): entry thiếu challenge_id phải hiển thị
@@ -654,6 +587,47 @@ class TestDoctorBoundary:
             handle_doctor, parse(["doctor", "-u", "not-a-url"]))
         assert code == 1
         assert "Tổng kết" in out
+        assert "Traceback" not in out
+
+    def test_doctor_partial_readiness_exits_1_not_false_success(self):
+        from unittest.mock import patch
+        from ctf_downloader.services.health_service import DoctorReport, HealthService
+
+        report = DoctorReport(url="https://ctf.test")
+        report.add("URL sống", True, "HTTP 200")
+        report.add("Auth hợp lệ", False, "cookie hết hạn")
+        with patch.object(HealthService, "check", return_value=report):
+            _out, code = captured_exit(
+                handle_doctor, parse(["doctor", "-u", "https://ctf.test"])
+            )
+        assert code == 1
+
+    def test_doctor_all_readiness_checks_pass_returns_zero(self):
+        from unittest.mock import patch
+        from ctf_downloader.services.health_service import DoctorReport, HealthService
+
+        report = DoctorReport(url="https://ctf.test")
+        report.add("URL sống", True, "HTTP 200")
+        with patch.object(HealthService, "check", return_value=report):
+            _out, code = captured_exit(
+                handle_doctor, parse(["doctor", "-u", "https://ctf.test"])
+            )
+        assert code is None
+
+    def test_doctor_cookie_input_error_exits_2_without_traceback(self):
+        from unittest.mock import patch
+        from ctf_downloader.services.auth_service import AuthService
+
+        with patch.object(
+            AuthService, "resolve_cookie_arg",
+            side_effect=RuntimeError("Không đọc được cookie file 'secret.txt'"),
+        ):
+            out, code = captured_exit(
+                handle_doctor,
+                parse(["doctor", "-u", "https://ctf.test", "-c", "secret.txt"]),
+            )
+        assert code == 2
+        assert "Không đọc được cookie file" in out
         assert "Traceback" not in out
 
 

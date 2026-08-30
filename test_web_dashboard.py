@@ -143,6 +143,21 @@ class TestJsonApi(WebDashboardTestCase):
         self.assertIn("<script>alert(1)</script>", names)  # JSON giữ nguyên text
         self.assertIn("categories", payload)
 
+    def test_status_json_strips_ansi_from_server_strings(self):
+        """hunt-c20 LOW: OSC/CSI từ tên challenge/team/platform thực thi
+        được trên terminal qua ``curl /api/status.json`` → mọi trường string
+        phải qua strip_ansi trước json.dumps."""
+        self.repo.challenges_data["ctf_info"]["team"] = "\x1b]0;pwned\x07teamX"
+        self.repo.challenges_data["ctf_info"]["platform"] = "ctf\x1b[31md"
+        self.repo.metas[2]["name"] = "Safe\x1b[31mCrypto"
+        raw = self.dash.status_json().decode("utf-8")
+        self.assertNotIn("\x1b", raw, "còn ESC sequence trong JSON API")
+        payload = json.loads(raw)
+        self.assertEqual(payload["team"], "teamX")
+        self.assertEqual(payload["platform"], "ctfd")
+        names = [c["name"] for c in payload["challenges"]]
+        self.assertIn("SafeCrypto", names)
+
 
 class TestHttpServer(WebDashboardTestCase):
     """HTTP-level: chạy ThreadingHTTPServer trên port ephemeral."""
@@ -192,6 +207,40 @@ class TestHttpServer(WebDashboardTestCase):
             self.fail("expected 404")
         except urllib.error.HTTPError as e:
             self.assertEqual(e.code, 404)
+
+    def _raw_head(self, path):
+        """HEAD qua RAW SOCKET — http.client/urllib tự nuốt body cho HEAD
+        nên không phát hiện được server vẫn ghi byte ra wire."""
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            conn.request("HEAD", path)
+            resp = conn.getresponse()
+            status = resp.status
+            length = int(resp.headers.get("Content-Length", "0") or 0)
+            # Đọc TOÀN BỘ còn lại trên wire sau headers — nếu server tự ý
+            # wfile.write(body) thì byte đó nằm đây.
+            rest = resp.fp.read()
+        finally:
+            conn.close()
+        return status, length, rest
+
+    def test_head_request_returns_headers_without_body(self):
+        """hunt-c20 LOW: HEAD delegate do_GET vẫn wfile.write(body) —
+        response HEAD không được mang byte body nào (curl -I an toàn)."""
+        for path in ("/api/status.json", "/"):
+            with self.subTest(path=path):
+                status, length, rest = self._raw_head(path)
+                self.assertEqual(status, 200)
+                # Content-Length vẫn khai báo size body thật (GET tương ứng)
+                self.assertGreater(length, 0)
+                self.assertEqual(rest, b"",
+                                 f"HEAD {path} vẫn ghi {len(rest)} byte body ra wire")
+
+    def test_head_unknown_path_404_no_body(self):
+        status, length, rest = self._raw_head("/nope")
+        self.assertEqual(status, 404)
+        self.assertEqual(rest, b"")
 
     def test_busy_port_raises_oserror_with_clear_message(self):
         # Chiếm port bằng socket LISTENING rồi thử serve trên đúng port đó.

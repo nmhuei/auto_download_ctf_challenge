@@ -71,7 +71,7 @@ def _auto_cfg():
 
 def _mk_ws(root: Path, challenges=("Alpha", "Beta"), marker="v1",
            with_solver=False):
-    """Workspace tối thiểu cho WriteupExporter.collect()."""
+    """Workspace tối thiểu cho test."""
     root.mkdir(parents=True, exist_ok=True)
     (root / "challenges.json").write_text(json.dumps(
         {"ctf_info": {"title": "WSX", "url": "https://x.example"}}),
@@ -317,96 +317,6 @@ class TestC11Case2AuthUrlKey(unittest.TestCase):
 
 # ====================================================================== #
 # CASE 3 — Export-pack re-run ×3 cùng ngày (R4 idempotent)
-# ====================================================================== #
-class TestC11Case3ExportPackRerun(unittest.TestCase):
-    def test_3a_rerun_x3_stable_entries(self):
-        """3 lần chạy liên tiếp cùng ngày: đúng N subdir (không tích tụ
-        _2/_3), README bản mới ghi đè, INDEX trỏ đúng, zip sạch."""
-        from ctf_downloader.services.writeup_exporter import WriteupExporter
-
-        base = tempfile.mkdtemp()
-        try:
-            ws = Path(base) / "WSX"
-            out = Path(base) / "out"
-            pack = None
-            for run in ("v1", "v2", "v3"):
-                _mk_ws(ws, marker=run)
-                pack = WriteupExporter(ws).build_pack(out_dir=out)
-            subs = sorted(p.name for p in pack.iterdir() if p.is_dir())
-            self.assertEqual(subs, ["Web_Alpha", "Web_Beta"],
-                             "re-run tích tụ subdir/suffix _N")
-            for sub in subs:
-                txt = (pack / sub / "README.md").read_text(encoding="utf-8")
-                self.assertIn("v3", txt, "README stale từ lần chạy trước")
-            index = (pack / "INDEX.md").read_text(encoding="utf-8")
-            for sub in subs:
-                self.assertIn(f"({sub}/README.md)", index)
-                self.assertTrue((pack / sub / "README.md").is_file())
-            with zipfile.ZipFile(str(pack) + ".zip") as z:
-                dirs = sorted({n.split("/")[1] for n in z.namelist()
-                               if n.count("/") >= 2})
-            self.assertEqual(dirs, subs, "zip chứa subdir stale/lặp")
-        finally:
-            shutil.rmtree(base, ignore_errors=True)
-
-    def test_3b_bug_dropped_entry_leaves_stale_subdir_in_pack_and_zip(self):
-        """BUG C11-03 (M): build_pack chỉ rmtree subdir của entry HIỆN TẠI
-        (writeup_exporter.py:322-327) — entry bị GỠ khỏi điều kiện export
-        giữa các lần chạy để lại subdir cũ trong pack dir VÀ trong zip mới
-        (README cũ, có thể còn flag/ghi chú cũ). Idempotence claim của R4
-        chỉ đúng khi danh sách entry bất biến."""
-        from ctf_downloader.services.writeup_exporter import WriteupExporter
-
-        base = tempfile.mkdtemp()
-        try:
-            ws, out = Path(base) / "WSX", Path(base) / "out"
-            _mk_ws(ws, marker="v1")                       # Alpha + Beta
-            pack1 = WriteupExporter(ws).build_pack(out_dir=out)
-            self.assertEqual(
-                sorted(p.name for p in pack1.iterdir() if p.is_dir()),
-                ["Web_Alpha", "Web_Beta"])
-            # Beta mất điều kiện export giữa các lần chạy
-            meta = Path(ws, "Web", "Beta", "metadata.json")
-            data = json.loads(meta.read_text(encoding="utf-8"))
-            data["status"]["solve"] = "unsolved"
-            meta.write_text(json.dumps(data), encoding="utf-8")
-
-            pack2 = WriteupExporter(ws).build_pack(out_dir=out)
-            subs = sorted(p.name for p in pack2.iterdir() if p.is_dir())
-            self.assertEqual(subs, ["Web_Alpha"],
-                             f"subdir stale của entry đã gỡ còn sót: {subs}")
-            with zipfile.ZipFile(str(pack2) + ".zip") as z:
-                dirs = {n.split("/")[1] for n in z.namelist()
-                        if n.count("/") >= 2}
-            self.assertEqual(dirs, {"Web_Alpha"},
-                             f"zip còn chứa subdir stale: {dirs}")
-        finally:
-            shutil.rmtree(base, ignore_errors=True)
-
-    def test_3c_bug_collision_pair_shrink_keeps_old_suffix_dir(self):
-        """Cùng gốc BUG C11-03: lần chạy trước có collision sinh
-        ``Web_Pwn_Me_2``; lần sau chỉ còn 1 entry — hậu tố _2 của LẦN
-        TRƯỚC vẫn nằm lại pack + zip dù ``_used_dirnames`` đã reset đúng
-        (phần rmtree-per-entry không quét subdir lạ)."""
-        from ctf_downloader.services.writeup_exporter import WriteupExporter
-
-        base = tempfile.mkdtemp()
-        try:
-            ws, out = Path(base) / "WSP", Path(base) / "out"
-            _mk_ws(ws, challenges=("Pwn Me", "Pwn_Me"), marker="v1")
-            pack1 = WriteupExporter(ws).build_pack(out_dir=out)
-            self.assertEqual(
-                sorted(p.name for p in pack1.iterdir() if p.is_dir()),
-                ["Web_Pwn_Me", "Web_Pwn_Me_2"])       # collision cùng lần chạy
-            shutil.rmtree(ws / "Web" / "Pwn Me")      # 1 entry biến mất
-            pack2 = WriteupExporter(ws).build_pack(out_dir=out)
-            subs = sorted(p.name for p in pack2.iterdir() if p.is_dir())
-            self.assertEqual(subs, ["Web_Pwn_Me"],
-                             f"hậu tố collision lần-trước còn sót: {subs}")
-        finally:
-            shutil.rmtree(base, ignore_errors=True)
-
-
 # ====================================================================== #
 # CASE 4 — Auto-sync precedence hai tầng (R6) + giá trị rác
 # ====================================================================== #

@@ -31,7 +31,6 @@ from ctf_downloader.services.instance_keepalive import (
     RENEW_MAX_ATTEMPTS, WHALE_MAX_RENEWS,
 )
 from ctf_downloader.services import sniper_service as sn
-from ctf_downloader.services.writeup_exporter import WriteupExporter
 
 
 # ====================================================================== #
@@ -307,64 +306,6 @@ def make_ws(root: Path, chals: dict):
         (d / "writeup" / "README.md").write_text(
             "## Solve\nFLAG{h4rd3ned_flag_" + key.lower() + "}\n",
             encoding="utf-8")
-
-
-def build(exp_cls, ws, out):
-    ex = exp_cls(ws)
-    return ex.build_pack(out_dir=str(out))
-
-
-@pytest.fixture(autouse=True)
-def _silence_export_console(monkeypatch):
-    monkeypatch.setattr(WriteupExporter, "_print_warnings",
-                        staticmethod(lambda w: None))
-    monkeypatch.setattr(WriteupExporter, "_print_summary",
-                        staticmethod(lambda n, p: None))
-
-
-class TestExportPackPrune:
-    def test_rename_between_runs_old_subdir_pruned_from_dir_and_zip(self, tmp_path):
-        ws, out = tmp_path / "ws", tmp_path / "out"
-        make_ws(ws, {"alpha": {"name": "Alpha"}})
-        pack1 = build(WriteupExporter, ws, out)
-        subs1 = [p.name for p in pack1.iterdir() if p.is_dir()]
-        assert subs1 == ["Web_Alpha"]
-        old_sub = subs1[0]
-
-        make_ws(ws, {"alpha": {"name": "Beta"}})   # đổi TÊN giữa 2 lần chạy
-        pack2 = build(WriteupExporter, ws, out)
-        assert pack2 == pack1                      # cùng ngày → cùng pack
-        names = {p.name for p in pack2.iterdir()}
-        assert names == {"INDEX.md", "Web_Beta"}, \
-            f"pack sau rename còn: {names}"
-        assert not any("alpha" in n.lower() for n in names), \
-            f"subdir cũ còn sót: {names}"
-
-        zl = zipfile.ZipFile(str(pack2) + ".zip").namelist()
-        assert any("Web_Beta" in n for n in zl)
-        assert not any("Web_Alpha" in n for n in zl), \
-            f"zip còn chứa subdir cũ: {[n for n in zl if 'Alpha' in n]}"
-        index = (pack2 / "INDEX.md").read_text(encoding="utf-8")
-        assert "Beta" in index and "Alpha" not in index
-
-    def test_collision_pair_shrinks_suffix_dir_pruned(self, tmp_path):
-        ws, out = tmp_path / "ws", tmp_path / "out"
-        # "Pwn Me" và "Pwn_Me" cùng sanitize → Web_Pwn_Me vs Web_Pwn_Me_2
-        make_ws(ws, {"c1": {"name": "Pwn Me"},
-                     "c2": {"name": "Pwn_Me"}})
-        pack1 = build(WriteupExporter, ws, out)
-        dirs1 = sorted(p.name for p in pack1.iterdir() if p.is_dir())
-        assert dirs1 == ["Web_Pwn_Me", "Web_Pwn_Me_2"], dirs1
-
-        import shutil as _sh
-        _sh.rmtree(ws / "chals" / "c2")            # lần này chỉ còn 1 entry
-        pack2 = build(WriteupExporter, ws, out)
-        dirs2 = sorted(p.name for p in pack2.iterdir() if p.is_dir())
-        assert dirs2 == ["Web_Pwn_Me"], \
-            f"hậu tố collision của lần trước không bị prune: {dirs2}"
-        zl = zipfile.ZipFile(str(pack2) + ".zip").namelist()
-        assert not any("Web_Pwn_Me_2" in n for n in zl), \
-            f"zip còn chứa hậu tố stale: {[n for n in zl if 'Web_Pwn_Me_2' in n]}"
 
 
 # ====================================================================== #

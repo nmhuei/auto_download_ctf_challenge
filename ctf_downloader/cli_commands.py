@@ -24,7 +24,7 @@ from .services.pull_service import PullService
 from .services.rank_service import RankService
 from .services.status_service import StatusService
 from .services.submit_service import SubmitService
-from .storage.workspace_repo import WorkspaceRepo
+from .storage.workspace_repo import WorkspaceRepo, is_superseded
 from .ui.theme import ERROR as _ERROR_COLOR
 from .ui.theme import FG_FAINT as _FAINT_COLOR
 from .ui.theme import FG_MUTED as _MUTED_COLOR
@@ -52,10 +52,11 @@ def handle_pull(args):
         launch_interactive_menu()
         return
 
-    cookie_val = args.cookie
-    if cookie_val and os.path.isfile(cookie_val):
-        with open(cookie_val, 'r', encoding='utf-8') as f:
-            cookie_val = f.read().strip()
+    try:
+        cookie_val = AuthService.resolve_cookie_arg(args.cookie)
+    except RuntimeError as exc:
+        Logger.error(str(exc))
+        sys.exit(2)
 
     config = DownloaderConfig(
         url=args.url,
@@ -66,11 +67,17 @@ def handle_pull(args):
         download_third_party=not args.no_third_party,
         create_solve_template=not args.no_template,
         force_redownload=args.force,
+        verify_downloads=getattr(args, 'verify_downloads', 'fast') or 'fast',
+        allow_private_redirects=bool(getattr(args, 'allow_private_redirects', False)),
         timeout=args.timeout,
         categories=args.category,
         exclude_categories=args.exclude,
         incremental_update=getattr(args, 'update', False) or getattr(args, 'refresh_meta', False),
-        refresh_meta=getattr(args, 'refresh_meta', False)
+        refresh_meta=getattr(args, 'refresh_meta', False),
+        git_workflow=not getattr(args, 'no_git', False),
+        git_base_branch=getattr(args, 'git_base', 'main') or 'main',
+        git_remote=getattr(args, 'git_remote', 'origin') or 'origin',
+        git_auto_push=not getattr(args, 'no_git_push', False),
     )
 
     try:
@@ -260,9 +267,10 @@ def handle_workspaces(args):
 
 
 def handle_instance(args):
-    cookie_val, token_val = get_auth_for_workspace(args.workspace, args.cookie, args.token)
-
     try:
+        cookie_val, token_val = get_auth_for_workspace(
+            args.workspace, args.cookie, args.token
+        )
         svc = InstanceService(args.workspace, cookie=cookie_val, token=token_val)
     except Exception as e:
         Logger.error(f'Khởi tạo thất bại: {e}')
@@ -331,15 +339,23 @@ def handle_instance(args):
 
 
 def handle_submit(args):
-    cookie_val, token_val = get_auth_for_workspace(args.workspace, args.cookie, args.token)
-
-    svc = SubmitService(
-        url=args.url,
-        cookie=cookie_val,
-        token=token_val,
-        workspace_dir=args.workspace,
-        flag_format=getattr(args, 'flag_format', None)
-    )
+    try:
+        cookie_val, token_val = get_auth_for_workspace(
+            args.workspace, args.cookie, args.token
+        )
+        svc = SubmitService(
+            url=args.url,
+            cookie=cookie_val,
+            token=token_val,
+            workspace_dir=args.workspace,
+            flag_format=getattr(args, 'flag_format', None)
+        )
+    except RuntimeError as exc:
+        Logger.error(str(exc))
+        sys.exit(2)
+    except Exception as exc:
+        Logger.error(f'Khởi tạo submit thất bại: {exc}')
+        sys.exit(1)
 
     if args.auto:
         svc.auto_submit_all(force=getattr(args, 'force', False))
@@ -414,11 +430,13 @@ _HOARD_STATES = ('hoarded', 'found_unverified')
 def _collect_hoarded(repo: WorkspaceRepo) -> list:
     """Quét workspace trả về mọi challenge đang GIỮ flag (state ∈
     hoarded/found_unverified và có value). Mỗi dòng: name/points/state/value/
-    note/updated_at — sort điểm giảm dần (tie-break tên A→Z)."""
+    note/updated_at — sort điểm giảm dần (tie-break tên A→Z).
+    Bản tombstone superseded_by bị loại — flag đã được restore sang thư mục
+    sống, list không nhân đôi hàng theo id (review-6 HIGH)."""
     rows = []
     for meta_path in repo.iter_challenges():
         meta = repo.read_metadata(meta_path)
-        if not meta:
+        if not meta or is_superseded(meta):
             continue
         st = repo.read_status(meta_path, meta=meta)
         fl = st.get('flag') or {}
@@ -723,10 +741,11 @@ def handle_watch(args):
 
     from .services.watch_service import WatchService, parse_time_arg
 
-    cookie_val = args.cookie
-    if cookie_val and os.path.isfile(cookie_val):
-        with open(cookie_val, 'r', encoding='utf-8') as f:
-            cookie_val = f.read().strip()
+    try:
+        cookie_val = AuthService.resolve_cookie_arg(args.cookie)
+    except RuntimeError as exc:
+        Logger.error(str(exc))
+        sys.exit(2)
 
     start_utc = parse_time_arg(getattr(args, 'start', None))
     end_utc = parse_time_arg(getattr(args, 'end', None))
@@ -763,7 +782,8 @@ def handle_register(args):
 
     if not getattr(args, 'url', None):
         Logger.error("Usage: ctf register -u <platform-url> "
-                     "[--email me@x.com | --tempmail] [--username PREFIX] [--password PASS]")
+                     "[--email me@x.com | --tempmail] [--username PREFIX] "
+                     "[--password PASS] [--cf-clearance COOKIE]")
         sys.exit(2)
 
     svc = RegisterService()
@@ -775,6 +795,7 @@ def handle_register(args):
             username_prefix=getattr(args, 'username_prefix', None) or 'player',
             password=getattr(args, 'password', None),
             workspace=getattr(args, 'workspace', None),
+            cf_clearance=getattr(args, 'cf_clearance', None),
         )
     except PlatformRegisterUnsupported:
         # Service đã in credentials + hướng dẫn thủ công — captcha không bypass.
@@ -799,8 +820,8 @@ def handle_doctor(args):
     """``ctf doctor`` 🩺 — health-check platform trước giờ giải (P1-3).
 
     Offline-safe: mỗi check tự bắt exception riêng; mạng chết vẫn render
-    đầy đủ report. Exit code: 0 khi có ít nhất 1 check pass | 1 khi tất cả
-    fail | 2 thiếu -u."""
+    đầy đủ report. Exit code: 0 chỉ khi TẤT CẢ readiness checks pass | 1 khi
+    còn ít nhất một check fail | 2 khi input CLI không hợp lệ/thiếu -u."""
     from .services.health_service import HealthService
 
     url = getattr(args, 'url', None)
@@ -809,10 +830,11 @@ def handle_doctor(args):
                      "[-w workspace] [-c cookie] [-t token]")
         sys.exit(2)
 
-    cookie_val = args.cookie
-    if cookie_val and os.path.isfile(cookie_val):
-        with open(cookie_val, 'r', encoding='utf-8') as f:
-            cookie_val = f.read().strip()
+    try:
+        cookie_val = AuthService.resolve_cookie_arg(args.cookie)
+    except RuntimeError as exc:
+        Logger.error(str(exc))
+        sys.exit(2)
 
     svc = HealthService()
     try:
@@ -826,13 +848,15 @@ def handle_doctor(args):
         Logger.error(f'Doctor gặp lỗi bất ngờ: {e}')
         sys.exit(1)
     report.render()
-    if report.passed == 0:
+    if not report.all_passed():
         sys.exit(1)
 
 
 def handle_rank(args):
-    cookie_val, token_val = get_auth_for_workspace(args.workspace, args.cookie, args.token)
     try:
+        cookie_val, token_val = get_auth_for_workspace(
+            args.workspace, args.cookie, args.token
+        )
         svc = RankService(
             workspace_path=args.workspace,
             url=args.url,
@@ -856,9 +880,9 @@ def handle_sync(args):
     """
     from .services.platform_resolver import PlatformResolver
 
-    cookie_val, token_val = get_auth_for_workspace(args.workspace)
-    repo = WorkspaceRepo(args.workspace)
     try:
+        cookie_val, token_val = get_auth_for_workspace(args.workspace)
+        repo = WorkspaceRepo(args.workspace)
         _session, platform, _info = PlatformResolver.for_workspace(
             repo, cookie=cookie_val, token=token_val)
     except Exception as e:
@@ -897,25 +921,6 @@ def _render_verify_drift(verdict):
         ['Challenge', 'Ai', 'Người solve'], rows)
     Logger.warning("⚠️ KHÔNG tự đổi trạng thái — user quyết định qua "
                    "'status set' hoặc submit flag.")
-
-
-def handle_export_pack(args):
-    """``ctf export-pack`` — đóng gói writeup các bài đã solve thành pack
-    markdown + zip (P2-3). Handler mỏng quanh WriteupExporter."""
-    from .services.writeup_exporter import WriteupExporter
-
-    try:
-        exporter = WriteupExporter(args.workspace)
-        pack_dir = exporter.build_pack(args.out or '.')
-    except ValueError as e:
-        # Không có bài nào đạt điều kiện export — message đã hướng dẫn chi tiết.
-        Logger.error(str(e))
-        sys.exit(1)
-    except Exception as e:
-        Logger.error(f'Export thất bại: {e}')
-        sys.exit(1)
-    # Cảnh báo validate + dòng tổng kết do service tự in qua err_console
-    # (PHOSPHOR stderr) — handler KHÔNG in lại để tránh trùng output.
 
 
 # Icon kết quả submit cho `ctf history` (result strings của SubmitService).
@@ -968,12 +973,15 @@ def _emit_wrapped(segments, indent="  ", console_=None) -> None:
         lines.append(current)
 
     for i, line_words in enumerate(lines):
-        line = Text("" if i == 0 else indent)
+        # Manual wrapping above owns line breaks. Disable Rich's second-stage
+        # character folding so long atomic literals (workspace paths, URLs,
+        # flags) remain copy/paste-exact instead of being split mid-token.
+        line = Text("" if i == 0 else indent, no_wrap=True, overflow="ignore")
         for j, (word, style) in enumerate(line_words):
             if j:
                 line.append(" ")
             line.append(word, style=style)
-        target.print(line)
+        target.print(line, soft_wrap=True)
 
 
 def _emit_empty_state(message: str, literal: str = "", tail: str = "") -> None:
@@ -1013,11 +1021,49 @@ def handle_history(args):
     Flag bị che mặc định (4 ký tự đầu + ***) chống lộ khi share screen;
     ``--all`` hiện đầy đủ. Workspace chưa từng submit → EmptyState thân thiện
     (heading UPPERCASE faint + dòng ``·`` muted), KHÔNG lỗi.
+    ``--clear``: xoá sạch lịch sử.
+    ``--prune <target>``: xoá các entry khớp challenge id/tên/flag.
     """
     if not os.path.isdir(args.workspace):
         Logger.error(f"Workspace không tồn tại: {args.workspace}")
         sys.exit(1)
     repo = WorkspaceRepo(args.workspace)
+
+    # 1. Handle --clear
+    if getattr(args, 'clear', False):
+        count = repo.clear_submit_history()
+        Logger.success(f"Đã xoá {count} entry khỏi lịch sử submit.")
+        return
+
+    # 2. Handle --prune
+    prune_target = getattr(args, 'prune', None)
+    if prune_target:
+        prune_str = str(prune_target).strip()
+
+        # Dựng index tìm challenge ID / name nếu có
+        try:
+            chall_index = repo.challenge_index()
+            chall_match = repo.find_challenge(prune_str, chall_index)
+            matched_cid = str(chall_match.get('id')) if chall_match and 'id' in chall_match else None
+        except Exception:
+            matched_cid = None
+
+        def _is_match(e: dict) -> bool:
+            cid = str(e.get('challenge_id') or '')
+            flag = str(e.get('flag') or '').strip()
+            if prune_str == cid or (matched_cid and cid == matched_cid):
+                return True
+            # Destructive history cleanup must be exact.  Substring
+            # matching made short inputs such as ``FLAG`` delete unrelated
+            # submissions silently.
+            if prune_str == flag:
+                return True
+            return False
+
+        count = repo.prune_submit_history(_is_match)
+        Logger.success(f"Đã xoá {count} entry khớp '{prune_str}' khỏi lịch sử submit.")
+        return
+
     entries = repo.load_submit_history().get('entries') or []
     _emit_section_heading("LỊCH SỬ SUBMIT")
     if not entries:
@@ -1087,8 +1133,8 @@ def handle_sniper(args):
     from .services.sniper_service import SniperService
     from .services.submit_service import SubmitService
 
-    cookie_val, token_val = get_auth_for_workspace(args.workspace)
     try:
+        cookie_val, token_val = get_auth_for_workspace(args.workspace)
         submitter = SubmitService(cookie=cookie_val, token=token_val,
                                   workspace_dir=args.workspace)
     except Exception as e:
@@ -1145,6 +1191,94 @@ def _prompt_yes_no(question: str) -> bool:
     except Exception:
         return False
     return answer.strip().lower() in ('y', 'yes')
+
+
+def handle_git(args):
+    """Git lifecycle: init/status/checkpoint+push/finish contest branch."""
+    from .services.git_workflow import GitWorkflowError, GitWorkflowService
+
+    command = getattr(args, 'git_command', None)
+    try:
+        if command == 'init':
+            result = GitWorkflowService.initialize_repository(
+                args.dir,
+                remote_url=getattr(args, 'remote_url', None),
+                base_branch=getattr(args, 'base', 'main') or 'main',
+                remote=getattr(args, 'remote', 'origin') or 'origin',
+                push=not getattr(args, 'no_push', False),
+                import_existing=bool(getattr(args, 'import_existing', False)),
+            )
+            Logger.success(
+                f"Git repo sẵn sàng: {result['repo_root']} "
+                f"(base={result['base_branch']})"
+            )
+            if result.get('pushed'):
+                Logger.success(
+                    f"Đã push {result['base_branch']} lên {result['remote']}."
+                )
+            elif getattr(args, 'remote_url', None):
+                Logger.warning("Repo đã init nhưng base branch chưa được push.")
+            return
+
+        if command == 'status':
+            result = GitWorkflowService.status(args.workspace)
+            rows = [
+                ["workspace", result.get("workspace") or args.workspace],
+                ["branch", result.get("branch") or "-"],
+                ["current", result.get("current_branch") or "-"],
+                ["base", result.get("base_branch") or "main"],
+                ["state", result.get("status") or "active"],
+                ["dirty", str(result.get("dirty_files", 0))],
+                ["merged", "yes" if result.get("merged_into_base") else "no"],
+                ["remote", "yes" if result.get("remote_configured") else "no"],
+            ]
+            Logger.print_table("Git Workspace", ["Field", "Value"], rows)
+            return
+
+        if command == 'push':
+            result = GitWorkflowService.checkpoint_and_push(
+                args.workspace,
+                message=getattr(args, 'message', None),
+                push=not getattr(args, 'no_push', False),
+            )
+            if result.get('committed'):
+                Logger.success(f"Đã checkpoint branch {result['branch']}.")
+            else:
+                Logger.info("Không có thay đổi mới cần commit.")
+            if result.get('pushed'):
+                Logger.success(
+                    f"Đã push {result['branch']} lên {result['remote']}."
+                )
+            elif not getattr(args, 'no_push', False):
+                Logger.warning(
+                    "Không có remote được cấu hình; checkpoint chỉ lưu local."
+                )
+            return
+
+        if command in ('finish', 'end', 'merge'):
+            result = GitWorkflowService.finish(
+                args.workspace,
+                base_branch=getattr(args, 'base', None),
+                remote=getattr(args, 'remote', None),
+                push=not getattr(args, 'no_push', False),
+                delete_remote=not getattr(args, 'keep_remote', False),
+            )
+            Logger.success(
+                f"Đã merge {result['branch']} → {result['base_branch']}."
+            )
+            if result.get('base_pushed'):
+                Logger.success(f"Đã push {result['base_branch']} lên remote.")
+            if result.get('remote_deleted'):
+                Logger.success(f"Đã xóa remote branch {result['branch']}.")
+            if result.get('local_deleted'):
+                Logger.success(f"Đã xóa local branch {result['branch']}.")
+            return
+
+        Logger.error("Thiếu Git subcommand: init | status | push | finish")
+        sys.exit(2)
+    except GitWorkflowError as exc:
+        Logger.error(str(exc))
+        sys.exit(1)
 
 
 def handle_storage(args):
@@ -1270,6 +1404,13 @@ def _handle_storage_archive(args, StorageManager, human_size):
 #: Spec event-window §4 ("Đổi ý: ctf config auto-sync off"). Precedence
 #: (R6): giá trị toàn cục là MẶC ĐỊNH; ``.ctf/config.json`` của workspace
 #: là OVERRIDE — watch_service đọc hai tầng qua resolve_auto_sync_enabled.
+def _normalize_workspace_root(value: str) -> str:
+    raw = str(value or '').strip()
+    if not raw:
+        raise ValueError('đường dẫn không được để trống')
+    return os.path.abspath(os.path.expanduser(raw))
+
+
 _CONFIG_KEYS = {
     'auto-sync': {
         'path': ('auto_sync', 'enabled'),
@@ -1279,12 +1420,18 @@ _CONFIG_KEYS = {
                  '(ctf watch) — mặc định toàn cục, workspace '
                  '.ctf/config.json override'),
     },
+    'workspace-root': {
+        'path': ('workspace_root',),
+        'normalize': _normalize_workspace_root,
+        'default': os.path.expanduser('~/Workspace/CTF'),
+        'desc': 'Thư mục gốc mặc định để pull/scan/storage/git lưu các giải',
+    },
 }
 
 
 def _config_render(spec, stored):
-    """Giá trị lưu trong JSON -> chuỗi hiển thị CLI (vd True -> 'on')."""
-    for name, val in spec['values'].items():
+    """Giá trị lưu trong JSON -> chuỗi hiển thị CLI."""
+    for name, val in spec.get('values', {}).items():
         if val == stored:
             return name
     return str(stored)
@@ -1311,13 +1458,21 @@ def handle_config(args):
         sys.exit(2)
 
     spec = _CONFIG_KEYS.get(key)          # None khi liệt kê (không có key)
-    normalized = None
+    new_val = None
     if value is not None:
-        normalized = value.strip().lower()
-        if normalized not in spec['values']:
-            Logger.error(f"Giá trị không hợp lệ cho '{key}': '{value}' "
-                         f"(nhận: {'|'.join(spec['values'])}).")
-            sys.exit(2)
+        if 'values' in spec:
+            normalized = value.strip().lower()
+            if normalized not in spec['values']:
+                Logger.error(f"Giá trị không hợp lệ cho '{key}': '{value}' "
+                             f"(nhận: {'|'.join(spec['values'])}).")
+                sys.exit(2)
+            new_val = spec['values'][normalized]
+        else:
+            try:
+                new_val = spec['normalize'](value)
+            except (TypeError, ValueError) as exc:
+                Logger.error(f"Giá trị không hợp lệ cho '{key}': {exc}.")
+                sys.exit(2)
 
     cfg = load_global_config()
 
@@ -1359,7 +1514,6 @@ def handle_config(args):
     # ghi giữa chừng. Code cũ load-stale-save tin dùng snapshot đầu phiên:
     # lần ĐẶT đè mất register_state/auth do tiến trình khác ghi trong lúc
     # này. Mutator chỉ mutate dict hiện hành, không giữ reference cũ.
-    new_val = spec['values'][normalized]
 
     def _set_key(state):
         node = state

@@ -1,13 +1,13 @@
-import sys
 from rich.console import Console
 from rich.markup import escape
-from rich.panel import Panel
 from rich.table import Table
 
 # PHOSPHOR FIELD KIT: một accent amber duy nhất, semantic chỉ đi kèm glyph
 # (spec §3). Logger dùng chung theme nguồn sự thật của toàn CLI thay cho
 # custom_theme cyan/vàng/xanh legacy; highlight=False tắt ReprHighlighter
 # (rich không được tự do tô màu ngoài token).
+# stderr=True: log/diagnostic đi stderr theo convention CLI tool — stdout
+# giữ cho dữ liệu pipe-able; cùng precedent với interactive_menu._MENU_CON.
 from ..ui.theme import load_theme
 
 console = Console(theme=load_theme(None), highlight=False)
@@ -63,9 +63,15 @@ class Logger:
 
     @staticmethod
     def print_table(title: str, columns: list, rows: list):
-        table = Table(title=title, show_header=True, header_style="title")
+        # Title/columns cũng là dữ liệu (mode label dựng từ chuỗi server,
+        # tên cột cấu hình) — rich Table parse markup trên chúng theo mặc
+        # định → escape như cell (hunt-c20 LOW): '[...]' hiện nguyên văn,
+        # không inject style/crash bảng. Non-str passthrough.
+        table = Table(
+            title=escape(title) if isinstance(title, str) else title,
+            show_header=True, header_style="title")
         for col in columns:
-            table.add_column(col)
+            table.add_column(escape(col) if isinstance(col, str) else col)
         for row in rows:
             # Cell là dữ liệu (thường lấy từ SERVER: solver_names, tên
             # challenge/category) → escape markup để tên chứa '[...]' hiện

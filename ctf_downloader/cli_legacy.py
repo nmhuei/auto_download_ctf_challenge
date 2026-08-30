@@ -20,6 +20,7 @@ from ctf_downloader.services.instance_service import InstanceService
 from ctf_downloader.services.rank_service import RankService
 from ctf_downloader.services.status_service import StatusService
 from ctf_downloader.services.submit_service import SubmitService
+from ctf_downloader.storage.global_config import resolve_workspace_root
 from ctf_downloader.storage.workspace_repo import WorkspaceRepo
 from ctf_downloader.submitter import FlagSubmitter
 from ctf_downloader.utils.logger import Logger, console
@@ -72,9 +73,10 @@ def _submit_interactive_wizard(flag_format: str = None):
     console.print("[title]🚩 Interactive Flag Submitter[/title]\n")
 
     # Look for existing workspace
-    default_workspace = os.path.expanduser("~/Workspace/CTF/PTIT_CTF_2026")
+    workspace_root = resolve_workspace_root()
+    default_workspace = os.path.join(workspace_root, "PTIT_CTF_2026")
     if not os.path.exists(default_workspace):
-        default_workspace = "./PTIT_CTF_2026" if os.path.exists("./PTIT_CTF_2026") else os.path.expanduser("~/Workspace/CTF")
+        default_workspace = workspace_root
     # Nhãn prompt là chrome trung tính (quy ước watch_service) — không còn
     # bold cyan phụ thuộc theme terminal.
     workspace = Prompt.ask("Workspace directory (or press enter to skip)", default=default_workspace).strip()
@@ -87,9 +89,11 @@ def _submit_interactive_wizard(flag_format: str = None):
 
     url = Prompt.ask("Enter CTF Platform URL", default=default_url or "https://jeo.infosecptit.org/games/6/challenges").strip()
     cookie = Prompt.ask("Paste Cookie (or path to cookie file)").strip()
-    if os.path.isfile(cookie):
-        with open(cookie, "r", encoding="utf-8") as f:
-            cookie = f.read().strip()
+    try:
+        cookie = AuthService.resolve_cookie_arg(cookie)
+    except RuntimeError as exc:
+        Logger.error(str(exc))
+        return
 
     svc = SubmitService(url=url, cookie=cookie, workspace_dir=workspace, flag_format=flag_format)
 
@@ -126,10 +130,11 @@ def legacy_submit_main():
         Logger.error("CTF URL is required. Use -u <URL> or -i for interactive mode.")
         sys.exit(1)
 
-    cookie = args.cookie
-    if cookie and os.path.isfile(cookie):
-        with open(cookie, "r", encoding="utf-8") as f:
-            cookie = f.read().strip()
+    try:
+        cookie = AuthService.resolve_cookie_arg(args.cookie)
+    except RuntimeError as exc:
+        Logger.error(str(exc))
+        sys.exit(2)
 
     svc = SubmitService(
         url=url,
@@ -288,7 +293,7 @@ def legacy_manage_main():
     args = parser.parse_args()
 
     if args.all:
-        default_ctf_dir = os.path.expanduser('~/Workspace/CTF')
+        default_ctf_dir = resolve_workspace_root()
         StatusService.scan_all_workspaces(default_ctf_dir)
         return
 

@@ -220,6 +220,20 @@ def meter_markup(value: float, width: int, colors: Sequence[RGB], *,
     return "".join(out)
 
 
+def log_meter_percentage(value: float, max_value: float) -> float:
+    """Chuyển đổi giá trị sang % theo thang Logarithmic (Log-scale)
+    cho các dải dữ liệu chênh lệch nhiều bậc độ lớn (orders of magnitude).
+    Clamp trong [0.0, 100.0]."""
+    if not math.isfinite(value) or value <= 0:
+        return 0.0
+    if not math.isfinite(max_value) or max_value <= 0:
+        return 0.0
+    if value >= max_value:
+        return 100.0
+    ratio = math.log10(value + 1.0) / math.log10(max_value + 1.0)
+    return min(100.0, max(0.0, ratio * 100.0))
+
+
 def braille_graph(
     values: Iterable[float],
     width: int,

@@ -9,7 +9,7 @@ _ctf() {
 
     local GLOBAL_OPTS="-v --version -i --interactive -w --workspace"
 
-    local SUBCOMMANDS="pull download clone status tree ls dashboard note ghi-chu tag tags workspaces scan instance container spawn submit flag hoard flag-stash rank scoreboard leaderboard watch register reg doctor health checkup menu ui console storage du archive sync resync export-pack history log open sniper serve web config"
+    local SUBCOMMANDS="pull download clone status tree ls dashboard note ghi-chu tag tags workspaces scan instance container spawn submit flag hoard flag-stash rank scoreboard leaderboard watch register reg doctor health checkup menu ui console storage du archive sync resync history log open sniper serve web git config"
 
     # Tìm subcommand cuối (bỏ qua option và giá trị của nó)
     local cmd=""
@@ -30,9 +30,9 @@ _ctf() {
             menu|ui|console)              cmd="menu" ;;
             storage|du|archive)           cmd="storage" ;;
             sync|resync)                  cmd="sync" ;;
-            export-pack)                  cmd="export-pack" ;;
             history|log)                  cmd="history" ;;
             open)                         cmd="open" ;;
+            git)                          cmd="git" ;;
             config)                       cmd="config" ;;
             sniper)                       cmd="sniper" ;;
             serve|web)                    cmd="serve" ;;
@@ -41,7 +41,7 @@ _ctf() {
 
     local opts=""
     case "$cmd" in
-        pull)        opts="-u --url -c --cookie -t --token -o --output -j --threads -C --category -E --exclude --no-third-party --no-template -f --force --update --refresh-meta --timeout -i --interactive" ;;
+        pull)        opts="-u --url -c --cookie -t --token -o --output -j --threads -C --category -E --exclude --no-third-party --no-template -f --force --verify-downloads --allow-private-redirects --update --refresh-meta --timeout --no-git --git-base --git-remote --no-git-push -i --interactive" ;;
         status)      opts="-w --workspace -u --unsolved -s --solved -C --category --container --label --search" ;;
         note)        opts="-w --workspace --remove" ;;
         tag)         opts="-r --remove -w --workspace" ;;
@@ -51,15 +51,15 @@ _ctf() {
         hoard)       opts="-w --workspace --id -n --name -f --flag --list --all --remove" ;;
         rank)        opts="-w --workspace -u --url -c --cookie -t --token -n --top --no-docs" ;;
         watch)       opts="-w --workspace --once --no-scoreboard --start --end -c --cookie -t --token" ;;
-        register)    opts="-u --url --email --tempmail --username --password -w --workspace" ;;
+        register)    opts="-u --url --email --tempmail --username --password --cf-clearance -w --workspace" ;;
         doctor)      opts="-u --url -w --workspace -c --cookie -t --token" ;;
         menu)        opts="-w --workspace -c --cookie -t --token" ;;
         storage)     opts="-d --base-dir --threshold-mb archive" ;;
         sync)        opts="-w --workspace --verify" ;;
-        export-pack) opts="-w --workspace --out" ;;
-        history)     opts="-w --workspace --all --tail --limit" ;;
+        history)     opts="-w --workspace --all --tail --limit --prune --clear" ;;
         open)        opts="-w --workspace" ;;
-        config)      opts="key value on off auto-sync" ;;
+        git)         opts="init status push finish end merge -d --dir -w --workspace --remote-url --remote --base --no-push --import-existing --keep-remote -m --message" ;;
+        config)      opts="key value on off auto-sync workspace-root" ;;
         sniper)      opts="-w --workspace --start-at --retry-wrong --poll" ;;
         serve)       opts="-w --workspace --port" ;;
         *)           opts="$GLOBAL_OPTS $SUBCOMMANDS" ;;

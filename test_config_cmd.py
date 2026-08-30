@@ -121,3 +121,36 @@ def test_view_wrap_continuation_thut_dung_cot(capsys):
     lines = [ln for ln in out.splitlines() if ln.strip()]
     conts = [ln for ln in lines if ln.startswith(" " * 15) and ln.strip()]
     assert conts, f"hàng config dài phải wrap thụt đúng cột giá trị:\n{out}"
+
+
+def test_workspace_root_persist_and_drives_cli_defaults(tmp_path, monkeypatch, capsys):
+    cfg_file = _patch_global_cfg(monkeypatch, tmp_path)
+    root = tmp_path / "ctf-root"
+
+    _run(["config", "workspace-root", str(root)])
+
+    saved = json.loads(cfg_file.read_text(encoding="utf-8"))
+    assert saved["workspace_root"] == str(root.resolve())
+
+    from ctf_downloader.storage.global_config import resolve_workspace_root
+    assert resolve_workspace_root() == str(root.resolve())
+
+    parser = build_unified_parser()
+    ws = parser.parse_args(["workspaces"])
+    storage = parser.parse_args(["storage"])
+    git_init = parser.parse_args(["git", "init", "--no-push"])
+    assert ws.dir == str(root.resolve())
+    assert storage.base_dir == str(root.resolve())
+    assert git_init.dir == str(root.resolve())
+
+    _run(["config", "workspace-root"])
+    flat = " ".join(capsys.readouterr().out.split())
+    assert str(root.resolve()) in flat
+
+
+def test_workspace_root_rejects_empty_value(tmp_path, monkeypatch, capsys):
+    _patch_global_cfg(monkeypatch, tmp_path)
+    with pytest.raises(SystemExit) as ei:
+        _run(["config", "workspace-root", "   "])
+    assert ei.value.code == 2
+    assert "không được để trống" in capsys.readouterr().out

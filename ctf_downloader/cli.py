@@ -8,7 +8,7 @@ from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test c
     get_auth_for_workspace,
     handle_config,
     handle_doctor,
-    handle_export_pack,
+    handle_git,
     handle_hoard,
     handle_history,
     handle_instance,
@@ -71,7 +71,7 @@ class _PhosphorHelpParser(argparse.ArgumentParser):
             ('register', 'Tự tạo tài khoản trên platform'),
             ('doctor', 'Health-check platform trước giờ giải'),
             ('storage', 'Báo cáo dung lượng workspace + archive'),
-            ('export-pack', 'Đóng gói writeup đã solve thành pack zip'),
+            ('git', 'Branch/push/merge lifecycle cho từng giải'),
             ('history', 'Lịch sử submit flag của workspace'),
             ('serve', 'Dashboard web read-only cho workspace'),
             ('open', 'Mở thư mục challenge trong file manager'),
@@ -114,6 +114,9 @@ class _PhosphorHelpParser(argparse.ArgumentParser):
 
 
 def build_unified_parser():
+    from .storage.global_config import resolve_workspace_root
+    workspace_root = resolve_workspace_root()
+
     parser = _PhosphorHelpParser(
         prog='ctf',
         description='CTF Toolkit: Unified CTF Downloader, Submitter, Container Manager & Dashboard',
@@ -137,11 +140,24 @@ def build_unified_parser():
     pull_parser.add_argument('--no-third-party', action='store_true', help='Disable downloading 3rd party links')
     pull_parser.add_argument('--no-template', action='store_true', help='Disable generating solve.py templates')
     pull_parser.add_argument('-f', '--force', action='store_true', help='Force re-download existing files')
+    pull_parser.add_argument('--verify-downloads', choices=['fast', 'normal', 'strict'],
+                             default='fast',
+                             help='Revalidate file đã có: fast=presence, normal=validator/size, strict=normal+SHA-256')
+    pull_parser.add_argument('--allow-private-redirects', action='store_true',
+                             help='Cho phép attachment redirect từ public host sang private/loopback (mặc định chặn)')
     pull_parser.add_argument('--update', action='store_true',
                              help='Pull tăng dần: chỉ tải challenge MỚI, cập nhật metadata (points/solves/solved/connection) challenge đã có')
     pull_parser.add_argument('--refresh-meta', action='store_true',
                              help='Như --update, nhưng cho phép tải lại attachment khi file thiếu trên đĩa')
     pull_parser.add_argument('--timeout', type=int, default=30, help='Request timeout in seconds (default: 30)')
+    pull_parser.add_argument('--no-git', action='store_true',
+                             help='Tắt Git lifecycle cho lượt pull này')
+    pull_parser.add_argument('--git-base', default='main',
+                             help='Base branch nhận merge khi kết thúc giải (default: main)')
+    pull_parser.add_argument('--git-remote', default='origin',
+                             help='Tên remote dùng push (default: origin)')
+    pull_parser.add_argument('--no-git-push', action='store_true',
+                             help='Tạo/commit branch nhưng không tự push sau pull')
     pull_parser.add_argument('-i', '--interactive', action='store_true', help='Launch interactive download wizard')
 
     # 2. STATUS / TREE / LS / DASHBOARD
@@ -173,7 +189,7 @@ def build_unified_parser():
 
     # 3. WORKSPACES / SCAN
     ws_parser = subparsers.add_parser('workspaces', aliases=['scan'], help='Scan and list all local CTF workspaces')
-    ws_parser.add_argument('-d', '--dir', default=os.path.expanduser('~/Workspace/CTF'), help='Base CTF directory to scan')
+    ws_parser.add_argument('-d', '--dir', default=workspace_root, help='Base CTF directory to scan')
 
     # 4. INSTANCE / CONTAINER
     inst_parser = subparsers.add_parser('instance', aliases=['container', 'spawn'], help='Manage dynamic container instances from terminal')
@@ -246,14 +262,17 @@ def build_unified_parser():
 
     # 9. REGISTER / AUTO-REGISTER — tạo 1 tài khoản trên platform
     reg_parser = subparsers.add_parser('register', aliases=['reg'],
-                                       help='Tự tạo ĐÚNG 1 tài khoản trên platform (GZCTF/CTFd) + lưu auth map')
+                                       help='Tự tạo ĐÚNG 1 tài khoản trên platform (GZCTF/CTFd/rCTF) + lưu auth map')
     reg_parser.add_argument('-u', '--url', help='URL platform (vd https://ctf.example.com)')
-    reg_parser.add_argument('--email', help='Email dùng để đăng ký (bỏ qua nếu dùng --tempmail)')
-    reg_parser.add_argument('--tempmail', action='store_true',
-                            help='Ép dùng mailbox tạm mail.tm (cần khi platform bắt verify email)')
+    reg_email = reg_parser.add_mutually_exclusive_group()
+    reg_email.add_argument('--email', help='Email dùng để đăng ký')
+    reg_email.add_argument('--tempmail', action='store_true',
+                           help='Dùng mailbox tạm mail.tm (cần khi platform bắt verify email)')
     reg_parser.add_argument('--username', dest='username_prefix', default='player',
                             help="Prefix username (mặc định 'player' + 6 ký tự random)")
     reg_parser.add_argument('--password', help='Mật khẩu muốn đặt (mặc định sinh random mạnh 16 ký tự)')
+    reg_parser.add_argument('--cf-clearance', dest='cf_clearance',
+                            help='Cookie cf_clearance lấy từ browser khi Cloudflare Managed Challenge chặn register')
     reg_parser.add_argument('-w', '--workspace', default=None,
                             help='Workspace để gắn credentials trong auth map (mặc định key=URL)')
 
@@ -275,8 +294,8 @@ def build_unified_parser():
     # 10. STORAGE / DU / ARCHIVE — báo cáo dung lượng + archive workspace
     storage_parser = subparsers.add_parser('storage', aliases=['du', 'archive'],
                                            help='Kiểm soát dung lượng workspace: báo cáo usage, gợi ý dọn dẹp, archive tar.gz (+ git push)')
-    storage_parser.add_argument('-d', '--base-dir', default=os.path.expanduser('~/Workspace/CTF'),
-                                help='Thư mục gốc chứa các workspace (default: ~/Workspace/CTF)')
+    storage_parser.add_argument('-d', '--base-dir', default=workspace_root,
+                                help='Thư mục gốc chứa các workspace (default: workspace-root config)')
     storage_parser.add_argument('--threshold-mb', type=int, default=1024,
                                 help='Ngưỡng cảnh báo dung lượng mỗi workspace, tính MiB (default: 1024)')
     storage_sub = storage_parser.add_subparsers(dest='storage_command')
@@ -294,13 +313,7 @@ def build_unified_parser():
     sync_parser.add_argument('--verify', action='store_true',
                              help='Chạy thêm verify: liệt kê challenge solved trên server nhưng local chưa (drift)')
 
-    # 12. EXPORT-PACK — đóng gói writeup thành pack zip (P2-3)
-    exp_parser = subparsers.add_parser('export-pack',
-                                       help='Đóng gói writeup các challenge đã solve thành pack markdown + zip')
-    exp_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
-    exp_parser.add_argument('--out', default='.', help='Thư mục lưu pack zip (default: thư mục hiện tại)')
-
-    # 13. HISTORY — lịch sử submit từ submit_history.json
+    # 12. HISTORY — lịch sử submit từ submit_history.json
     hist_parser = subparsers.add_parser('history', aliases=['log'],
                                         help='Xem lịch sử submit flag của workspace (flag bị che mặc định)')
     hist_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
@@ -310,6 +323,11 @@ def build_unified_parser():
                              metavar='N', default=100,
                              help='Chỉ hiện N entry MỚI NHẤT (default: 100; '
                                   'dùng <=0 hoặc --all để in toàn bộ)')
+    hist_destructive = hist_parser.add_mutually_exclusive_group()
+    hist_destructive.add_argument('--prune', metavar='TARGET',
+                                  help='Xoá entry submit khớp chính xác challenge ID, tên hoặc flag')
+    hist_destructive.add_argument('--clear', action='store_true',
+                                  help='Xoá toàn bộ lịch sử submit của workspace')
 
     # 14. SNIPER — preload flag, nộp tự động đúng giờ G (P2-6)
     sniper_parser = subparsers.add_parser('sniper',
@@ -334,14 +352,56 @@ def build_unified_parser():
     open_parser.add_argument('target', help='Challenge ID hoặc Name')
     open_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory')
 
-    # 17. CONFIG — xem/đặt cấu hình toàn cục (spec event-window §4:
+    # 17. GIT — lifecycle branch riêng cho từng giải
+    git_parser = subparsers.add_parser(
+        'git', help='Quản lý branch/push/merge lifecycle của workspace CTF')
+    git_sub = git_parser.add_subparsers(dest='git_command', required=True)
+
+    git_init = git_sub.add_parser('init', help='Khởi tạo shared CTF Git repo')
+    git_init.add_argument('-d', '--dir', default=workspace_root,
+                          help='Thư mục repo chứa các workspace')
+    git_init.add_argument('--remote-url',
+                          help='URL remote origin (GitHub/GitLab/SSH/HTTPS)')
+    git_init.add_argument('--remote', default='origin', help='Tên remote')
+    git_init.add_argument('--base', default='main', help='Base branch')
+    git_init.add_argument('--no-push', action='store_true',
+                          help='Không push base branch sau khi init')
+    git_init.add_argument('--import-existing', action='store_true',
+                          help='Đưa dữ liệu đang có trong thư mục vào baseline commit của main')
+
+    git_status = git_sub.add_parser('status', help='Xem trạng thái Git của giải')
+    git_status.add_argument('-w', '--workspace', default='.',
+                            help='Workspace giải (default: current dir)')
+
+    git_push = git_sub.add_parser('push', help='Checkpoint + push branch của giải')
+    git_push.add_argument('-w', '--workspace', default='.',
+                          help='Workspace giải (default: current dir)')
+    git_push.add_argument('-m', '--message', help='Commit message tùy chọn')
+    git_push.add_argument('--no-push', action='store_true',
+                          help='Chỉ commit local, không push remote')
+
+    git_finish = git_sub.add_parser(
+        'finish', aliases=['end', 'merge'],
+        help='Kết thúc giải: merge vào main rồi xóa event branch')
+    git_finish.add_argument('-w', '--workspace', default='.',
+                            help='Workspace giải (default: current dir)')
+    git_finish.add_argument('--base', default=None,
+                            help='Override base branch (mặc định đọc metadata)')
+    git_finish.add_argument('--remote', default=None,
+                            help='Override remote (mặc định đọc metadata)')
+    git_finish.add_argument('--no-push', action='store_true',
+                            help='Chỉ merge local; không push/delete remote branch')
+    git_finish.add_argument('--keep-remote', action='store_true',
+                            help='Giữ remote event branch sau merge')
+
+    # 18. CONFIG — xem/đặt cấu hình toàn cục (spec event-window §4:
     #     "Đổi ý: ctf config auto-sync off")
     config_parser = subparsers.add_parser('config',
                                           help='Xem/đặt cấu hình toàn cục (vd: ctf config auto-sync off)')
     config_parser.add_argument('key', nargs='?',
-                               help='Tên key (vd auto-sync). Bỏ trống để liệt kê mọi key')
+                               help='Tên key (vd auto-sync, workspace-root). Bỏ trống để liệt kê mọi key')
     config_parser.add_argument('value', nargs='?',
-                               help="Giá trị mới (auto-sync: on|off). Bỏ trống để chỉ xem giá trị hiện tại")
+                               help="Giá trị mới (vd auto-sync: on|off; workspace-root: đường dẫn). Bỏ trống để chỉ xem")
 
     return parser
 
@@ -451,8 +511,6 @@ def main():
         _run_framed(handle_storage, args, 'storage', ctx_attr='base_dir')
     elif cmd in ['sync', 'resync']:
         _run_framed(handle_sync, args, 'sync')
-    elif cmd == 'export-pack':
-        _run_framed(handle_export_pack, args, 'export-pack')
     elif cmd in ['history', 'log']:
         _run_framed(handle_history, args, 'history')
     elif cmd == 'sniper':
@@ -461,6 +519,8 @@ def main():
         handle_serve(args)
     elif cmd == 'open':
         handle_open(args)
+    elif cmd == 'git':
+        handle_git(args)
     elif cmd == 'config':
         # Chế độ xem là surface → có chrome (synthesis-v6 MF3); chế độ đặt
         # giá trị là action ghi file, giữ nhịp Logger như submit/sync set.

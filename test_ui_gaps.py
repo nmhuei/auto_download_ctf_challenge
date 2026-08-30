@@ -210,7 +210,7 @@ class TestRegisterTurnstileManualGuide(TempWorkspaceCase):
         # inject no-op updater để test không đụng global config THẬT.
         svc = RegisterService(config_loader=lambda: {},
                               config_saver=saved.append,
-                              config_updater=lambda mutator: None,
+                              config_updater=lambda mutator: mutator({}),
                               tempmail_factory=lambda: (_ for _ in ()).throw(
                                   AssertionError("tempmail không được dùng")),
                               detect_fn=lambda url, session: (platform, info))
@@ -315,56 +315,6 @@ class TestSniperFutureStartAt(TempWorkspaceCase):
         # Đã chờ qua các nhịp poll ngắn (không ngủ một lần 500s > interval)
         self.assertTrue(clock.sleeps)
         self.assertLessEqual(max(s for s in clock.sleeps), 30 + 1e-6)
-
-
-# ---------------------------------------------------------------------- #
-# 4. Export-pack INDEX.md — markdown injection escape
-# ---------------------------------------------------------------------- #
-class TestExportPackIndexEscape(TempWorkspaceCase):
-    CHALL_NAME = "Evil [bold](http://evil.example) Pwn"
-
-    def _make_ws(self):
-        ws = self.ws
-        write_challenges_json(ws, title="GAP CTF")
-        chal_dir = Path(ws) / "Misc" / "Evil_Chall"
-        (chal_dir / "writeup").mkdir(parents=True)
-        (chal_dir / "metadata.json").write_text(json.dumps({
-            "id": 7, "name": self.CHALL_NAME, "category": "Mi[sc]",
-            "points": 100,
-            "status": {"schema_version": 2, "solve": "solved_by_me",
-                       "flag": {"value": None, "state": "none"},
-                       "writeup": "complete", "writeup_auto": True},
-        }, ensure_ascii=False), encoding="utf-8")
-        (chal_dir / "writeup" / "README.md").write_text(
-            "# W\n\nFlag: `PTIT{esc4pe_inject}`\n", encoding="utf-8")
-
-    def test_index_md_escapes_markdown_specials_in_name_and_category(self):
-        from ctf_downloader.services.writeup_exporter import WriteupExporter
-
-        self._make_ws()
-        out_dir = Path(self._tmp) / "out"
-        pack_dir = WriteupExporter(self.ws).build_pack(out_dir=out_dir)
-        index = (pack_dir / "INDEX.md").read_text(encoding="utf-8")
-
-        # Tên/category được backslash-escape — không còn raw "[bold](...)"
-        escaped_name = self.CHALL_NAME.replace("[", "\\[").replace("]", "\\]")
-        self.assertIn(escaped_name.split("(")[0].strip(), index.replace("(", " ("))
-        self.assertNotIn("[bold]", index)
-        self.assertNotIn("[Mi[sc]]", index)
-        self.assertIn("\\[bold\\]", index)
-        self.assertIn("\\[sc\\]", index)
-        # Link README per-entry vẫn trỏ tới dirname đã sanitize
-        # ("Mi[sc]" + tên evil → sanitize_folder_name rồi [()] → '_').
-        entry_dir = "Mi_sc__Evil__bold__http_evil.example__Pwn"
-        self.assertIn(f"[{entry_dir}/README.md]({entry_dir}/README.md)", index)
-        # Bảng không bị vỡ: dòng challenge (bắt đầu "| ") vẫn nằm giữa
-        # 2 dấu | đầu/cuối — loại trừ mục list "Chi tiết từng bài".
-        row_lines = [ln for ln in index.splitlines()
-                     if ln.startswith("| ") and "\\[bold\\]" in ln]
-        self.assertTrue(row_lines)
-        for ln in row_lines:
-            self.assertTrue(ln.startswith("| ") and ln.rstrip().endswith(" |"),
-                            f"dòng bảng vỡ: {ln!r}")
 
 
 # ---------------------------------------------------------------------- #

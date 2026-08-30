@@ -172,7 +172,7 @@ cho phép thử lại target sai (tối đa 3 lần/target),
 chu kỳ poll khi chờ giờ G hoặc backoff sau lỗi, giây (mặc định 10).
 .TP
 .B register " (reg)"
-Tự tạo ĐÚNG 1 tài khoản trên platform (GZCTF/CTFd) + lưu auth map.
+Tự tạo ĐÚNG 1 tài khoản trên platform (GZCTF/CTFd/rCTF) + lưu auth map.
 Tuỳ chọn:
 .B \-u
 URL platform,
@@ -182,6 +182,8 @@ dùng mailbox tạm mail.tm,
 .B \-\-username
 prefix username (mặc định player + 6 ký tự random),
 .B \-\-password ,
+.B \-\-cf-clearance
+cookie cf_clearance lấy từ browser nếu Cloudflare Managed Challenge chặn auto-register,
 .B \-w
 workspace gắn credentials.
 .TP
@@ -208,11 +210,6 @@ thư mục lưu (mặc định <base-dir>/_archives),
 bỏ qua confirm archive (bắt buộc khi non\-interactive; xoá workspace
 gốc vẫn cần xác nhận riêng).
 .TP
-.B export-pack
-Đóng gói writeup các challenge đã solve thành pack markdown + zip.
-.B \-\-out
-chọn thư mục lưu pack zip.
-.TP
 .B history " (log)"
 Xem lịch sử submit flag của workspace (submit_history.json), flag bị che
 mặc định (4 ký tự đầu + ***), cột Thời gian hiển thị dạng datetime UTC.
@@ -222,6 +219,14 @@ chỉ in N entry MỚI NHẤT (mặc định 100); N <= 0 hoặc
 in toàn bộ —
 .B \-\-all
 đồng thời hiện flag đầy đủ.
+.B \-\-prune " TARGET"
+xoá các entry khớp CHÍNH XÁC challenge ID, tên challenge hoặc flag.
+.B \-\-clear
+xoá toàn bộ lịch sử submit. Hai tuỳ chọn phá dữ liệu
+.B \-\-prune
+và
+.B \-\-clear
+loại trừ lẫn nhau.
 .TP
 .B serve " (web)"
 Dashboard web cục bộ cho workspace (bind 127.0.0.1), render trực tiếp từ
@@ -341,6 +346,86 @@ Nhật ký submit flag (schema {"entries": [...]}) dùng bởi
 .I <base-dir>/_archives/
 Nơi lưu archive tar.gz mặc định của
 .BR "storage archive" .
+.\" BEGIN GENERATED CLI OPTIONS
+.SH CLI OPTION INDEX (GENERATED)
+Chỉ mục này được sinh tự động từ argparse; không sửa tay.
+.TP
+.B ctf pull
+\-\-allow\-private\-redirects \-\-category \-\-cookie \-\-exclude \-\-force \-\-git\-base \-\-git\-remote \-\-interactive \-\-no\-git \-\-no\-git\-push \-\-no\-template \-\-no\-third\-party \-\-output \-\-refresh\-meta \-\-threads \-\-timeout \-\-token \-\-update \-\-url \-\-verify\-downloads
+.TP
+.B ctf status
+\-\-category \-\-container \-\-label \-\-search \-\-solved \-\-unsolved \-\-workspace
+.TP
+.B ctf note
+\-\-remove \-\-workspace
+.TP
+.B ctf tag
+\-\-remove \-\-workspace
+.TP
+.B ctf workspaces
+\-\-dir
+.TP
+.B ctf instance
+\-\-auto\-extend \-\-auto\-extend\-all \-\-cookie \-\-id \-\-interactive \-\-list \-\-name \-\-token \-\-workspace \-\-yes
+.TP
+.B ctf submit
+\-\-auto \-\-cookie \-\-flag \-\-flag\-format \-\-force \-\-id \-\-interactive \-\-name \-\-token \-\-url \-\-workspace
+.TP
+.B ctf hoard
+\-\-all \-\-flag \-\-id \-\-list \-\-name \-\-remove \-\-workspace
+.TP
+.B ctf rank
+\-\-cookie \-\-no\-docs \-\-token \-\-top \-\-url \-\-workspace
+.TP
+.B ctf watch
+\-\-cookie \-\-end \-\-no\-scoreboard \-\-once \-\-start \-\-token \-\-workspace
+.TP
+.B ctf register
+\-\-cf\-clearance \-\-email \-\-password \-\-tempmail \-\-url \-\-username \-\-workspace
+.TP
+.B ctf doctor
+\-\-cookie \-\-token \-\-url \-\-workspace
+.TP
+.B ctf menu
+\-\-cookie \-\-token \-\-workspace
+.TP
+.B ctf storage
+\-\-base\-dir \-\-threshold\-mb
+.TP
+.B ctf storage archive
+\-\-git\-remote \-\-out \-\-yes
+.TP
+.B ctf sync
+\-\-verify \-\-workspace
+.TP
+.B ctf history
+\-\-all \-\-clear \-\-limit \-\-prune \-\-tail \-\-workspace
+.TP
+.B ctf sniper
+\-\-poll \-\-retry\-wrong \-\-start\-at \-\-workspace
+.TP
+.B ctf serve
+\-\-port \-\-workspace
+.TP
+.B ctf open
+\-\-workspace
+.TP
+.B ctf git init
+\-\-base \-\-dir \-\-import\-existing \-\-no\-push \-\-remote \-\-remote\-url
+.TP
+.B ctf git status
+\-\-workspace
+.TP
+.B ctf git push
+\-\-message \-\-no\-push \-\-workspace
+.TP
+.B ctf git finish
+\-\-base \-\-keep\-remote \-\-no\-push \-\-remote \-\-workspace
+.TP
+.B ctf config
+(không có long option riêng)
+.\" END GENERATED CLI OPTIONS
+
 .SH EXAMPLES
 .TP
 Tải toàn bộ challenge từ một platform CTFd:

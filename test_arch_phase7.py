@@ -92,9 +92,20 @@ class TestHelpSnapshot(unittest.TestCase):
 
 class TestLegacyExitCodes(unittest.TestCase):
     def test_instance_no_args_prints_help_exit_1(self):
-        # workspace hợp lệ -> qua init -> không có action/-l/-i/-n/--id
-        # -> parser.print_help() + sys.exit(1) như bản cũ
-        r = _run(["instance.py", "-w", "PTIT_CTF_2026"])
+        # Workspace phải self-contained: test không được phụ thuộc repo/sample
+        # directory PTIT_CTF_2026 có tồn tại trong checkout hay không.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "challenges.json"), "w", encoding="utf-8") as f:
+                json.dump({
+                    "ctf_info": {
+                        "url": "https://ctf.test",
+                        "platform": "ctfd",
+                    },
+                    "challenges": [],
+                }, f)
+            # platform khai báo rõ -> PlatformResolver dựng adapter offline,
+            # sau đó không có action/-l/-i/-n/--id -> help + exit 1.
+            r = _run(["instance.py", "-w", d])
         self.assertEqual(r.returncode, 1)
         self.assertIn("CTF Dynamic Container / Instance Manager", r.stdout)
 
@@ -277,6 +288,26 @@ class TestCliCommandsDelegation(unittest.TestCase):
                 cli_legacy.legacy_instance_main()
         mock_sync.assert_called_once_with()
 
+    def test_legacy_submit_cookie_input_error_exits_cleanly(self):
+        from ctf_downloader import cli_legacy
+        from ctf_downloader.services.auth_service import AuthService
+        from ctf_downloader.services.submit_service import SubmitService
+
+        argv = [
+            "submit.py", "-u", "https://ctf.test", "-c", "cookie.txt",
+            "--id", "1", "-f", "FLAG{x}",
+        ]
+        with patch.object(sys, "argv", argv), \
+             patch.object(
+                 AuthService, "resolve_cookie_arg",
+                 side_effect=RuntimeError("cookie file unreadable"),
+             ), \
+             patch.object(SubmitService, "__init__", return_value=None) as init:
+            with self.assertRaises(SystemExit) as cm:
+                cli_legacy.legacy_submit_main()
+        self.assertEqual(cm.exception.code, 2)
+        init.assert_not_called()
+
     def test_handle_instance_list_renders_from_service(self):
         import contextlib
         import io
@@ -296,6 +327,41 @@ class TestCliCommandsDelegation(unittest.TestCase):
         out = buf.getvalue()
         self.assertIn("Some Chall", out)
         self.assertIn("7", out)
+
+    def test_auth_resolution_error_is_caught_by_instance_submit_and_rank(self):
+        from ctf_downloader import cli_commands
+        from ctf_downloader.services.instance_service import InstanceService
+        from ctf_downloader.services.rank_service import RankService
+        from ctf_downloader.services.submit_service import SubmitService
+
+        cases = [
+            (
+                cli_commands.handle_instance,
+                Namespace(workspace="ws", cookie="bad", token=None),
+                InstanceService,
+            ),
+            (
+                cli_commands.handle_submit,
+                Namespace(workspace="ws", cookie="bad", token=None),
+                SubmitService,
+            ),
+            (
+                cli_commands.handle_rank,
+                Namespace(workspace="ws", cookie="bad", token=None),
+                RankService,
+            ),
+        ]
+        for handler, ns, service_cls in cases:
+            with self.subTest(handler=handler.__name__), \
+                 patch.object(
+                     cli_commands, "get_auth_for_workspace",
+                     side_effect=RuntimeError("cookie input unreadable"),
+                 ), \
+                 patch.object(service_cls, "__init__", return_value=None) as init:
+                with self.assertRaises(SystemExit) as cm:
+                    handler(ns)
+                self.assertIn(cm.exception.code, (1, 2))
+                init.assert_not_called()
 
 
 class TestStorageCommand(unittest.TestCase):
@@ -490,12 +556,6 @@ class TestNewServiceCommands(unittest.TestCase):
         self.assertEqual(ns.workspace, "ws")
         self.assertTrue(ns.verify)
 
-    def test_parse_export_pack(self):
-        ns = self._parser().parse_args(
-            ["export-pack", "-w", "ws", "--out", "/tmp/out"])
-        self.assertEqual(ns.workspace, "ws")
-        self.assertEqual(ns.out, "/tmp/out")
-
     def test_parse_history_redacted_by_default(self):
         ns = self._parser().parse_args(["history", "-w", "ws"])
         self.assertFalse(ns.show_all)
@@ -593,38 +653,6 @@ class TestNewServiceCommands(unittest.TestCase):
                 cli_commands.handle_sync(ns)
         self.assertEqual(cm.exception.code, 1)
         m_sync.assert_not_called()
-
-    def test_handle_export_pack_delegates_prints_to_service(self):
-        import contextlib
-        import io
-        from pathlib import Path
-
-        from ctf_downloader import cli_commands
-        from ctf_downloader.services.writeup_exporter import WriteupExporter
-
-        pack = Path("/tmp/out/ws_writeup_20260824")
-        ns = Namespace(workspace="ws", out="/tmp/out")
-        with patch.object(WriteupExporter, "build_pack",
-                          return_value=pack) as m_pack:
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf), \
-                 contextlib.redirect_stderr(io.StringIO()):
-                cli_commands.handle_export_pack(ns)
-        # Hợp đồng mới: service tự in cảnh báo validate + tổng kết qua
-        # err_console (PHOSPHOR stderr) — handler KHÔNG in lại gì ra stdout.
-        m_pack.assert_called_once_with("/tmp/out")
-        self.assertEqual(buf.getvalue(), "")
-
-    def test_handle_export_pack_no_entries_exits_1(self):
-        from ctf_downloader import cli_commands
-        from ctf_downloader.services.writeup_exporter import WriteupExporter
-
-        ns = Namespace(workspace="ws", out=None)
-        with patch.object(WriteupExporter, "build_pack",
-                          side_effect=ValueError("trống")):
-            with self.assertRaises(SystemExit) as cm:
-                cli_commands.handle_export_pack(ns)
-        self.assertEqual(cm.exception.code, 1)
 
     def test_handle_history_renders_table_with_redacted_flag(self):
         import contextlib
@@ -749,7 +777,7 @@ class TestNewServiceCommands(unittest.TestCase):
 
     # ---- exit code thiếu workspace = 1 (end-to-end qua main.py) ----
     def test_new_commands_missing_workspace_exit_1(self):
-        for argv in (["sync"], ["export-pack"], ["history"], ["sniper"],
+        for argv in (["sync"], ["history"], ["sniper"],
                      ["serve"]):
             with self.subTest(cmd=argv[0]):
                 r = _run(["main.py"] + argv +
@@ -808,12 +836,10 @@ class TestPhosphorHelpScreen(unittest.TestCase):
     def test_command_column_pad12_one_line_each(self):
         import re
         for name in ("pull", "sync", "status", "history", "menu"):
-            # "  " indent + tên ljust(12) → pull + 8 spaces trước mô tả;
-            # export-pack (11 ký tự) vẫn vừa cột cố định.
+            # "  " indent + tên ljust(12) → pull + 8 spaces trước mô tả.
             row = re.search(rf"(?m)^  {name} +\S", self.out)
             self.assertIsNotNone(row, name)
         self.assertRegex(self.out, r"(?m)^  pull {8}Tải đề")
-        self.assertRegex(self.out, r"(?m)^  export-pack Đóng gói")
 
     def test_aliases_not_listed_in_command_table(self):
         # Alias KHÔNG xuất hiện ở cột lệnh (dạng "  download  ...").
@@ -893,7 +919,7 @@ class TestAppHeaderFooterFrame(unittest.TestCase):
 
         src = inspect.getsource(cli.main)
         for label in ("'status'", "'workspaces'", "'storage'", "'sync'",
-                      "'export-pack'", "'history'"):
+                      "'history'"):
             self.assertRegex(
                 src, rf"_run_framed\([^\n]*{re.escape(label)}")
 

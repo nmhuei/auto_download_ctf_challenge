@@ -41,6 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..storage.constants import CATEGORY_ICONS, SOLVE_RANK, STATUS_ICONS
+from ..utils.sanitize import strip_ansi
 from .status_service import StatusService
 
 
@@ -93,7 +94,7 @@ class WebDashboard:
             out = [c for c in out
                    if str(c.get("category", "")).lower() == c_low]
         if label:
-            wanted = [l.strip() for l in label.split(",") if l.strip()]
+            wanted = [lbl.strip() for lbl in label.split(",") if lbl.strip()]
             if wanted:
                 def _has_all(c):
                     have = {str(x) for x in ((c.get("_status") or {}).get("labels") or [])}
@@ -220,6 +221,19 @@ class WebDashboard:
             "notes": str(st.get("notes") or ""),
         }
 
+    @staticmethod
+    def _sanitize_ansi(obj: Any) -> Any:
+        """Gỡ ESC/OSC sequence khỏi MỌI string trong payload (hunt-c20 LOW):
+        tên challenge/team/platform từ server có thể mang OSC thực thi trên
+        terminal khi user ``curl /api/status.json``."""
+        if isinstance(obj, str):
+            return strip_ansi(obj)
+        if isinstance(obj, dict):
+            return {k: WebDashboard._sanitize_ansi(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [WebDashboard._sanitize_ansi(v) for v in obj]
+        return obj
+
     def status_json(self) -> bytes:
         """Payload JSON cho ``/api/status.json`` — chỉ kiểu serializable."""
         data = self.collect()
@@ -242,7 +256,7 @@ class WebDashboard:
                 "status": self._clean_status(c.get("_status")),
             })
 
-        payload = {
+        payload = self._sanitize_ansi({
             "title": stats.get("title"),
             "platform": stats.get("platform"),
             "url": stats.get("url"),
@@ -256,7 +270,7 @@ class WebDashboard:
             "completion_rate": round(stats.get("completion_rate") or 0.0, 2),
             "categories": categories,
             "challenges": challs,
-        }
+        })
         body = json.dumps(payload, ensure_ascii=False, default=str)
         return (body + "\n").encode("utf-8")
 
@@ -586,6 +600,14 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _write_body(self, body: bytes) -> None:
+        """Ghi body ra wire, TRỪ khi request là HEAD (hunt-c20 LOW):
+        do_HEAD delegate do_GET — response HEAD phải chỉ gồm headers,
+        Content-Length vẫn khai báo size body thật của GET tương ứng."""
+        if getattr(self, "command", None) == "HEAD":
+            return
+        self.wfile.write(body)
+
     def do_GET(self):  # noqa: N802
         from urllib.parse import parse_qs, urlparse
 
@@ -611,7 +633,7 @@ class _DashboardHandler(BaseHTTPRequestHandler):
                 notfound = b"404 Not Found\n"
                 self.send_header("Content-Length", str(len(notfound)))
                 self.end_headers()
-                self.wfile.write(notfound)
+                self._write_body(notfound)
                 return
 
             self.send_response(200)
@@ -619,7 +641,7 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(body)
+            self._write_body(body)
         except BrokenPipeError:
             pass
         except Exception as exc:  # không bao giờ làm server chết vì 1 request
@@ -629,7 +651,7 @@ class _DashboardHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.send_header("Content-Length", str(len(msg)))
                 self.end_headers()
-                self.wfile.write(msg)
+                self._write_body(msg)
             except Exception:
                 pass
 
