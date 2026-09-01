@@ -19,6 +19,8 @@ from rich.progress import (Progress, ProgressColumn, BarColumn, TextColumn,
 from rich.text import Text
 
 from ..config import DownloaderConfig
+from ..utils.failure_diagnostics import diagnose_os_error
+from ..utils.http_client import diagnose_request_exception
 from ..utils.logger import Logger
 from ..ui import SPINNER, err_console, ok_summary
 # err_console (ui/console.py) KHÔNG gắn theme → tag token như [solved] không
@@ -81,12 +83,19 @@ class PullService:
     def _render_detect_failure(config: DownloaderConfig, start_time: float,
                                exc: Exception) -> Dict[str, Any]:
         """Render Diagnostic cho lỗi phát hiện nền tảng + trả dict thất bại."""
+        net = diagnose_request_exception(exc, method="GET")
+        if net.code != "unknown-error":
+            cause = f"{net.code} · {net.summary}"
+            hints = (net.hint, *_DOCTOR_HINTS)
+        else:
+            cause = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+            hints = ("kiểm tra URL giải (đúng domain, có https://)",
+                     *_DOCTOR_HINTS)
         render_diagnostic(Diagnostic(
             "error",
             "Không phát hiện được nền tảng CTF",
-            cause=f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__,
-            hints=("kiểm tra URL giải (đúng domain, có https://)",
-                   *_DOCTOR_HINTS),
+            cause=cause,
+            hints=hints,
         ))
         return {"ok": False, "output_dir": config.output_dir,
                 "summary_file": None, "total_files": 0,
@@ -115,12 +124,22 @@ class PullService:
     @staticmethod
     def _render_workspace_write_failure(exc: Exception) -> None:
         """Render Diagnostic khi không tạo/ghi được thư mục workspace."""
+        local = diagnose_os_error(exc)
+        hints: tuple[str, ...]
+        if local.code != "unknown-local-error":
+            cause = f"{local.code} · {local.summary}"
+            hints = (local.hint,)
+        else:
+            cause = f"{type(exc).__name__}: {exc}"
+            hints = (
+                "kiểm tra quyền ghi và dung lượng đĩa trống của thư mục đích",
+                "chọn thư mục output khác nếu đường dẫn hiện tại bị khoá",
+            )
         render_diagnostic(Diagnostic(
             "error",
             "Không ghi được workspace",
-            cause=f"{type(exc).__name__}: {exc}",
-            hints=("kiểm tra quyền ghi và dung lượng đĩa trống của thư mục đích",
-                   "chọn thư mục output khác nếu đường dẫn hiện tại bị khoá"),
+            cause=cause,
+            hints=hints,
         ))
 
     @staticmethod
@@ -208,8 +227,8 @@ class PullService:
         """
         config.validate()
         start_time = time.time()
-        Logger.banner()
-        Logger.info(f"Target URL: [literal]{escape(config.url)}[/literal]", markup=True)
+        # URL already belongs to the CLI/menu context; don't repeat it in
+        # the service body. Service output starts with actionable state.
 
         # Session master: chỉ main thread dùng (detect platform + authenticate)
         master = session or create_session(
@@ -620,10 +639,8 @@ class PullService:
         refresh_meta = bool(refresh_meta or getattr(config, "refresh_meta", False))
         config.validate()
         start_time = time.time()
-        Logger.banner()
         mode_label = "--refresh-meta" if refresh_meta else "--update"
-        Logger.info(f"Incremental pull ({mode_label}): "
-                    f"[literal]{escape(config.url)}[/literal]", markup=True)
+        Logger.info(f"Incremental pull ({mode_label})")
 
         master = session or create_session(
             cookie=config.cookie,

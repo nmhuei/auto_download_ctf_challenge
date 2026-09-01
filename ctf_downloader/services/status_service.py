@@ -46,11 +46,9 @@ _UNSET = object()
 TAG_PATTERN = re.compile(r'^[a-z0-9-]{1,24}$')
 TAG_MAX_LEN = 24
 
-# Gradient meter (btop pattern, design-system spec §3.3 / SPEC UI v2 §M1):
-# ramp amber canonical đã chuyển sang ``ui.widgets.AMBER_RAMP`` (một nguồn
-# truth — than hồng → hổ phách → vàng nhạt, quantize 101 stop, per-cell
-# theo vị trí cột). Giữ alias tên cũ cho test + caller hiện hữu.
-from ..ui.widgets import AMBER_RAMP as _METER_RAMP_3STOP  # noqa: F401
+# Solve progress has its own multi-color semantic ramp. Other generic meters
+# keep AMBER_RAMP in ui.widgets.
+from ..ui.widgets import SOLVE_RAMP as _SOLVE_RAMP
 
 # Glyph ngữ nghĩa thay emoji (spec §4.3): state / draft / container / file.
 ROW_GLYPHS = {
@@ -620,7 +618,7 @@ class StatusService:
     def _meter_only(cls, rate: float, width: int) -> Text:
         """Meter amber thuần (không prefix/suffix) dạng ``rich.text.Text``.
 
-        - TTY đủ rộng → ``ui.widgets.meter`` per-cell với ``AMBER_RAMP``
+        - TTY đủ rộng → ``ui.widgets.meter`` per-cell với ``SOLVE_RAMP``
           3 mốc spec §3.3 (#6B4300/#FFB000/#FFE49A — codex-r3 #1, không
           nội suy thêm).
         - Terminal hẹp / non-TTY → ``ui.widgets.plain_meter`` ▰▱ không màu
@@ -629,7 +627,7 @@ class StatusService:
         """
         from ..ui.widgets import meter, plain_meter
         if cls._gradient_enabled():
-            return meter(rate, width, _METER_RAMP_3STOP)
+            return meter(rate, width, _SOLVE_RAMP)
         return plain_meter(rate, width)
 
     @staticmethod
@@ -768,7 +766,7 @@ class StatusService:
         total_n = stats['total_challenges']
 
         if cls._gradient_enabled():
-            bar = _meter(rate, 22, _METER_RAMP_3STOP)
+            bar = _meter(rate, 22, _SOLVE_RAMP)
         else:
             bar = cls._meter_only(rate, 22)
 

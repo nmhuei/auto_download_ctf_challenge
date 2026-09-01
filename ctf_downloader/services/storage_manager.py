@@ -53,7 +53,7 @@ from ..ui.theme import ERROR as _ERROR_COLOR
 from ..ui.theme import FG_FAINT as _FAINT_COLOR
 from ..ui.theme import FG_MUTED as _MUTED_COLOR
 from ..ui.theme import WARN as _WARN_COLOR
-from ..ui.widgets import AMBER_RAMP, RUBY_RAMP, meter_markup, plain_meter
+from ..ui.widgets import RUBY_RAMP, UTILITY_RAMP, meter_markup, plain_meter
 
 # Thư mục con chuẩn của một challenge (workspace layout:
 # <ws>/<Category>/<Chall>/{challenge,script,solver,writeup}/)
@@ -284,7 +284,7 @@ class StorageManager:
             if not tty:
                 # non-TTY → plain_meter: ASCII-an-toàn, machine-readable.
                 return plain_meter(pct, StorageManager.USAGE_METER_WIDTH).plain
-            ramp = RUBY_RAMP if ratio >= 1 else AMBER_RAMP
+            ramp = RUBY_RAMP if ratio >= 1 else UTILITY_RAMP
             return meter_markup(pct, StorageManager.USAGE_METER_WIDTH, ramp)
 
         name_natural = max(
@@ -565,25 +565,45 @@ class StorageManager:
         return False
 
     @staticmethod
-    def _run_git(args: Sequence[str], cwd: Path) -> subprocess.CompletedProcess:
-        proc = subprocess.run(
-            ["git"] + list(args), cwd=str(cwd), capture_output=True, text=True
-        )
+    def _run_git_raw(
+        args: Sequence[str], cwd: Path
+    ) -> subprocess.CompletedProcess:
+        git_exe = shutil.which("git")
+        if not git_exe:
+            raise StorageError(
+                "Không tìm thấy git trong PATH — không thể archive/push bằng Git. "
+                "Hãy cài Git hoặc chạy archive không dùng git_remote."
+            )
+        try:
+            return subprocess.run(
+                [git_exe] + list(args),
+                cwd=str(cwd),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            raise StorageError(f"Không chạy được git ({git_exe}): {exc}") from exc
+
+    @staticmethod
+    def _run_git(
+        args: Sequence[str], cwd: Path
+    ) -> subprocess.CompletedProcess:
+        """Run Git and preserve the long-standing two-argument helper contract."""
+        proc = StorageManager._run_git_raw(args, cwd)
         if proc.returncode != 0:
             raise StorageError(
                 f"git {' '.join(args)} thất bại (exit {proc.returncode}): "
-                f"{proc.stderr.strip()}"
+                f"{(proc.stderr or proc.stdout).strip()}"
             )
         return proc
 
     @staticmethod
     def _has_remote(repo_dir: Path) -> bool:
         try:
-            proc = subprocess.run(
-                ["git", "remote"], cwd=str(repo_dir), capture_output=True, text=True
-            )
+            proc = StorageManager._run_git_raw(["remote"], repo_dir)
             return proc.returncode == 0 and bool(proc.stdout.strip())
-        except OSError:
+        except StorageError:
             return False
 
     @staticmethod
@@ -595,20 +615,23 @@ class StorageManager:
         """
         if not (out_dir / ".git").exists():
             StorageManager._run_git(["init"], out_dir)
-        remotes_proc = subprocess.run(
-            ["git", "remote"], cwd=str(out_dir), capture_output=True, text=True
+        remotes_proc = StorageManager._run_git_raw(["remote"], out_dir)
+        has_origin = remotes_proc.returncode == 0 and bool(
+            remotes_proc.stdout.strip()
         )
-        has_origin = bool(remotes_proc.stdout.strip())
         if git_remote and not has_origin:
             StorageManager._run_git(["remote", "add", "origin", git_remote],
                                     out_dir)
 
         StorageManager._run_git(["add", "."], out_dir)
         # Commit: cho phép "nothing to commit" (archive giống hệt lần trước)
-        commit = subprocess.run(
-            ["git", "commit", "-m",
-             f"archive: backup {_dt.datetime.now(_TIMEZONE):%Y-%m-%d}"],
-            cwd=str(out_dir), capture_output=True, text=True,
+        commit = StorageManager._run_git_raw(
+            [
+                "commit",
+                "-m",
+                f"archive: backup {_dt.datetime.now(_TIMEZONE):%Y-%m-%d}",
+            ],
+            out_dir,
         )
         combined = (commit.stdout + commit.stderr).lower()
         if commit.returncode != 0 and "nothing to commit" not in combined:

@@ -6,16 +6,19 @@ override in one place re-skins the whole CLI.
 
 from __future__ import annotations
 
-# Semantic palette: key -> rich style string.
+from .theme import ACCENT, ERROR, INFO, SOLVED, WARN as WARN_COLOR
+
+# Backward-compatible style map. Colors are imported from ui.theme so this
+# module no longer carries a second, conflicting palette.
 PALETTE: dict[str, str] = {
-    "success": "green",
-    "error": "red",
-    "warning": "yellow",
-    "hint": "cyan",
-    "path": "cyan",
-    "literal": "cyan",
+    "success": SOLVED,
+    "error": ERROR,
+    "warning": WARN_COLOR,
+    "hint": INFO,
+    "path": INFO,
+    "literal": INFO,
     "dim": "dim",
-    "title": "bold magenta",
+    "title": f"bold {ACCENT}",
 }
 
 # Unicode glyphs used across the CLI. Kept here so tests and callers can

@@ -2,6 +2,7 @@
 """Build a wheel and prove packaged Python modules exactly match source bytes."""
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -11,6 +12,50 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
+def _module_available(name: str) -> bool:
+    """Return whether an executable Python module is importable.
+
+    ``find_spec('build')`` alone is insufficient: an empty/namespace package
+    named build can exist while ``python -m build`` still fails because
+    ``build.__main__`` is absent.
+    """
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
+
+
+def _wheel_build_command(out: Path) -> tuple[list[str], str]:
+    """Select a reproducible wheel builder with an explicit fallback."""
+    if _module_available("build.__main__"):
+        return ([
+            sys.executable,
+            "-m",
+            "build",
+            "--wheel",
+            "--no-isolation",
+            "--outdir",
+            str(out),
+        ], "python-build")
+
+    if _module_available("pip.__main__"):
+        return ([
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            ".",
+            "--no-deps",
+            "--no-build-isolation",
+            "--wheel-dir",
+            str(out),
+        ], "pip-wheel-fallback")
+
+    raise RuntimeError(
+        "Không có wheel builder khả dụng: thiếu cả build.__main__ và "
+        "pip.__main__. Cài requirements-dev.txt rồi thử lại."
+    )
 
 def main() -> int:
     source_root = ROOT / "ctf_downloader"
@@ -23,16 +68,14 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="ctf-wheel-integrity-") as td:
         out = Path(td) / "dist"
         out.mkdir()
+        try:
+            command, backend = _wheel_build_command(out)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+
         proc = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "build",
-                "--wheel",
-                "--no-isolation",
-                "--outdir",
-                str(out),
-            ],
+            command,
             cwd=ROOT,
             text=True,
             capture_output=True,
@@ -83,7 +126,7 @@ def main() -> int:
 
         print(
             f"wheel source integrity PASS: {len(expected)} Python modules "
-            f"match source bytes ({wheel.name})"
+            f"match source bytes ({wheel.name}; builder={backend})"
         )
         return 0
 

@@ -52,6 +52,7 @@ class _PhosphorHelpParser(argparse.ArgumentParser):
         from rich.text import Text
 
         from .ui.banner import banner_a
+        from .ui.selection import fit_cells
         from .ui.theme import FG_BASE, FG_FAINT, FG_MUTED, INFO, load_theme
         from .ui.widgets import footer_bar
 
@@ -83,9 +84,10 @@ class _PhosphorHelpParser(argparse.ArgumentParser):
         console = Console(file=out, theme=load_theme(None))
 
         listing = Text()
+        desc_width = max(12, console.width - 14)
         for name, desc in COMMANDS:
             listing.append(f'  {name:<12}', style=f'bold {FG_BASE}')
-            listing.append(f'{desc}\n', style=FG_MUTED)
+            listing.append(f'{fit_cells(desc, desc_width)}\n', style=FG_MUTED)
 
         syntax = Text('  ctf <lệnh> [tuỳ chọn]', style=INFO)
 
@@ -281,6 +283,9 @@ def build_unified_parser():
                                help='Workspace để lấy auth từ auth map (nếu không truyền -c/-t)')
     doctor_parser.add_argument('-c', '--cookie', help='Cookie string or path to cookie file')
     doctor_parser.add_argument('-t', '--token', help='API token or Bearer token')
+    doctor_parser.add_argument(
+        '--runtime', action='store_true',
+        help='Chỉ kiểm local runtime/dependency/tool/fallback; không cần -u')
 
     # 8. MENU / UI / INTERACTIVE
     menu_parser = subparsers.add_parser('menu', aliases=['ui', 'console'], help='Launch full interactive CTF suite dashboard')
@@ -443,8 +448,15 @@ _FRAME_FOOTER = [('ctf sync', 'đồng bộ'), ('ctf submit', 'nộp flag'),
 
 def _print_app_header(label, context=""):
     from .ui.banner import app_header
-    _frame_console().print(
-        app_header(label, context=context, timestamp=_frame_timestamp()))
+    con = _frame_console()
+    con.print(
+        app_header(
+            label,
+            context=context,
+            timestamp=_frame_timestamp(),
+            width=con.width,
+        )
+    )
 
 
 def _print_footer_bar():
@@ -481,7 +493,10 @@ def main():
 
     cmd = args.subcommand
     if cmd in ['pull', 'download', 'clone']:
-        handle_pull(args)
+        if not args.url:
+            handle_pull(args)
+        else:
+            _run_framed(handle_pull, args, 'pull', ctx_attr='url')
     elif cmd in ['status', 'tree', 'ls', 'dashboard']:
         _run_framed(handle_status, args, 'status')
     elif cmd in ['workspaces', 'scan']:

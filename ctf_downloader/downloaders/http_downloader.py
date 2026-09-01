@@ -13,6 +13,8 @@ import requests
 from typing import Any, Callable, Dict, Optional, Tuple
 from urllib.parse import urlparse, urljoin
 from weakref import WeakValueDictionary
+from ..utils.failure_diagnostics import diagnose_os_error
+from ..utils.http_client import diagnose_request_exception
 from ..utils.logger import Logger
 from ..utils.sanitize import sanitize_filename, extract_filename_from_headers, extract_filename_from_url
 from .registry import register_downloader
@@ -112,6 +114,12 @@ class HttpDownloader:
     @staticmethod
     def _short_error(exc: Exception, max_len: int = 200) -> str:
         return str(exc).replace("\n", " ")[:max_len]
+
+    @staticmethod
+    def _network_error_text(exc: BaseException, method: str = "GET") -> tuple[str, str]:
+        """Return compact stable reason + remediation for transport failures."""
+        diag = diagnose_request_exception(exc, method=method)
+        return f"{diag.code}: {diag.summary}", diag.hint
 
     @staticmethod
     def _validate_remote_url(url: str) -> None:
@@ -863,9 +871,13 @@ class HttpDownloader:
                     )
                 except requests.RequestException as e:
                     attempt += 1
-                    Logger.warning(f"Lỗi kết nối khi tải {url}: {type(e).__name__}: {HttpDownloader._short_error(e)}")
+                    reason, hint = HttpDownloader._network_error_text(e, "GET")
+                    Logger.warning(f"Lỗi kết nối khi tải {url}: {reason}")
                     if attempt > MAX_RESUME_ATTEMPTS:
-                        Logger.warning(f"Tải thất bại {url}: quá số lần thử lại ({MAX_RESUME_ATTEMPTS}).")
+                        Logger.warning(
+                            f"Tải thất bại {url}: quá số lần thử lại "
+                            f"({MAX_RESUME_ATTEMPTS}). {hint}"
+                        )
                         return None
                     HttpDownloader._retry_backoff(attempt)
                     continue
@@ -1179,14 +1191,19 @@ class HttpDownloader:
                     HttpDownloader._cleanup_resume_validator(part_path)
                     return target_path
 
-                except (requests.RequestException) as e:
-                    # Mất kết nối giữa chừng -> thử resume bằng Range ở vòng lặp sau
+                except requests.RequestException as e:
+                    # Mất kết nối giữa chừng -> GET an toàn, thử resume bằng
+                    # Range ở vòng lặp sau; classifier giữ nguyên nhân ổn định.
                     attempt += 1
+                    reason, hint = HttpDownloader._network_error_text(e, "GET")
                     Logger.warning(
-                        f"Mất kết nối giữa chừng khi tải {url}: {type(e).__name__}: {HttpDownloader._short_error(e)}"
+                        f"Mất kết nối giữa chừng khi tải {url}: {reason}"
                     )
                     if attempt > MAX_RESUME_ATTEMPTS:
-                        Logger.warning(f"Tải thất bại {url}: quá số lần thử lại ({MAX_RESUME_ATTEMPTS}).")
+                        Logger.warning(
+                            f"Tải thất bại {url}: quá số lần thử lại "
+                            f"({MAX_RESUME_ATTEMPTS}). {hint}"
+                        )
                         return None
                     HttpDownloader._retry_backoff(attempt)
                     continue
@@ -1203,7 +1220,17 @@ class HttpDownloader:
         except DownloadFailed:
             raise
         except Exception as e:
-            Logger.warning(f"Tải thất bại {url}: {type(e).__name__}: {HttpDownloader._short_error(e)}")
+            if isinstance(e, OSError):
+                local = diagnose_os_error(e)
+                Logger.warning(
+                    f"Tải thất bại {url}: {local.code}: {local.summary}. "
+                    f"{local.hint}"
+                )
+            else:
+                Logger.warning(
+                    f"Tải thất bại {url}: {type(e).__name__}: "
+                    f"{HttpDownloader._short_error(e)}"
+                )
             # Dọn tệp tạm nửa chừng (.part/.tmp): dữ liệu không đảm bảo flush
             # (vd disk-full OSError), giữ lại sẽ khiến lần sau resume từ offset lỗi.
             for leftover in (part_path, target_path and target_path + ".tmp"):

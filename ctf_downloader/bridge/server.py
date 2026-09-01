@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+import re
 from typing import Any, Callable, Dict, Optional, Set
 
 try:
@@ -26,6 +28,14 @@ from .messages import (
 
 logger = logging.getLogger(__name__)
 
+# Browser WebSocket handshakes carry the extension origin. CLI transport
+# connections created by the local Python client don't send Origin, so None is
+# intentionally allowed while ordinary web origins are rejected at handshake.
+_EXTENSION_ORIGIN_RE = re.compile(
+    r"^(?:chrome-extension://[a-p]{32}|moz-extension://[0-9a-fA-F-]{16,64})$"
+)
+_ALLOWED_ORIGINS = [None, _EXTENSION_ORIGIN_RE]
+
 
 class BridgeServer:
     """Asyncio WebSocket Server that acts as a local RPC bridge to Chrome Extension."""
@@ -45,7 +55,12 @@ class BridgeServer:
         self._extension_clients: Set[Any] = set()
         self._cli_clients: Set[Any] = set()
         self._pending_futures: Dict[str, asyncio.Future[BridgeResponse]] = {}
+        self._chunked_pending: Dict[str, Dict[str, Any]] = {}
         self._request_sources: Dict[str, Any] = {}
+        # Track which extension actually owns each forwarded request. Without
+        # this, an extension disconnect leaves CLI/in-process callers waiting
+        # until their full HTTP timeout and leaks request bookkeeping.
+        self._request_executors: Dict[str, Any] = {}
         self._lock = asyncio.Lock()
 
     @property
@@ -69,6 +84,7 @@ class BridgeServer:
             self._handle_client,
             self.host,
             self.port,
+            origins=_ALLOWED_ORIGINS,
             ping_interval=20,
             ping_timeout=20,
         )
@@ -87,9 +103,67 @@ class BridgeServer:
                 if not fut.done():
                     fut.cancel()
             self._pending_futures.clear()
+            self._chunked_pending.clear()
             self._request_sources.clear()
+            self._request_executors.clear()
             self._extension_clients.clear()
             self._cli_clients.clear()
+
+    async def _cleanup_client_requests(
+        self, websocket: Any, client_type: str
+    ) -> None:
+        """Resolve or discard request state owned by a disconnected client."""
+        notifications = []
+        async with self._lock:
+            if client_type == "cli-transport":
+                abandoned = [
+                    req_id
+                    for req_id, source in self._request_sources.items()
+                    if source is websocket
+                ]
+                for req_id in abandoned:
+                    self._request_sources.pop(req_id, None)
+                    self._request_executors.pop(req_id, None)
+                    self._chunked_pending.pop(req_id, None)
+                return
+
+            affected = [
+                req_id
+                for req_id, executor in self._request_executors.items()
+                if executor is websocket
+            ]
+            for req_id in affected:
+                self._request_executors.pop(req_id, None)
+                self._chunked_pending.pop(req_id, None)
+                fut = self._pending_futures.get(req_id)
+                if fut is not None and not fut.done():
+                    fut.set_exception(
+                        RuntimeError(
+                            "Browser Extension disconnected while processing "
+                            f"Bridge request {req_id}"
+                        )
+                    )
+                source = self._request_sources.pop(req_id, None)
+                if source is not None:
+                    notifications.append((source, req_id))
+
+        # Never await another socket while holding the server state lock.
+        for source, req_id in notifications:
+            try:
+                await source.send(
+                    serialize_message(
+                        BridgeMessageType.ERROR,
+                        {
+                            "id": req_id,
+                            "message": (
+                                "Browser Extension disconnected while processing "
+                                f"Bridge request {req_id}"
+                            ),
+                        },
+                    )
+                )
+            except Exception:
+                pass
 
     async def _handle_client(self, websocket: Any) -> None:
         """Handle incoming WebSocket connection from browser extension or CLI client."""
@@ -124,9 +198,18 @@ class BridgeServer:
                         else:
                             self._extension_clients.add(websocket)
 
+                    ack_payload = {
+                        "status": "ok",
+                        "version": "3.0.0",
+                        "client_type": client_type,
+                    }
+                    if client_type == "cli-transport":
+                        ack_payload["extension_connected"] = bool(
+                            self._extension_clients
+                        )
                     ack_msg = serialize_message(
                         BridgeMessageType.HANDSHAKE_ACK,
-                        {"status": "ok", "version": "3.0.0", "client_type": client_type},
+                        ack_payload,
                     )
                     await websocket.send(ack_msg)
 
@@ -139,27 +222,56 @@ class BridgeServer:
                     return
 
                 elif msg_type == BridgeMessageType.REQUEST_FORWARD:
-                    # Request coming from CLI client over WS
+                    # Request coming from CLI client over WS.
                     req_id = data.get("id")
+                    executor = None
                     async with self._lock:
-                        if not self._extension_clients:
-                            err_msg = serialize_message(
+                        if self._extension_clients:
+                            executor = next(iter(self._extension_clients))
+                            if req_id:
+                                self._request_sources[req_id] = websocket
+                                self._request_executors[req_id] = executor
+
+                    if executor is None:
+                        await websocket.send(
+                            serialize_message(
                                 BridgeMessageType.ERROR,
                                 {
                                     "id": req_id,
-                                    "message": "No extension client connected to BridgeServer.",
+                                    "message": (
+                                        "No extension client connected to "
+                                        "BridgeServer."
+                                    ),
                                 },
                             )
-                            await websocket.send(err_msg)
-                            continue
+                        )
+                        continue
 
-                        executor = next(iter(self._extension_clients))
-                        if req_id:
-                            self._request_sources[req_id] = websocket
-
-                    # Forward to extension
-                    req_envelope = serialize_message(BridgeMessageType.REQUEST_FORWARD, data)
-                    await executor.send(req_envelope)
+                    # Forward to extension outside the state lock. The extension
+                    # may disappear between selection and send; fail this
+                    # request immediately instead of dropping the CLI socket.
+                    req_envelope = serialize_message(
+                        BridgeMessageType.REQUEST_FORWARD, data
+                    )
+                    try:
+                        await executor.send(req_envelope)
+                    except websockets.exceptions.ConnectionClosed:
+                        async with self._lock:
+                            if req_id:
+                                self._request_sources.pop(req_id, None)
+                                self._request_executors.pop(req_id, None)
+                        await websocket.send(
+                            serialize_message(
+                                BridgeMessageType.ERROR,
+                                {
+                                    "id": req_id,
+                                    "message": (
+                                        "Browser Extension disconnected before "
+                                        "the Bridge request could be forwarded."
+                                    ),
+                                },
+                            )
+                        )
 
                 elif msg_type == BridgeMessageType.RESPONSE_FORWARD:
                     req_id = data.get("id")
@@ -173,6 +285,7 @@ class BridgeServer:
 
                             # 2. Remote CLI client WebSocket
                             source_ws = self._request_sources.pop(req_id, None)
+                            self._request_executors.pop(req_id, None)
 
                         if source_ws:
                             try:
@@ -182,6 +295,100 @@ class BridgeServer:
                                 await source_ws.send(res_envelope)
                             except Exception:
                                 pass
+
+                elif msg_type in (
+                    BridgeMessageType.RESPONSE_START,
+                    BridgeMessageType.RESPONSE_CHUNK,
+                    BridgeMessageType.RESPONSE_END,
+                ):
+                    req_id = data.get("id")
+                    if req_id:
+                        async with self._lock:
+                            source_ws = self._request_sources.get(req_id)
+                            fut = self._pending_futures.get(req_id)
+
+                            if fut and not fut.done():
+                                try:
+                                    if msg_type == BridgeMessageType.RESPONSE_START:
+                                        self._chunked_pending[req_id] = {
+                                            "meta": dict(data),
+                                            "buffer": bytearray(),
+                                            "next_seq": 0,
+                                        }
+                                    elif msg_type == BridgeMessageType.RESPONSE_CHUNK:
+                                        state = self._chunked_pending.get(req_id)
+                                        if state is None:
+                                            raise RuntimeError(
+                                                "Bridge chunk received before RESPONSE_START"
+                                            )
+                                        seq = int(str(data.get("seq")))
+                                        if seq != state["next_seq"]:
+                                            raise RuntimeError(
+                                                "Bridge chunk out of order: "
+                                                f"expected {state['next_seq']}, got {seq}"
+                                            )
+                                        encoded = data.get("body")
+                                        if not isinstance(encoded, str):
+                                            raise RuntimeError(
+                                                "Bridge chunk body must be base64 text"
+                                            )
+                                        state["buffer"].extend(
+                                            base64.b64decode(encoded, validate=True)
+                                        )
+                                        state["next_seq"] += 1
+                                    else:
+                                        state = self._chunked_pending.pop(req_id, None)
+                                        if state is None:
+                                            raise RuntimeError(
+                                                "Bridge end received before RESPONSE_START"
+                                            )
+                                        expected_raw = data.get("bytes")
+                                        if expected_raw is not None:
+                                            expected = int(expected_raw)
+                                            if expected != len(state["buffer"]):
+                                                raise RuntimeError(
+                                                    "Bridge binary length mismatch: "
+                                                    f"expected {expected}, "
+                                                    f"got {len(state['buffer'])}"
+                                                )
+                                        meta = state["meta"]
+                                        fut.set_result(
+                                            BridgeResponse(
+                                                id=str(req_id),
+                                                status_code=int(
+                                                    meta.get("status_code", 0)
+                                                ),
+                                                status_text=str(
+                                                    meta.get("status_text", "OK")
+                                                ),
+                                                headers=dict(
+                                                    meta.get("headers") or {}
+                                                ),
+                                                body=None,
+                                                is_base64=False,
+                                                error=meta.get("error"),
+                                                body_bytes=bytes(state["buffer"]),
+                                            )
+                                        )
+                                except Exception as exc:
+                                    self._chunked_pending.pop(req_id, None)
+                                    if not fut.done():
+                                        fut.set_exception(
+                                            RuntimeError(
+                                                f"Invalid chunked bridge response: {exc}"
+                                            )
+                                        )
+
+                            if msg_type == BridgeMessageType.RESPONSE_END:
+                                self._request_sources.pop(req_id, None)
+                                self._request_executors.pop(req_id, None)
+
+                        if source_ws:
+                            try:
+                                await source_ws.send(serialize_message(msg_type, data))
+                            except Exception:
+                                async with self._lock:
+                                    self._request_sources.pop(req_id, None)
 
                 elif msg_type == BridgeMessageType.COOKIE_UPDATE:
                     if self.on_cookie_update:
@@ -196,6 +403,7 @@ class BridgeServer:
         except websockets.exceptions.ConnectionClosed:
             pass
         finally:
+            await self._cleanup_client_requests(websocket, str(client_type))
             async with self._lock:
                 self._extension_clients.discard(websocket)
                 self._cli_clients.discard(websocket)
@@ -214,6 +422,7 @@ class BridgeServer:
             loop = asyncio.get_running_loop()
             fut: asyncio.Future[BridgeResponse] = loop.create_future()
             self._pending_futures[request.id] = fut
+            self._request_executors[request.id] = client
 
         try:
             req_msg = serialize_message(BridgeMessageType.REQUEST_FORWARD, request.to_dict())
@@ -226,3 +435,5 @@ class BridgeServer:
         finally:
             async with self._lock:
                 self._pending_futures.pop(request.id, None)
+                self._chunked_pending.pop(request.id, None)
+                self._request_executors.pop(request.id, None)

@@ -34,9 +34,12 @@ from ctf_downloader.ui.diagnostics import (
 from ctf_downloader.ui.theme import (
     ACCENT,
     ACCENT_DEEP,
+    BORDER,
     ERROR,
     FG_BASE,
     FG_MUTED,
+    INFO,
+    SUCCESS,
     WARN,
 )
 
@@ -375,15 +378,17 @@ def test_theme_defaults_have_ctf_semantic_keys():
     theme = load_theme(None)
     for key in ("solved", "unsolved", "firstblood", "div_line", "hi_fg", "title"):
         assert key in theme.styles
-    # PHOSPHOR FIELD KIT (spec §3): token mới + legacy alias trỏ vào hex spec.
-    for key in ("fg.base", "fg.muted", "fg.faint",
-                "accent", "accent.hi", "accent.deep",
-                "info", "solved", "firstblood", "error", "warn"):
+    # New semantic family plus compatibility aliases must resolve from one theme.
+    for key in (
+        "bg", "surface", "border", "text", "muted", "faint", "cyan", "selected",
+        "category.web", "category.crypto", "category.pwn", "category.rev",
+        "category.forensics", "category.misc",
+        "fg.base", "fg.muted", "fg.faint", "accent", "accent.hi", "accent.deep",
+        "info", "solved", "firstblood", "error", "warn",
+    ):
         assert key in theme.styles
-    # PHOSPHOR chuẩn hoá codex-r3 #1: success = solved-green semantic,
-    # div_line = accent.deep trùng mốc đầu meter (#6B4300).
-    assert theme.styles["success"] == Style.parse("#62C97E")   # = solved
-    assert theme.styles["div_line"] == Style.parse("#6B4300")  # = accent.deep
+    assert theme.styles["success"] == Style.parse(SUCCESS)
+    assert theme.styles["div_line"] == Style.parse(BORDER)
 
 
 def test_theme_toml_override(tmp_path):
@@ -397,9 +402,8 @@ def test_theme_toml_override(tmp_path):
     theme = load_theme(toml_file)
     assert theme.styles["solved"] == Style.parse("bold blue")
     assert theme.styles["firstblood"] == Style.parse("#ff004f")
-    # untouched defaults remain (info/path/literal → neutral fg.base,
-    # codex-r3 #1: đã bỏ cyan #62C8CE)
-    assert theme.styles["hint"] == Style.parse("#E6E1D3")
+    # Untouched active-info styles remain cyan/teal.
+    assert theme.styles["hint"] == Style.parse(INFO)
 
 
 def test_loaded_theme_applies_to_console(tmp_path):

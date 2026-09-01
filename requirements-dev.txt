@@ -1,3 +1,4 @@
+-r requirements.txt
 pytest>=8.0
 pytest-xdist>=3.6
 pytest-randomly>=3.15
@@ -8,3 +9,4 @@ pip-audit>=2.7
 build>=1.2
 setuptools>=64
 wheel>=0.41
+selenium>=4.31

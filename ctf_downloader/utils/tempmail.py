@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 
-from .http_client import create_session
+from .http_client import create_session, parse_retry_after_seconds
 from .logger import Logger
 
 # Password mailbox tạm — mail.tm yêu cầu tối thiểu ~6 ký tự.
@@ -61,9 +61,10 @@ class TempMailClient:
     def _request(self, method: str, path: str, **kwargs) -> requests.Response:
         url = f"{self.base_url}{path}"
         method = str(method).upper()
-        # Explicit HTTP 429 means the request was rejected by the rate limiter;
-        # retrying once after Retry-After is safe even for POST. Network/5xx
-        # errors on POST remain non-retried because side effects are ambiguous.
+        # Retry-After doesn't prove a mutating POST had no side effect.
+        # Only read-only methods are replayed automatically; POST/other
+        # mutations surface 429 to the caller with an actionable delay.
+        safe_retry = method in {"GET", "HEAD", "OPTIONS"}
         for attempt in range(2):
             try:
                 resp = self.session.request(
@@ -73,18 +74,22 @@ class TempMailClient:
                 raise TempMailError(
                     f"mail.tm request lỗi ({method} {path}): {exc}"
                 ) from exc
-            if resp.status_code == 429 and attempt == 0:
+            if resp.status_code == 429:
                 raw = (getattr(resp, "headers", {}) or {}).get("Retry-After")
-                try:
-                    delay = max(0.0, float(raw)) if raw is not None else 1.0
-                except (TypeError, ValueError):
-                    delay = 1.0
-                delay = min(delay, self.max_retry_after)
-                Logger.warning(
-                    f"mail.tm rate-limit 429 — thử lại sau {delay:g}s."
-                )
-                self._sleep(delay)
-                continue
+                parsed = parse_retry_after_seconds(raw)
+                delay = 1.0 if parsed is None else parsed
+                delay = min(max(0.0, delay), self.max_retry_after)
+                if not safe_retry:
+                    raise TempMailError(
+                        f"mail.tm {method} {path} -> HTTP 429 rate-limit; "
+                        f"Retry-After={delay:g}s. Mutation không được tự replay."
+                    )
+                if attempt == 0:
+                    Logger.warning(
+                        f"mail.tm rate-limit 429 — thử lại sau {delay:g}s."
+                    )
+                    self._sleep(delay)
+                    continue
             if resp.status_code >= 400:
                 raise TempMailError(
                     f"mail.tm {method} {path} -> HTTP {resp.status_code}: "

@@ -15,6 +15,8 @@ from ctf_downloader.services.health_service import (
     DoctorCheck,
     DoctorReport,
     HealthService,
+    RuntimeCheck,
+    RuntimeReport,
 )
 
 
@@ -250,16 +252,14 @@ def capture_render_ansi(report) -> str:
 
 
 class TestDoctorPhosphorRoles(unittest.TestCase):
-    FG_MUTED_ANSI = "\x1b[38;2;153;145;126m"
-    # codex-r3 #1: error-red/solved-green hex mới (bỏ #FF5C57/#46C46B).
-    # Amber Refit (palette C1): fg/muted/solved retune, accent giữ #FFB000.
-    ERROR_ANSI = "\x1b[38;2;229;83;75m"      # ERROR  = #E5534B
-    WARN_ANSI = "\x1b[38;2;234;197;79m"
-    ACCENT_ANSI = "\x1b[38;2;255;176;0m"
-    SOLVED_ANSI = "\x1b[38;2;98;201;126m"    # SOLVED = #62C97E
-    ACCENT_DEEP_ANSI = "\x1b[38;2;107;67;0m"  # ACCENT_DEEP = #6B4300
-    BRAND_CYAN_ANSI = "\x1b[38;2;94;234;212m"   # UCS_ExOdia brand start
-    BRAND_VIOLET_ANSI = "\x1b[38;2;192;132;252m"  # UCS_ExOdia brand end
+    FG_MUTED_ANSI = "\x1b[38;2;139;152;165m"
+    ERROR_ANSI = "\x1b[38;2;229;83;75m"       # ERROR = #E5534B
+    WARN_ANSI = "\x1b[38;2;255;159;67m"       # WARNING = #FF9F43
+    ACCENT_ANSI = "\x1b[38;2;94;234;212m"     # CYAN = #5EEAD4
+    SOLVED_ANSI = "\x1b[38;2;155;225;93m"     # SUCCESS = #9BE15D
+    ACCENT_DEEP_ANSI = "\x1b[38;2;31;111;120m"
+    BRAND_CYAN_ANSI = "\x1b[38;2;94;234;212m"
+    BRAND_VIOLET_ANSI = "\x1b[38;2;192;132;252m"
 
     def _partial_report(self):
         report = DoctorReport(url=URL)
@@ -334,7 +334,7 @@ class TestDoctorPhosphorRoles(unittest.TestCase):
         # glyph ✔/✗ tô semantic riêng từng giá trị; nhãn muted
         self.assertIn(self.SOLVED_ANSI + "✔", out)
         self.assertIn(self.ERROR_ANSI + "✗", out)
-        self.assertIn("\x1b[38;2;153;145;126m container động", out)
+        self.assertIn(self.FG_MUTED_ANSI + " container động", out)
 
 
 class TestDoctorChromeAndWrap(unittest.TestCase):
@@ -433,6 +433,129 @@ class TestDetectQuiet(unittest.TestCase):
             detection.detect_platform_info(URL, ctfd_session(), quiet=True)
             for call in list(m_info.call_args_list) + list(m_warn.call_args_list):
                 self.assertNotIn("Detected Platform", str(call))
+
+
+class TestRuntimeDoctor(unittest.TestCase):
+    def test_optional_feature_gap_does_not_fail_core(self):
+        report = RuntimeReport([
+            RuntimeCheck("Python", True, "ok", required=True),
+            RuntimeCheck("Mega download", False, "missing", required=False),
+        ])
+        self.assertTrue(report.core_ok)
+
+    def test_required_gap_fails_core(self):
+        report = RuntimeReport([
+            RuntimeCheck("Python", False, "too old", required=True),
+            RuntimeCheck("Git workflow", True, "/usr/bin/git", required=False),
+        ])
+        self.assertFalse(report.core_ok)
+
+    def test_runtime_check_missing_workspace_is_required_failure(self):
+        report = HealthService.check_runtime("/definitely/missing/runtime-ws")
+        matches = [c for c in report.checks if c.name == "Workspace"]
+        self.assertEqual(len(matches), 1)
+        self.assertTrue(matches[0].required)
+        self.assertFalse(matches[0].ok)
+        self.assertFalse(report.core_ok)
+
+    def test_runtime_config_write_probe_catches_disk_full(self):
+        import errno
+        import ctf_downloader.services.health_service as health_mod
+
+        with patch.object(
+            health_mod.tempfile,
+            "NamedTemporaryFile",
+            side_effect=OSError(errno.ENOSPC, "No space left on device"),
+        ):
+            report = HealthService.check_runtime()
+
+        config = next(c for c in report.checks if c.name == "Config storage")
+        self.assertTrue(config.required)
+        self.assertFalse(config.ok)
+        self.assertIn("disk-full", config.detail)
+        self.assertFalse(report.core_ok)
+
+    def test_runtime_low_disk_is_feature_warning_not_core_failure(self):
+        import ctf_downloader.services.health_service as health_mod
+
+        usage = MagicMock(total=1024**3, used=1024**3 - 32 * 1024**2,
+                          free=32 * 1024**2)
+        with patch.object(health_mod.shutil, "disk_usage", return_value=usage):
+            report = HealthService.check_runtime()
+
+        disk = next(c for c in report.checks if c.name == "Disk headroom")
+        self.assertFalse(disk.ok)
+        self.assertFalse(disk.required)
+        # Low download headroom shouldn't make status/help/config look broken.
+        self.assertTrue(all(c.ok for c in report.core_checks))
+
+    def test_runtime_bridge_port_conflict_has_specific_fix(self):
+        with patch.object(
+            HealthService,
+            "check_bridge_health",
+            classmethod(lambda cls: {
+                "bridge_running": False,
+                "pid_running": False,
+                "port_open": True,
+                "port_conflict": True,
+                "extension_connected": False,
+                "state": "port-conflict",
+                "error": "foreign listener",
+                "token_exists": True,
+                "pid": None,
+                "host": "127.0.0.1",
+                "port": 18888,
+            }),
+        ):
+            report = HealthService.check_runtime()
+
+        bridge = next(c for c in report.checks if c.name == "Browser Bridge")
+        self.assertFalse(bridge.ok)
+        self.assertIn("port-conflict", bridge.detail)
+        self.assertIn("Dừng process đang chiếm port", bridge.fix)
+
+    def test_websockets_is_declared_direct_runtime_dependency(self):
+        from pathlib import Path
+
+        req = Path("requirements.txt").read_text(encoding="utf-8").splitlines()
+        matches = [line.strip() for line in req if line.strip().startswith("websockets")]
+        self.assertEqual(matches, ["websockets>=15.0"])
+
+    def test_runtime_render_distinguishes_core_and_feature(self):
+        report = RuntimeReport([
+            RuntimeCheck("Python", True, "3.13", required=True),
+            RuntimeCheck("Mega download", False, "missing", fix="install megatools"),
+        ])
+        buf = io.StringIO()
+        report.render(Console(file=buf, width=80, color_system=None))
+        out = buf.getvalue()
+        self.assertIn("CORE Python", out)
+        self.assertIn("FEATURE Mega download", out)
+        self.assertIn("feature 0/1 available", out)
+
+    def test_runtime_fix_wrap_keeps_continuation_indented(self):
+        report = RuntimeReport([
+            RuntimeCheck(
+                "Browser Bridge",
+                False,
+                "stopped",
+                fix=(
+                    "Chạy ctf bridge status/start, rồi mở browser có CTF Bridge "
+                    "Extension và đồng bộ token."
+                ),
+            ),
+        ])
+        buf = io.StringIO()
+        report.render(Console(file=buf, width=60, color_system=None))
+        lines = buf.getvalue().splitlines()
+        fix_start = next(i for i, line in enumerate(lines) if "ℹ " in line)
+        continuation = []
+        for line in lines[fix_start + 1:]:
+            if line.startswith("KẾT QUẢ"):
+                break
+            continuation.append(line)
+        self.assertTrue(continuation)
+        self.assertTrue(all(not line or line.startswith("        ") for line in continuation))
 
 
 if __name__ == "__main__":

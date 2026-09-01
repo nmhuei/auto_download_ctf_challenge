@@ -202,6 +202,16 @@ class FakeSvc:
 # VÙNG 1 — interactive_menu
 # ====================================================================== #
 class TestInteractiveMenu:
+    def test_main_menu_does_not_render_redundant_footer(self, monkeypatch):
+        import ctf_downloader.interactive_menu as im
+
+        app, con, _ = make_menu_app(monkeypatch, ["0"])
+        app.run()
+        assert not hasattr(im, "_footer")
+        rendered = "\n".join(con.printed)
+        assert "? help" not in rendered
+        assert "q thoát" not in rendered
+
     def test_invalid_option_then_back_nav_then_quit(self, monkeypatch):
         """Option lạ ('zzz') chỉ warning; '2'->'0' nav vòng lại sạch; '0' thoát."""
         app, con, _ = make_menu_app(monkeypatch, ["2", "0", "zzz", "0"])

@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 import json
+import math
+import socket
 import threading
+import time
+from email.utils import parsedate_to_datetime
+from dataclasses import dataclass
 from http.cookiejar import CookieJar
 from typing import Any, Dict, Optional, Set, Union
 from urllib.parse import urlparse
@@ -147,6 +152,203 @@ class CloudflareChallengeError(requests.RequestException):
     """Managed/interstitial Cloudflare challenge still blocks safe preflight."""
 
 
+_SAFE_RETRY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+@dataclass(frozen=True)
+class RequestFailureDiagnostic:
+    """Stable classification for user-facing HTTP transport failures."""
+
+    code: str
+    summary: str
+    hint: str
+    retryable: bool = False
+
+
+def _exception_chain(exc: BaseException):
+    """Yield exception + cause/context chain without looping forever."""
+    seen = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        yield cur
+        nxt = cur.__cause__ or cur.__context__
+        cur = nxt if isinstance(nxt, BaseException) else None
+
+
+def parse_retry_after_seconds(
+    value: Any, *, now: Optional[float] = None
+) -> Optional[float]:
+    """Parse Retry-After delay-seconds or HTTP-date into non-negative seconds."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        numeric = float(text)
+    except (TypeError, ValueError):
+        numeric = None
+    if numeric is not None:
+        if not math.isfinite(numeric):
+            return None
+        return max(0.0, numeric)
+
+    try:
+        when = parsedate_to_datetime(text)
+        if when is None:
+            return None
+        when_ts = when.timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+    base = time.time() if now is None else float(now)
+    return max(0.0, when_ts - base)
+
+
+def diagnose_request_exception(
+    exc: BaseException, *, method: str = "GET"
+) -> RequestFailureDiagnostic:
+    """Map Requests/urllib3/socket failures to actionable stable categories.
+
+    The classifier is deliberately conservative about retry safety: apart
+    from ConnectTimeout, automatic retry is only recommended for the toolkit
+    read-only method set GET/HEAD/OPTIONS.
+    """
+    method_up = str(method or "GET").upper()
+    safe_method = method_up in _SAFE_RETRY_METHODS
+    chain = list(_exception_chain(exc))
+    text = " | ".join(str(item) for item in chain if str(item)).lower()
+
+    if isinstance(exc, CloudflareChallengeError):
+        return RequestFailureDiagnostic(
+            "cloudflare-challenge",
+            "Cloudflare Managed/Interstitial Challenge đang chặn request",
+            "Mở site bằng browser, hoàn tất challenge hợp lệ rồi đồng bộ "
+            "cf_clearance/cookie; kiểm tra ctf bridge status nếu dùng Bridge.",
+            False,
+        )
+
+    if isinstance(exc, requests.exceptions.ConnectTimeout):
+        return RequestFailureDiagnostic(
+            "connect-timeout",
+            "Hết thời gian khi thiết lập kết nối tới server",
+            "Kiểm tra mạng/VPN/firewall, hostname và port; có thể thử lại.",
+            True,
+        )
+
+    if isinstance(exc, requests.exceptions.ReadTimeout):
+        return RequestFailureDiagnostic(
+            "read-timeout",
+            "Server đã kết nối nhưng không gửi dữ liệu kịp thời",
+            "Server có thể chậm/quá tải; tăng timeout hoặc thử lại sau.",
+            safe_method,
+        )
+
+    if isinstance(exc, requests.exceptions.ProxyError):
+        return RequestFailureDiagnostic(
+            "proxy-error",
+            "Không kết nối được qua proxy cấu hình",
+            "Kiểm tra HTTP_PROXY/HTTPS_PROXY/ALL_PROXY và NO_PROXY; với "
+            "localhost Bridge phải bypass proxy.",
+            False,
+        )
+
+    if isinstance(exc, requests.exceptions.SSLError):
+        return RequestFailureDiagnostic(
+            "tls-error",
+            "TLS/SSL handshake hoặc xác minh certificate thất bại",
+            "Kiểm tra giờ hệ thống, CA bundle, hostname certificate và proxy "
+            "TLS interception; không tắt verify mặc định.",
+            False,
+        )
+
+    if isinstance(exc, requests.exceptions.TooManyRedirects):
+        return RequestFailureDiagnostic(
+            "redirect-loop",
+            "Server trả quá nhiều redirect hoặc redirect loop",
+            "Kiểm tra URL gốc, reverse proxy và login redirect; tool sẽ không "
+            "theo redirect vô hạn.",
+            False,
+        )
+
+    if isinstance(
+        exc,
+        (requests.exceptions.MissingSchema,
+         requests.exceptions.InvalidSchema,
+         requests.exceptions.InvalidURL),
+    ):
+        return RequestFailureDiagnostic(
+            "invalid-url",
+            "URL HTTP(S) không hợp lệ",
+            "Kiểm tra scheme http/https, hostname và ký tự trong URL.",
+            False,
+        )
+
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        if any(isinstance(item, socket.gaierror) for item in chain) or any(
+            marker in text
+            for marker in (
+                "name resolution", "getaddrinfo failed",
+                "temporary failure in name resolution", "nodename nor servname",
+            )
+        ):
+            return RequestFailureDiagnostic(
+                "dns-error",
+                "Không phân giải được hostname (DNS)",
+                "Kiểm tra DNS/VPN, typo domain và /etc/resolv.conf; thử lại "
+                "sau nếu DNS tạm thời lỗi.",
+                safe_method,
+            )
+        if any(isinstance(item, ConnectionRefusedError) for item in chain) or (
+            "connection refused" in text
+        ):
+            return RequestFailureDiagnostic(
+                "connection-refused",
+                "Host trả lời nhưng port từ chối kết nối",
+                "Kiểm tra port/service có listen, firewall hoặc endpoint có đổi.",
+                safe_method,
+            )
+        if any(isinstance(item, ConnectionResetError) for item in chain) or (
+            "connection reset" in text
+        ):
+            return RequestFailureDiagnostic(
+                "connection-reset",
+                "Kết nối bị peer/proxy reset giữa chừng",
+                "Có thể là server/proxy/VPN; GET/HEAD có thể thử lại, mutation "
+                "không được replay mù.",
+                safe_method,
+            )
+        return RequestFailureDiagnostic(
+            "connection-error",
+            "Không thiết lập/duy trì được kết nối HTTP",
+            "Kiểm tra mạng, VPN, firewall và endpoint; chỉ retry tự động với "
+            "request đọc an toàn.",
+            safe_method,
+        )
+
+    if isinstance(exc, requests.exceptions.Timeout):
+        return RequestFailureDiagnostic(
+            "timeout",
+            "HTTP request vượt timeout",
+            "Kiểm tra mạng/server và timeout; chỉ retry tự động với request đọc.",
+            safe_method,
+        )
+
+    if isinstance(exc, requests.RequestException):
+        return RequestFailureDiagnostic(
+            "request-error",
+            f"HTTP transport thất bại ({type(exc).__name__})",
+            "Kiểm tra URL, mạng và transport diagnostics.",
+            safe_method,
+        )
+
+    return RequestFailureDiagnostic(
+        "unknown-error",
+        f"Lỗi không phân loại ({type(exc).__name__})",
+        "Xem exception gốc/debug log trước khi retry.",
+        False,
+    )
+
 def is_cloudflare_challenge(response: Any, *, inspect_body: bool = True) -> bool:
     """Detect a Cloudflare Challenge Page without treating every CF 4xx as one."""
     if _header_text(response, "cf-mitigated") == "challenge":
@@ -204,12 +406,15 @@ class CloudflareAdaptiveSession(requests.Session):
         self._cf_browser_session: Any = None
         self._cf_foreign_sessions: Dict[str, Any] = {}
         self._bridge_transport: Any = None
+        self._bridge_init_error: Optional[str] = None
+        self._bridge_last_error: Optional[str] = None
+        self._bridge_warned_unavailable = False
         if self._enable_bridge:
             try:
                 from ..bridge.transport import BrowserBridgeTransport
                 self._bridge_transport = BrowserBridgeTransport(auto_start_daemon=False)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._bridge_init_error = f"{type(exc).__name__}: {exc}"
         self._cf_lock = threading.RLock()
         self._cf_warned_unavailable = False
         self._cf_warned_persistent_challenge = False
@@ -227,6 +432,30 @@ class CloudflareAdaptiveSession(requests.Session):
     @property
     def credential_origin(self) -> Optional[str]:
         return self._credential_origin
+
+    @property
+    def bridge_last_error(self) -> Optional[str]:
+        """Last Browser Bridge initialization/dispatch failure, if any."""
+        return self._bridge_last_error or self._bridge_init_error
+
+    @property
+    def bridge_available(self) -> bool:
+        return self._bridge_transport is not None
+
+    def _warn_bridge_unavailable(self, detail: str) -> None:
+        self._bridge_last_error = detail
+        if self._bridge_warned_unavailable:
+            return
+        self._bridge_warned_unavailable = True
+        try:
+            from .logger import Logger
+            Logger.warning(
+                "Browser Bridge fallback không dùng được: "
+                f"{detail}. Chạy 'ctf bridge status'; nếu daemon chưa chạy "
+                "thì dùng 'ctf bridge start', sau đó mở Browser Extension."
+            )
+        except Exception:
+            pass
 
     def _scope_request_kwargs(self, url: str,
                               kwargs: Dict[str, Any]) -> Dict[str, Any]:
@@ -461,6 +690,8 @@ class CloudflareAdaptiveSession(requests.Session):
 
     def _bridge_request(self, method: str, url: str, **kwargs: Any) -> Optional[requests.Response]:
         if not self._bridge_transport:
+            if self._enable_bridge and self._bridge_init_error:
+                self._warn_bridge_unavailable(self._bridge_init_error)
             return None
         try:
             req = requests.Request(
@@ -477,11 +708,13 @@ class CloudflareAdaptiveSession(requests.Session):
                 req.headers.update(kwargs["headers"])
             prep = self.prepare_request(req)
             resp = self._bridge_transport.send(prep, **kwargs)
+            self._bridge_last_error = None
             return resp
-        except Exception:
+        except Exception as exc:
+            self._warn_bridge_unavailable(f"{type(exc).__name__}: {exc}")
             return None
 
-    def request(self, method: str, url: str, **kwargs: Any) -> Any:
+    def request(self, method: str, url: str, **kwargs: Any) -> Any:  # type: ignore[override]
         method_up = str(method or "GET").upper()
         skip_preflight = bool(kwargs.pop("_cf_skip_preflight", False))
         kwargs = self._scope_request_kwargs(url, kwargs)
@@ -624,9 +857,11 @@ def create_session(
     )
     retry_strategy = Retry(
         total=retries,
+        other=0,
         backoff_factor=backoff_factor,
         status_forcelist=[429, 500, 502, 503, 504],
         raise_on_status=False,
+        respect_retry_after_header=True,
         allowed_methods=frozenset(["HEAD", "GET", "OPTIONS"]),
     )
     adapter = HTTPAdapter(

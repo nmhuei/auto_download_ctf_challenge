@@ -18,6 +18,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from rich.cells import cell_len
 from rich.console import Console
 
 from ctf_downloader.cli_commands import handle_workspaces
@@ -111,6 +112,38 @@ class TestWorkspacesDupTitle(unittest.TestCase):
         self.assertIn('Custom', out)
 
 
+class TestWorkspacesNarrowLayout(unittest.TestCase):
+    def test_60_columns_keep_one_physical_row_per_workspace(self):
+        buf = io.StringIO()
+        args = SimpleNamespace(dir='/tmp/does-not-matter')
+        rows = [
+            fake_row('A very long workspace title that must not wrap', 'ctfd',
+                     'long_workspace_a', solved=1, total=10),
+            fake_row('Another very long workspace title that must not wrap', 'rctf',
+                     'long_workspace_b', solved=2, total=10),
+        ]
+        real_console = Console
+
+        def narrow_console(*a, **kw):
+            kw.setdefault('file', buf)
+            kw.setdefault('width', 60)
+            kw.setdefault('color_system', None)
+            return real_console(*a, **kw)
+
+        with patch('ctf_downloader.cli_commands.Console', narrow_console), \
+             patch('ctf_downloader.services.status_service.StatusService.'
+                   'scan_all_workspaces', return_value=rows):
+            with contextlib.redirect_stdout(buf), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                handle_workspaces(args)
+
+        lines = [line for line in buf.getvalue().splitlines() if line.strip()]
+        self.assertEqual(len(lines), 5)  # heading + header + 2 rows + footer
+        self.assertTrue(all(cell_len(line) <= 60 for line in lines))
+        self.assertEqual(sum('CTFd' in line for line in lines), 1)
+        self.assertEqual(sum('rCTF' in line for line in lines), 1)
+
+
 class TestWorkspacesDoneStrike(unittest.TestCase):
     """UIv2 synthesis MUST-FIX #2 — đồng bộ strike-done giữa 2 surface.
 
@@ -120,8 +153,8 @@ class TestWorkspacesDoneStrike(unittest.TestCase):
     rỗng (0/0) thì KHÔNG.
     """
 
-    # Rich gộp ``strike FG_MUTED`` thành 1 SGR: ESC[9;38;2;153;145;126m.
-    _STRIKE_MUTED = re.compile(r'\x1b\[9(?:;38;2;153;145;126)?m')
+    # Rich gộp ``strike FG_MUTED`` thành 1 truecolor SGR.
+    _STRIKE_MUTED = re.compile(r'\x1b\[9(?:;38;2;139;152;165)?m')
 
     def _render_ansi(self, rows) -> str:
         buf = io.StringIO()
@@ -153,7 +186,7 @@ class TestWorkspacesDoneStrike(unittest.TestCase):
         self.assertEqual(len(wip_lines), 1)
         # SGR strike (ESC[9…) + FG_MUTED trên hàng done.
         self.assertRegex(done_lines[0], self._STRIKE_MUTED)
-        self.assertIn('38;2;153;145;126', done_lines[0])
+        self.assertIn('38;2;139;152;165', done_lines[0])
         # Hàng thường: không strike.
         self.assertNotRegex(wip_lines[0], self._STRIKE_MUTED)
 

@@ -1,13 +1,9 @@
-"""UI-TOKEN: Logger legacy ANSI phải được thay bằng phosphor tokens.
+"""UI-TOKEN: Logger prefixes resolve through the semantic UCS_ExOdia theme.
 
-Live verify vòng 4 bắt `ctf rank` còn phát chrome cũ từ utils/logger.py:
-bold cyan `[*]`, bold green `[+]`, vàng legacy `[!]`. Test này khóa token
-mới theo PHOSPHOR FIELD KIT spec §3 (nguồn sự thật ui/theme.py):
-
-- [*] info      → ACCENT_DEEP #6B4300 (amber tắt đèn — chrome faint)
-- [+] success   → bold ACCENT #FFB000 (amber lead — chrome thuần, KHÔNG green)
-- [!] warning   → WARN #EAC54F (warn amber)
-- [-] error     → ERROR #E5534B (đỏ semantic)
+- [*] info      → deep cyan/teal chrome
+- [+] success   → semantic lime/green
+- [!] warning   → semantic orange
+- [-] error     → semantic red
 
 Prefix ký tự `[*] [+] [!] [-]` phải giữ nguyên (nhiều test/caller assert).
 """
@@ -46,18 +42,18 @@ class TestLoggerPhosphorTokens(unittest.TestCase):
     def _strip_ansi(self, text: str) -> str:
         return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
-    def test_info_uses_deep_amber_not_cyan(self):
+    def test_info_uses_deep_cyan_semantic_token(self):
         out = self._render("info", "Fetching leaderboard")
         self.assertNotIn("\x1b[1;36m", out)   # bold cyan legacy
         self.assertNotIn("[cyan", out)
         self.assertIn(_rgb_seq(ui_theme.ACCENT_DEEP), out)
         self.assertIn("[*] Fetching leaderboard", self._strip_ansi(out))
 
-    def test_success_is_amber_lead_never_green(self):
+    def test_success_uses_semantic_success_color(self):
         out = self._render("success", "Đã tải xong")
-        for forbidden in ("\x1b[1;32m", "\x1b[32m"):  # bold green / green legacy
+        for forbidden in ("\x1b[1;32m", "\x1b[32m"):  # basic ANSI green legacy
             self.assertNotIn(forbidden, out)
-        self.assertIn(_rgb_seq(ui_theme.ACCENT), out)
+        self.assertIn(_rgb_seq(ui_theme.SUCCESS), out)
         self.assertRegex(out, r"\x1b\[1(?:m|;)")  # giữ bold lead
         self.assertIn("[+] Đã tải xong", self._strip_ansi(out))
 

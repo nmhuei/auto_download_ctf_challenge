@@ -116,6 +116,18 @@ export class BridgeClient {
     }
   }
 
+  bytesToBase64(bytes) {
+    let binaryStr = '';
+    const encodeStep = 8192;
+    for (let i = 0; i < bytes.length; i += encodeStep) {
+      binaryStr += String.fromCharCode.apply(
+        null,
+        bytes.subarray(i, i + encodeStep)
+      );
+    }
+    return btoa(binaryStr);
+  }
+
   async executeForwardRequest(req) {
     const { id, method, url, headers, body, binary } = req;
     this.requestCount++;
@@ -144,32 +156,82 @@ export class BridgeClient {
         resHeaders[key] = val;
       });
 
-      let resBody = '';
-      let isBase64 = false;
+      if (binary || response.body) {
+        // Stream response bytes instead of materializing one large text or
+        // ArrayBuffer payload. This protects both binary attachments and
+        // large JSON/HTML responses from WebSocket per-message limits.
+        // 192 KiB raw chunks become ~256 KiB base64 JSON frames, safely below
+        // websockets' default 1 MiB per-message limit.
+        this.send('RESPONSE_START', {
+          id,
+          status_code: response.status,
+          status_text: response.statusText,
+          headers: resHeaders,
+          is_base64: true,
+          error: null
+        });
 
-      if (binary) {
-        const buffer = await response.arrayBuffer();
-        const bytes = new Uint8Array(buffer);
-        let binaryStr = '';
-        const chunk = 8192;
-        for (let i = 0; i < bytes.length; i += chunk) {
-          binaryStr += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+        const reader = response.body?.getReader();
+        let seq = 0;
+        let totalBytes = 0;
+        const maxChunk = 192 * 1024;
+
+        if (reader) {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            if (!value || value.length === 0) continue;
+
+            for (let offset = 0; offset < value.length; offset += maxChunk) {
+              const chunk = value.subarray(
+                offset,
+                Math.min(offset + maxChunk, value.length)
+              );
+              totalBytes += chunk.length;
+              this.send('RESPONSE_CHUNK', {
+                id,
+                seq,
+                body: this.bytesToBase64(chunk)
+              });
+              seq++;
+            }
+          }
+        } else {
+          // Body-less / older browser fallback. Still split the payload
+          // into bounded WebSocket frames when ReadableStream isn't available.
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          for (let offset = 0; offset < bytes.length; offset += maxChunk) {
+            const chunk = bytes.subarray(
+              offset,
+              Math.min(offset + maxChunk, bytes.length)
+            );
+            totalBytes += chunk.length;
+            this.send('RESPONSE_CHUNK', {
+              id,
+              seq,
+              body: this.bytesToBase64(chunk)
+            });
+            seq++;
+          }
         }
-        resBody = btoa(binaryStr);
-        isBase64 = true;
-      } else {
-        resBody = await response.text();
-      }
 
-      this.send('RESPONSE_FORWARD', {
-        id,
-        status_code: response.status,
-        status_text: response.statusText,
-        headers: resHeaders,
-        body: resBody,
-        is_base64: isBase64,
-        error: null
-      });
+        this.send('RESPONSE_END', {
+          id,
+          bytes: totalBytes,
+          chunks: seq
+        });
+      } else {
+        const resBody = await response.text();
+        this.send('RESPONSE_FORWARD', {
+          id,
+          status_code: response.status,
+          status_text: response.statusText,
+          headers: resHeaders,
+          body: resBody,
+          is_base64: false,
+          error: null
+        });
+      }
 
     } catch (err) {
       console.error('[CTF Bridge] Fetch failed for:', url, err);

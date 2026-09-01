@@ -113,8 +113,36 @@ def test_dev_dependencies_and_quality_gate_include_wheel_integrity_check():
     }
     quality = (ROOT / "scripts" / "verify_quality.py").read_text(encoding="utf-8")
     checker = ROOT / "scripts" / "verify_wheel_contents.py"
+    assert "-r requirements.txt" in dev_lines
     assert "build>=1.2" in dev_lines
     assert "setuptools>=64" in dev_lines
     assert "wheel>=0.41" in dev_lines
     assert checker.is_file()
     assert "verify_wheel_contents.py" in quality
+
+
+def test_wheel_checker_falls_back_to_pip_when_build_main_is_unavailable(
+    tmp_path, monkeypatch
+):
+    from scripts import verify_wheel_contents as checker
+
+    monkeypatch.setattr(
+        checker,
+        "_module_available",
+        lambda name: name == "pip.__main__",
+    )
+    command, backend = checker._wheel_build_command(tmp_path)
+    assert backend == "pip-wheel-fallback"
+    assert command[:4] == [checker.sys.executable, "-m", "pip", "wheel"]
+    assert "--no-deps" in command
+    assert "--no-build-isolation" in command
+    assert command[-1] == str(tmp_path)
+
+
+def test_wheel_checker_reports_when_no_builder_runtime_exists(tmp_path, monkeypatch):
+    import pytest
+    from scripts import verify_wheel_contents as checker
+
+    monkeypatch.setattr(checker, "_module_available", lambda _name: False)
+    with pytest.raises(RuntimeError, match="thiếu cả build.__main__.*pip.__main__"):
+        checker._wheel_build_command(tmp_path)

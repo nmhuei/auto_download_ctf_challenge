@@ -67,16 +67,39 @@ class BackgroundServerThread(threading.Thread):
                                     "error": None,
                                 }
                             elif "attachment.zip" in url:
-                                raw_zip = b"PK\x03\x04mock_zip_content"
-                                res_data = {
-                                    "id": req_id,
-                                    "status_code": 200,
-                                    "status_text": "OK",
-                                    "headers": {"content-type": "application/zip"},
-                                    "body": base64.b64encode(raw_zip).decode("ascii"),
-                                    "is_base64": True,
-                                    "error": None,
-                                }
+                                # Deliberately exceed websockets' default 1 MiB
+                                # message limit, then stream it in bounded chunks.
+                                raw_zip = b"PK\x03\x04" + (bytes(range(256)) * 5000)
+                                await ws.send(serialize_message(
+                                    BridgeMessageType.RESPONSE_START,
+                                    {
+                                        "id": req_id,
+                                        "status_code": 200,
+                                        "status_text": "OK",
+                                        "headers": {
+                                            "content-type": "application/zip",
+                                            "content-length": str(len(raw_zip)),
+                                        },
+                                        "is_base64": True,
+                                        "error": None,
+                                    },
+                                ))
+                                chunk_size = 128 * 1024
+                                for seq, offset in enumerate(range(0, len(raw_zip), chunk_size)):
+                                    chunk = raw_zip[offset:offset + chunk_size]
+                                    await ws.send(serialize_message(
+                                        BridgeMessageType.RESPONSE_CHUNK,
+                                        {
+                                            "id": req_id,
+                                            "seq": seq,
+                                            "body": base64.b64encode(chunk).decode("ascii"),
+                                        },
+                                    ))
+                                await ws.send(serialize_message(
+                                    BridgeMessageType.RESPONSE_END,
+                                    {"id": req_id, "bytes": len(raw_zip)},
+                                ))
+                                continue
                             else:
                                 res_data = {
                                     "id": req_id,
@@ -135,8 +158,14 @@ def test_bridge_e2e_full_flow():
         assert data["data"][0]["name"] == "The 67th Line"
 
         # 2. Binary Download Request routed through Bridge
-        bin_resp = session.get("https://mirror-ctf.compfest.id/files/attachment.zip")
+        bin_resp = session.get(
+            "https://mirror-ctf.compfest.id/files/attachment.zip",
+            stream=True,
+        )
         assert bin_resp.status_code == 200
-        assert bin_resp.content == b"PK\x03\x04mock_zip_content"
+        assert bin_resp._content is False
+        streamed = b"".join(bin_resp.iter_content(chunk_size=128 * 1024))
+        assert streamed == b"PK\x03\x04" + (bytes(range(256)) * 5000)
+        bin_resp.close()
 
     srv_thread.stop()

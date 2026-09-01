@@ -34,9 +34,9 @@ class Logger:
 
     @staticmethod
     def success(msg: str, markup: bool = False):
-        # [+] là chrome thuần → amber lead; green chỉ dành cho ngữ nghĩa
-        # solve/✔ theo spec §3. Tag lồng để từng tên token resolve qua theme.
-        console.print(f"[bold][accent][+][/][/] {_safe_body(msg, markup)}")
+        # [+] denotes a completed operation, so it uses the semantic success
+        # color rather than borrowing the primary cyan accent.
+        console.print(f"[bold][success][+][/][/] {_safe_body(msg, markup)}")
 
     @staticmethod
     def warning(msg: str, markup: bool = False):

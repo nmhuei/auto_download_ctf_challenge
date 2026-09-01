@@ -193,7 +193,9 @@ class TestUiPackageFreeOfLegacyTerminalStyles(unittest.TestCase):
     def test_ui_sources_free_of_legacy_terminal_colors(self):
         offenders = []
         for path in sorted(Path(self.UI_DIR).glob("*.py")):
-            if path.name == "style.py":  # PALETTE → test miễn trừ riêng
+            # theme.py is the semantic source of truth and intentionally owns
+            # a token named "cyan"; style.py is validated separately below.
+            if path.name in {"style.py", "theme.py"}:
                 continue
             hit = self.LEGACY.search(self._masked(str(path)))
             if hit:
@@ -206,15 +208,12 @@ class TestUiPackageFreeOfLegacyTerminalStyles(unittest.TestCase):
 
         legacy_keys = [k for k, v in PALETTE.items()
                        if self.LEGACY.search(v)]
-        # Bảng alias phải còn nguyên thiết kế "đẩy trước để bị ghi đè".
-        self.assertEqual(legacy_keys,
-                         ["success", "error", "warning", "hint", "path",
-                          "literal", "title"])
-        for key in legacy_keys:
+        self.assertEqual(legacy_keys, [])
+        for key, value in PALETTE.items():
             self.assertIn(key, DEFAULT_STYLES)
             self.assertFalse(
-                self.LEGACY.search(DEFAULT_STYLES[key]),
-                f"{key} -> {DEFAULT_STYLES[key]!r} còn màu legacy")
+                self.LEGACY.search(value),
+                f"{key} -> {value!r} còn màu legacy")
 
     def test_diagnostics_severity_uses_token_hex_constants(self):
         from ctf_downloader.ui.diagnostics import _SEVERITY_STYLE
@@ -229,9 +228,9 @@ class TestUiPackageFreeOfLegacyTerminalStyles(unittest.TestCase):
                       .read_text(encoding="utf-8"))
         self.assertEqual(_SEVERITY_STYLE["error"], f"bold {TOKEN_ERROR}")
         self.assertEqual(_SEVERITY_STYLE["warning"], f"bold {TOKEN_WARN}")
-        # Token đúng vai trò Amber Refit (khóa cả giá trị hex).
+        # Severity colors are semantic and independent from terminal names.
         self.assertEqual(TOKEN_ERROR, "#E5534B")
-        self.assertEqual(TOKEN_WARN, "#EAC54F")
+        self.assertEqual(TOKEN_WARN, "#FF9F43")
 
 
 if __name__ == "__main__":

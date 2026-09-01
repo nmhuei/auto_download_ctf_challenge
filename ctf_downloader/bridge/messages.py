@@ -44,11 +44,35 @@ class BridgeResponse:
     body: Optional[str] = None
     is_base64: bool = False
     error: Optional[str] = None
+    # Runtime-only decoded payload used by chunked responses. It is never
+    # serialized back into JSON, avoiding an unnecessary second base64 copy.
+    body_bytes: Optional[bytes] = field(default=None, repr=False, compare=False)
+    body_file: Optional[Any] = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        # dataclasses.asdict() deep-copies every field before we can remove
+        # runtime-only state; file objects aren't pickle/deepcopy-able. Build
+        # the wire payload explicitly so body_file/body_bytes never enter the
+        # serialization path.
+        return {
+            "id": self.id,
+            "status_code": self.status_code,
+            "status_text": self.status_text,
+            "headers": dict(self.headers),
+            "body": self.body,
+            "is_base64": self.is_base64,
+            "error": self.error,
+        }
 
     def get_bytes(self) -> bytes:
+        if self.body_file is not None:
+            pos = self.body_file.tell()
+            self.body_file.seek(0)
+            data = self.body_file.read()
+            self.body_file.seek(pos)
+            return data
+        if self.body_bytes is not None:
+            return self.body_bytes
         if not self.body:
             return b""
         if self.is_base64:
@@ -56,6 +80,10 @@ class BridgeResponse:
         return self.body.encode("utf-8")
 
     def get_text(self) -> str:
+        if self.body_file is not None:
+            return self.get_bytes().decode("utf-8", errors="replace")
+        if self.body_bytes is not None:
+            return self.body_bytes.decode("utf-8", errors="replace")
         if not self.body:
             return ""
         if self.is_base64:

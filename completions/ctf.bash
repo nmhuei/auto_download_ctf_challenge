@@ -54,7 +54,7 @@ _ctf() {
         rank)        opts="-w --workspace -u --url -c --cookie -t --token -n --top --no-docs" ;;
         watch)       opts="-w --workspace --once --no-scoreboard --start --end -c --cookie -t --token" ;;
         register)    opts="-u --url --email --tempmail --username --password --cf-clearance -w --workspace" ;;
-        doctor)      opts="-u --url -w --workspace -c --cookie -t --token" ;;
+        doctor)      opts="-u --url -w --workspace -c --cookie -t --token --runtime" ;;
         menu)        opts="-w --workspace -c --cookie -t --token" ;;
         storage)     opts="-d --base-dir --threshold-mb archive" ;;
         sync)        opts="-w --workspace --verify" ;;

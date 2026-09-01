@@ -597,7 +597,7 @@ class InstanceKeepAlive:
                 self._sync_restart_local(tracker, entry,
                                          (status or {}).get("time_left"))
                 return [(INFO, f"✅ {tracker.name}: container sống lại — "
-                               f"entry mới [bold green]{entry}[/bold green].")]
+                               f"entry mới [bold success]{entry}[/bold success].")]
             tracker.health_checks += 1
             if tracker.health_checks < BOOT_HEALTH_CHECKS:
                 tracker.phase_deadline = _now() + BOOT_HEALTH_RETRY

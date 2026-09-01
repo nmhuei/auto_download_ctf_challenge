@@ -17,6 +17,7 @@ import datetime as _dt
 import json
 import os
 import re
+import shutil
 import subprocess
 import unicodedata
 from collections.abc import Sequence
@@ -42,24 +43,41 @@ class GitWorkflowService:
         return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
 
     @staticmethod
+    def _git_executable() -> str:
+        """Resolve Git once per operation and fail with an actionable message."""
+        exe = shutil.which("git")
+        if exe:
+            return exe
+        raise GitWorkflowError(
+            "Không tìm thấy git trong PATH — chức năng Git workflow không "
+            "thể chạy. Hãy cài Git và bảo đảm lệnh 'git' có trong PATH."
+        )
+
+    @classmethod
     def _run(
+        cls,
         repo: Path,
         args: Sequence[str],
         *,
         check: bool = True,
         env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess:
+        git_exe = cls._git_executable()
         try:
             proc = subprocess.run(
-                ["git", *list(args)],
+                [git_exe, *list(args)],
                 cwd=str(repo),
                 capture_output=True,
                 text=True,
                 env=env,
                 check=False,
             )
+        except PermissionError as exc:
+            raise GitWorkflowError(
+                f"Không có quyền thực thi git tại {git_exe}: {exc}"
+            ) from exc
         except OSError as exc:
-            raise GitWorkflowError(f"Không chạy được git: {exc}") from exc
+            raise GitWorkflowError(f"Không chạy được git ({git_exe}): {exc}") from exc
         if check and proc.returncode != 0:
             detail = (proc.stderr or proc.stdout).strip()
             raise GitWorkflowError(
@@ -112,11 +130,8 @@ class GitWorkflowService:
     @classmethod
     def find_repo_root(cls, path: str | os.PathLike) -> Path | None:
         probe = cls._existing_probe(Path(path))
-        proc = subprocess.run(
-            ["git", "-C", str(probe), "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            check=False,
+        proc = cls._run(
+            probe, ["rev-parse", "--show-toplevel"], check=False
         )
         if proc.returncode != 0:
             return None
@@ -161,11 +176,8 @@ class GitWorkflowService:
             )
 
         if root is None:
-            proc = subprocess.run(
-                ["git", "init", "-b", base_branch, str(repo)],
-                capture_output=True,
-                text=True,
-                check=False,
+            proc = cls._run(
+                repo, ["init", "-b", base_branch, "."], check=False
             )
             if proc.returncode != 0:
                 raise GitWorkflowError(

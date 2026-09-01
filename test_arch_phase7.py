@@ -1004,6 +1004,30 @@ class TestOpenCommand(unittest.TestCase):
             ["xdg-open", "/ws/wsA/challs/baby-web"], check=True, shell=False)
         self.assertIn("/ws/wsA/challs/baby-web", buf.getvalue())
 
+    def test_handle_open_falls_back_to_gio_when_xdg_open_missing(self):
+        from ctf_downloader import cli_commands
+
+        ns = Namespace(workspace="wsA", target="x")
+        with patch.object(
+            cli_commands.StatusService,
+            "resolve_challenge",
+            return_value=("/ws/x/metadata.json", {"id": 2, "name": "X"}),
+        ), patch.object(
+            cli_commands.subprocess,
+            "run",
+            side_effect=[
+                FileNotFoundError("xdg-open"),
+                subprocess.CompletedProcess(["gio"], 0),
+            ],
+        ) as m_run:
+            cli_commands.handle_open(ns)
+
+        self.assertEqual(m_run.call_count, 2)
+        self.assertEqual(
+            m_run.call_args_list[1].args[0],
+            ["gio", "open", "/ws/x"],
+        )
+
     def test_handle_open_missing_xdg_open_hints_and_exits_1(self):
         from ctf_downloader import cli_commands
 

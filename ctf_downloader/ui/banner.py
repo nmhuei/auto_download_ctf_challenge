@@ -17,6 +17,7 @@ from .brand import (
     operation_rail,
     terminal_width,
 )
+from .theme import ACCENT, FG_MUTED
 
 
 def _major_version() -> str:
@@ -47,7 +48,7 @@ def app_header(
     cols = terminal_width(width)
     ver = _major_version()
 
-    left = Text(BRAND_NAME, style="bold #5EEAD4")
+    left = Text(BRAND_NAME, style=f"bold {ACCENT}")
     left.append(" // ", style="dim")
     left.append(str(command or "console"), style="bold")
     ctx = str(context or "").strip()
@@ -63,7 +64,7 @@ def app_header(
     if stamp and cols >= 100:
         right.append(stamp, style="dim")
         right.append(" · ", style="dim")
-    right.append(ver, style="bold #C084FC")
+    right.append(ver, style=f"bold {FG_MUTED}")
 
     rail_w = cell_len(rail.plain)
     right_w = cell_len(right.plain)

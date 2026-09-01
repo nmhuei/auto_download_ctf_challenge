@@ -41,6 +41,17 @@ def git_env(tmp_path):
     return repo, remote, info
 
 
+def test_missing_git_binary_is_actionable(monkeypatch, tmp_path):
+    import ctf_downloader.services.git_workflow as git_mod
+
+    monkeypatch.setattr(git_mod.shutil, "which", lambda name: None)
+    with pytest.raises(
+        GitWorkflowError,
+        match=r"Không tìm thấy git.*PATH.*cài Git",
+    ):
+        GitWorkflowService.find_repo_root(tmp_path)
+
+
 def test_branch_name_is_stable_and_git_safe():
     assert GitWorkflowService.branch_name("ASIS CTF Quals 2026") == (
         "ctf/asis-ctf-quals-2026"

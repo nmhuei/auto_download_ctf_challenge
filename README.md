@@ -137,7 +137,7 @@ Chạy `ctf <lệnh> --help` để xem đầy đủ tuỳ chọn của từng l�
 | `ctf rank` | `--cookie` · `--no-docs` · `--token` · `--top` · `--url` · `--workspace` |
 | `ctf watch` | `--cookie` · `--end` · `--no-scoreboard` · `--once` · `--start` · `--token` · `--workspace` |
 | `ctf register` | `--cf-clearance` · `--email` · `--password` · `--tempmail` · `--url` · `--username` · `--workspace` |
-| `ctf doctor` | `--cookie` · `--token` · `--url` · `--workspace` |
+| `ctf doctor` | `--cookie` · `--runtime` · `--token` · `--url` · `--workspace` |
 | `ctf menu` | `--cookie` · `--token` · `--workspace` |
 | `ctf storage` | `--base-dir` · `--threshold-mb` |
 | `ctf storage archive` | `--git-remote` · `--out` · `--yes` |

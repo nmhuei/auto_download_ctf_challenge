@@ -45,22 +45,26 @@ BRAILLE_UP: Tuple[str, ...] = tuple(
 METER_FILL = "▰"
 METER_EMPTY = "▱"
 
-# Gradient meter ramp canonical (PHOSPHOR FIELD KIT §3.3, SPEC UI v2 §M1):
-# quantize 101 stop — y<34 than hồng · 34≤y<67 hổ phách · y≥67 vàng nhạt.
-# Mỗi ô nhận ĐÚNG một trong ba màu theo vị trí cột (per-cell btop), KHÔNG
-# nội suy thêm bước nào. ``services.status_service._METER_RAMP_3STOP`` là
-# alias của hằng này (tên cũ cho test + caller hiện hữu).
-AMBER_RAMP: tuple = tuple(
-    (0x6B, 0x43, 0x00) if y < 34 else (0xFF, 0xB0, 0x00) if y < 67 else (0xFF, 0xE4, 0x9A)
-    for y in range(101)
+# Control points for the shared meter families. The concrete 101-position
+# ramps are generated after the interpolation helper so widget colors stay
+# smooth and centralized instead of repeating coarse bands.
+UTILITY_STOPS: tuple[RGB, ...] = (
+    (0x1F, 0x6F, 0x78),  # deep teal
+    (0x5E, 0xEA, 0xD4),  # cyan
+    (0xA7, 0xF3, 0xE8),  # ice
 )
 
-# Ruby ramp (SPEC UI v2 §M1): quantize 101 stop 2 mốc — y<50 #E5534B
-# (ERROR) · y≥50 #FF2E63 (FIRSTBLOOD). CHỈ dùng cho state rủi ro (storage
-# usage ≥1× ngưỡng); mọi meter khác amber tuyệt đối — rule "amber lead".
-RUBY_RAMP: tuple = tuple(
-    (0xE5, 0x53, 0x4B) if y < 50 else (0xFF, 0x2E, 0x63)
-    for y in range(101)
+SOLVE_STOPS: tuple[RGB, ...] = (
+    (0xE5, 0x53, 0x4B),  # red
+    (0xFF, 0x8A, 0x3D),  # orange
+    (0xF4, 0xD3, 0x5E),  # yellow
+    (0x9B, 0xE1, 0x5D),  # lime
+    (0x5E, 0xEA, 0xD4),  # cyan / teal
+)
+
+RISK_STOPS: tuple[RGB, ...] = (
+    (0xE5, 0x53, 0x4B),
+    (0xFF, 0x5C, 0x8A),
 )
 
 
@@ -128,6 +132,44 @@ def gradient(
     return out
 
 
+def multi_stop_gradient(stops: Sequence[RGB], steps: int = 101) -> tuple[RGB, ...]:
+    """Interpolate a smooth ramp through two or more RGB control points.
+
+    Unlike :func:`gradient`, which mirrors btop's start/mid/end API, this
+    helper accepts an arbitrary number of semantic color stops. Output includes
+    both endpoints and distributes interpolation evenly across every segment.
+    """
+    if steps < 1:
+        raise ValueError("steps must be >= 1")
+    if not stops:
+        raise ValueError("at least one color stop is required")
+    normalized = tuple(tuple(int(channel) for channel in rgb) for rgb in stops)
+    if len(normalized) == 1 or steps == 1:
+        return tuple(normalized[0] for _ in range(steps))
+
+    segment_count = len(normalized) - 1
+    out: list[RGB] = []
+    for i in range(steps):
+        position = i * segment_count / (steps - 1)
+        segment = min(int(position), segment_count - 1)
+        fraction = position - segment
+        start = normalized[segment]
+        end = normalized[segment + 1]
+        out.append(tuple(
+            int(round(start[c] + (end[c] - start[c]) * fraction))
+            for c in range(3)
+        ))
+    return tuple(out)
+
+
+# Canonical smooth ramps. AMBER_RAMP remains as a compatibility alias for
+# older imports; new code should use UTILITY_RAMP.
+UTILITY_RAMP: tuple[RGB, ...] = multi_stop_gradient(UTILITY_STOPS, steps=101)
+AMBER_RAMP: tuple[RGB, ...] = UTILITY_RAMP
+SOLVE_RAMP: tuple[RGB, ...] = multi_stop_gradient(SOLVE_STOPS, steps=101)
+RUBY_RAMP: tuple[RGB, ...] = multi_stop_gradient(RISK_STOPS, steps=101)
+
+
 def _rgb_style(rgb: RGB) -> str:
     return "#{:02x}{:02x}{:02x}".format(*rgb)
 
@@ -144,8 +186,11 @@ def _meter_cells(value: int, width: int, colors_key: tuple, invert: bool) -> tup
     cells = []
     for i in range(1, width + 1):
         y = int(round(i * 100.0 / width))
-        if value >= y:
-            rgb = colors[(100 - y) if invert else y]
+        if value >= y or (value > 0 and i == 1):
+            # Any non-zero progress gets one visible cell. Without this guard,
+            # e.g. 1/35 (2.9%) on a 22-cell meter looks identical to 0%.
+            color_pos = min(100, max(1, y))
+            rgb = colors[(100 - color_pos) if invert else color_pos]
             cells.append((METER_FILL, rgb))
         else:
             for _ in range(width + 1 - i):
@@ -188,6 +233,8 @@ def plain_meter(value: float, width: int) -> Text:
         return Text()
     v = int(_clamp(value, 0, 100))
     filled = width * v // 100
+    if v > 0 and filled == 0:
+        filled = 1
     return Text(METER_FILL * filled + METER_EMPTY * max(0, width - filled))
 
 

@@ -362,6 +362,23 @@ def _type(exc):
     return type(exc).__name__
 
 
+class TestCaseMissingGit(ArchiveBase):
+    def test_archive_git_missing_is_actionable_storage_error(self):
+        dest = self.base / "_archives"
+        with unittest.mock.patch(
+            "ctf_downloader.services.storage_manager.shutil.which",
+            return_value=None,
+        ):
+            with self.assertRaisesRegex(
+                StorageError, r"Không tìm thấy git.*PATH"
+            ):
+                StorageManager.archive_workspace(
+                    self.ws,
+                    out_dir=dest,
+                    git_remote="https://git.example.com/bk.git",
+                )
+
+
 class TestCaseEGitFail(ArchiveBase):
     def test_g1_git_add_fail_raises_and_leaves_initialized_repo_plus_remote(self):
         """git add fail giữa chừng: raise StorageError đúng, nhưng state dở

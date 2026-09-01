@@ -19,7 +19,14 @@ chủ đích: continuation của mọi khối thụt đúng cột nội dung, kh
 (codex-r3 #3).
 """
 import datetime as _dt
+import importlib.metadata as _metadata
+import importlib.util as _importlib_util
+import os
+import shutil
+import sys
+import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from rich.text import Text
@@ -30,7 +37,9 @@ from ..platforms.registry import get_spec
 from ..ui.style import BRANCH, FAIL, OK, WARN as WARN_GLYPH
 from ..ui.theme import (ACCENT, ERROR, FG_BASE, FG_FAINT, FG_MUTED, INFO,
                         SOLVED, WARN)
+from ..utils.failure_diagnostics import diagnose_os_error
 from ..utils.flag_format import extract_flag_format
+from ..utils.http_client import diagnose_request_exception
 from ..utils.logger import Logger, console as _default_console
 from .session_factory import create_session
 
@@ -80,6 +89,133 @@ def _wrap_words(text: str, first_width: int, rest_width: int) -> List[str]:
     if cur:
         lines.append(" ".join(cur))
     return lines or [""]
+
+
+@dataclass
+class RuntimeCheck:
+    """One local capability check used by ctf doctor --runtime."""
+
+    name: str
+    ok: bool
+    detail: str
+    fix: str = ""
+    required: bool = False
+
+
+class RuntimeReport:
+    """Dense local-runtime capability report.
+
+    Missing optional features never make the whole toolkit broken; only
+    checks marked required affect core_ok.
+    """
+
+    def __init__(self, checks: Optional[List[RuntimeCheck]] = None):
+        self.checks = list(checks or [])
+
+    def add(
+        self,
+        name: str,
+        ok: bool,
+        detail: str,
+        *,
+        fix: str = "",
+        required: bool = False,
+    ) -> RuntimeCheck:
+        chk = RuntimeCheck(
+            name=name,
+            ok=bool(ok),
+            detail=str(detail),
+            fix=str(fix),
+            required=bool(required),
+        )
+        self.checks.append(chk)
+        return chk
+
+    @property
+    def core_checks(self) -> List[RuntimeCheck]:
+        return [c for c in self.checks if c.required]
+
+    @property
+    def feature_checks(self) -> List[RuntimeCheck]:
+        return [c for c in self.checks if not c.required]
+
+    @property
+    def core_ok(self) -> bool:
+        return all(c.ok for c in self.core_checks)
+
+    def render(self, console=None) -> None:
+        from ..ui.banner import app_header
+
+        out = console or _default_console
+        width = getattr(out, "width", None) or 80
+        out.print(
+            app_header(
+                "doctor/runtime",
+                context="local capabilities",
+                timestamp=DoctorReport._timestamp(),
+                width=width,
+            )
+        )
+        out.print(Text("RUNTIME", style=FG_FAINT))
+
+        for chk in self.checks:
+            line = Text()
+            if chk.ok:
+                glyph, glyph_style = OK, SOLVED
+            elif chk.required:
+                glyph, glyph_style = FAIL, ERROR
+            else:
+                glyph, glyph_style = WARN_GLYPH, WARN
+
+            line.append(glyph, style=glyph_style)
+            line.append("  ")
+            line.append("CORE " if chk.required else "FEATURE ", style=FG_FAINT)
+            line.append(chk.name, style=FG_BASE)
+            if chk.detail:
+                line.append(" · ", style=FG_FAINT)
+                chunks = _wrap_words(
+                    chk.detail,
+                    max(20, width - len(chk.name) - 13),
+                    max(20, width - 6),
+                )
+                line.append(chunks[0], style=FG_MUTED)
+                for chunk in chunks[1:]:
+                    line.append("\n      ")
+                    line.append(chunk, style=FG_MUTED)
+            if not chk.ok and chk.fix:
+                line.append("\n      ")
+                line.append("ℹ ", style=INFO)
+                fix_indent = 8  # six-space block indent + "ℹ "
+                fix_chunks = _wrap_words(
+                    chk.fix,
+                    max(20, width - fix_indent),
+                    max(20, width - fix_indent),
+                )
+                line.append(fix_chunks[0], style=FG_MUTED)
+                for chunk in fix_chunks[1:]:
+                    line.append("\n" + " " * fix_indent)
+                    line.append(chunk, style=FG_MUTED)
+            out.print(line)
+
+        core = self.core_checks
+        features = self.feature_checks
+        core_ready = sum(1 for c in core if c.ok)
+        feature_ready = sum(1 for c in features if c.ok)
+        out.print(Text("KẾT QUẢ", style=FG_FAINT))
+        summary = Text()
+        summary.append(
+            (OK if self.core_ok else FAIL) + " ",
+            style=SOLVED if self.core_ok else ERROR,
+        )
+        summary.append(
+            f"core {core_ready}/{len(core)} ready",
+            style=FG_BASE,
+        )
+        summary.append(
+            f" · feature {feature_ready}/{len(features)} available",
+            style=FG_MUTED,
+        )
+        out.print(summary)
 
 
 @dataclass
@@ -284,20 +420,432 @@ class HealthService:
         self.timeout = timeout
 
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _distribution_version(name: str) -> str:
+        try:
+            return _metadata.version(name)
+        except _metadata.PackageNotFoundError:
+            return "?"
+
+    @classmethod
+    def check_runtime(cls, workspace: Optional[str] = None) -> RuntimeReport:
+        """Inspect local capabilities without touching the network.
+
+        Core failures affect the exit code. Optional feature gaps are reported
+        with a concrete fallback or remediation so users can distinguish
+        unavailable integrations from a broken toolkit installation.
+        """
+        report = RuntimeReport()
+
+        py_ok = sys.version_info >= (3, 10)
+        report.add(
+            "Python",
+            py_ok,
+            f"{sys.version.split()[0]} · cần >=3.10",
+            fix="Cài Python >=3.10 và tạo lại virtualenv." if not py_ok else "",
+            required=True,
+        )
+
+        core_packages = (
+            ("requests", "requests"),
+            ("bs4", "beautifulsoup4"),
+            ("rich", "rich"),
+            ("urllib3", "urllib3"),
+            ("cryptography", "cryptography"),
+        )
+        missing_core = []
+        core_versions = []
+        for module_name, dist_name in core_packages:
+            if _importlib_util.find_spec(module_name) is None:
+                missing_core.append(dist_name)
+            else:
+                core_versions.append(
+                    f"{dist_name}={cls._distribution_version(dist_name)}"
+                )
+        report.add(
+            "Core packages",
+            not missing_core,
+            (
+                " · ".join(core_versions)
+                if not missing_core
+                else "missing: " + ", ".join(missing_core)
+            ),
+            fix="python -m pip install -r requirements.txt" if missing_core else "",
+            required=True,
+        )
+
+        # Config/auth/Bridge token persistence. os.access() alone can lie on
+        # ACL/read-only/quota edge cases, so verify with a real fsync'd temp
+        # write in the nearest existing parent and remove it immediately.
+        config_probe: Optional[Path] = None
+        try:
+            from ..storage.global_config import CONFIG_DIR
+
+            config_path = Path(CONFIG_DIR).expanduser()
+            probe = config_path
+            while not probe.exists() and probe != probe.parent:
+                probe = probe.parent
+            config_probe = probe
+            config_ok = probe.exists() and probe.is_dir()
+            if not config_ok:
+                raise FileNotFoundError(f"config parent không tồn tại: {probe}")
+
+            tmp_name = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    dir=str(probe),
+                    prefix=".ucs-runtime-doctor-",
+                    delete=False,
+                ) as tf:
+                    tmp_name = tf.name
+                    tf.write(b"ok")
+                    tf.flush()
+                    os.fsync(tf.fileno())
+                config_detail = f"{config_path} · write/fsync probe OK tại {probe}"
+            finally:
+                if tmp_name:
+                    try:
+                        os.unlink(tmp_name)
+                    except OSError:
+                        pass
+        except Exception as exc:
+            config_ok = False
+            local = diagnose_os_error(exc)
+            config_detail = f"{local.code} · {local.summary}"
+            config_fix = local.hint
+        else:
+            config_fix = ""
+        report.add(
+            "Config storage",
+            config_ok,
+            config_detail,
+            fix=config_fix,
+            required=True,
+        )
+
+        # Proactive local-resource headroom. These are feature warnings rather
+        # than core failures: the CLI can still render status/help with low
+        # disk or FD headroom, but downloads/Bridge may fail soon.
+        resource_target = config_probe
+        if workspace:
+            candidate = Path(workspace).expanduser()
+            if candidate.exists():
+                resource_target = candidate
+        if resource_target is not None:
+            try:
+                usage = shutil.disk_usage(resource_target)
+                free_bytes = int(usage.free)
+                disk_floor = 256 * 1024 * 1024
+                disk_ok = free_bytes >= disk_floor
+                if free_bytes >= 1024 ** 3:
+                    free_text = f"{free_bytes / (1024 ** 3):.1f} GiB free"
+                else:
+                    free_text = f"{free_bytes / (1024 ** 2):.0f} MiB free"
+                disk_detail = f"{resource_target} · {free_text}"
+                disk_fix = (
+                    "Giải phóng dung lượng hoặc đổi workspace/output filesystem."
+                    if not disk_ok else ""
+                )
+            except OSError as exc:
+                disk_ok = False
+                local = diagnose_os_error(exc)
+                disk_detail = f"{local.code} · {local.summary}"
+                disk_fix = local.hint
+            report.add(
+                "Disk headroom",
+                disk_ok,
+                disk_detail,
+                fix=disk_fix,
+            )
+
+        try:
+            import resource
+
+            soft_fd, hard_fd = resource.getrlimit(resource.RLIMIT_NOFILE)
+            open_fd_count = None
+            proc_fd = Path("/proc/self/fd")
+            if proc_fd.is_dir():
+                try:
+                    open_fd_count = len(list(proc_fd.iterdir()))
+                except OSError:
+                    open_fd_count = None
+            infinity = soft_fd == resource.RLIM_INFINITY
+            if infinity:
+                fd_ok = True
+                fd_detail = "soft limit unlimited"
+            elif open_fd_count is None:
+                fd_ok = int(soft_fd) >= 128
+                fd_detail = f"soft={soft_fd} · open count unavailable"
+            else:
+                headroom = max(0, int(soft_fd) - int(open_fd_count))
+                fd_ok = headroom >= 64
+                fd_detail = (
+                    f"open={open_fd_count} · soft={soft_fd} · "
+                    f"headroom={headroom}"
+                )
+            fd_fix = (
+                "Đóng bớt worker/socket hoặc tăng 'ulimit -n'; chạy lại doctor."
+                if not fd_ok else ""
+            )
+        except (ImportError, AttributeError, OSError, ValueError) as exc:
+            # Non-POSIX platforms may not expose RLIMIT_NOFILE. That's an
+            # observability gap, not a broken toolkit feature.
+            fd_ok = True
+            fd_detail = f"không đo được trên OS này ({type(exc).__name__})"
+            fd_fix = ""
+        report.add(
+            "File descriptors",
+            fd_ok,
+            fd_detail,
+            fix=fd_fix,
+        )
+
+        feature_packages = (
+            ("curl_cffi", "curl_cffi", "Cloudflare browser TLS"),
+            ("websockets", "websockets", "Browser Bridge WebSocket"),
+            ("gdown", "gdown", "Google Drive attachments"),
+        )
+        feature_module_ok: Dict[str, bool] = {}
+        for module_name, dist_name, label in feature_packages:
+            found = _importlib_util.find_spec(module_name) is not None
+            version = cls._distribution_version(dist_name) if found else None
+            version_ok = True
+            if module_name == "websockets" and found and version:
+                try:
+                    version_ok = int(version.split(".", 1)[0]) >= 15
+                except (TypeError, ValueError):
+                    version_ok = False
+            ok = found and version_ok
+            feature_module_ok[module_name] = ok
+            detail = (
+                f"{version} · {label}"
+                if found and version_ok
+                else (
+                    f"{version} quá cũ; cần >=15 · {label}"
+                    if found
+                    else f"missing · {label}"
+                )
+            )
+            report.add(
+                dist_name,
+                ok,
+                detail,
+                fix="python -m pip install -r requirements.txt" if not ok else "",
+            )
+
+        git_path = shutil.which("git")
+        report.add(
+            "Git workflow",
+            bool(git_path),
+            git_path or "git không có trong PATH",
+            fix=(
+                "Cài Git hoặc dùng --no-git / --no-git-push cho pull."
+                if not git_path else ""
+            ),
+        )
+
+        if sys.platform == "darwin":
+            opener = shutil.which("open")
+        elif os.name == "nt":
+            opener = "Windows shell (os.startfile)" if hasattr(os, "startfile") else None
+        else:
+            opener = shutil.which("xdg-open") or shutil.which("gio")
+        report.add(
+            "Desktop opener",
+            bool(opener),
+            str(opener) if opener else "không có xdg-open/gio/open",
+            fix=(
+                "Headless vẫn dùng được: cd vào path tool in ra; GUI Linux cài xdg-utils hoặc GLib/GIO."
+                if not opener else ""
+            ),
+        )
+
+        try:
+            from ..downloaders.mega import MegaDownloader
+
+            mega_tool = MegaDownloader.available_tool()
+        except Exception as exc:
+            mega_tool = None
+            mega_detail = f"{type(exc).__name__}: {exc}"
+        else:
+            mega_detail = mega_tool or "megadl/mega-get không có trong PATH"
+        report.add(
+            "Mega download",
+            bool(mega_tool),
+            mega_detail,
+            fix="Cài megatools; các attachment không phải Mega vẫn tải bình thường." if not mega_tool else "",
+        )
+
+        tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
+        try:
+            cols = shutil.get_terminal_size(fallback=(80, 24)).columns
+        except OSError:
+            cols = 80
+        report.add(
+            "Output mode",
+            True,
+            (
+                f"TTY · {cols} cols · truecolor/ANSI tùy terminal"
+                if tty
+                else f"non-TTY · {cols} cols · plain/no-ANSI fallback"
+            ),
+        )
+
+        if feature_module_ok.get("websockets"):
+            try:
+                bridge = cls.check_bridge_health()
+                bridge_state = str(bridge.get("state") or "unknown")
+                bridge_ok = bridge_state == "ready"
+                bridge_detail = (
+                    f"{bridge_state} · {bridge.get('host')}:{bridge.get('port')}"
+                )
+                if bridge.get("error"):
+                    bridge_detail += f" · {bridge['error']}"
+                bridge_fix = {
+                    "runtime-unavailable": (
+                        "Chạy 'python -m pip install -r requirements.txt'."
+                    ),
+                    "port-conflict": (
+                        "Dừng process đang chiếm port Bridge hoặc cấu hình port "
+                        "Bridge khác, rồi chạy 'ctf bridge start'."
+                    ),
+                    "stopped": "Chạy 'ctf bridge start'.",
+                    "token-unavailable": (
+                        "Kiểm tra quyền token file hoặc chạy 'ctf bridge token'."
+                    ),
+                    "daemon-only": (
+                        "Mở browser có CTF Bridge Extension và đồng bộ token."
+                    ),
+                    "degraded": (
+                        "Chạy 'ctf bridge status', kiểm tra daemon/port/token rồi "
+                        "mở lại Browser Extension."
+                    ),
+                }.get(
+                    bridge_state,
+                    "Chạy 'ctf bridge status' để xem chẩn đoán.",
+                )
+            except Exception as exc:
+                bridge_ok = False
+                bridge_detail = f"{type(exc).__name__}: {exc}"
+                bridge_fix = "Chạy 'ctf bridge status' để xem chẩn đoán."
+        else:
+            bridge_ok = False
+            bridge_detail = "websockets unavailable; bridge không thể import/chạy"
+            bridge_fix = "Chạy 'python -m pip install -r requirements.txt'."
+        report.add(
+            "Browser Bridge",
+            bridge_ok,
+            bridge_detail,
+            fix=bridge_fix if not bridge_ok else "",
+        )
+
+        if workspace:
+            ws = Path(workspace).expanduser()
+            ws_ok = ws.is_dir() and os.access(ws, os.R_OK | os.X_OK)
+            detail = f"{ws.resolve() if ws.exists() else ws} · " + (
+                "readable" if ws_ok else "missing/unreadable"
+            )
+            report.add(
+                "Workspace",
+                ws_ok,
+                detail,
+                fix="Kiểm tra -w và quyền đọc workspace." if not ws_ok else "",
+                required=True,
+            )
+
+        return report
+
     @classmethod
     def check_bridge_health(cls) -> Dict[str, Any]:
-        """Check status of Browser Extension Bridge daemon and token."""
+        """Check daemon, token, and browser-extension readiness separately."""
         import os
+
         from ..bridge.daemon import BridgeDaemon
+
+        bridge_transport_cls: Any = None
+        transport_import_error: Optional[str] = None
+        try:
+            from ..bridge.transport import (
+                BrowserBridgeTransport as _BrowserBridgeTransport,
+            )
+        except Exception as exc:
+            transport_import_error = (
+                f"Bridge runtime import failed: {type(exc).__name__}: {exc}"
+            )
+        else:
+            bridge_transport_cls = _BrowserBridgeTransport
+
         daemon = BridgeDaemon()
+        daemon_status = daemon.inspect_status()
         token_exists = os.path.exists(daemon.token_path)
-        is_running = daemon.is_running() and daemon.is_port_open()
+        is_running = bool(daemon_status["owned"])
+        extension_connected = False
+        error = transport_import_error
+        if daemon_status["port_conflict"] and error is None:
+            error = (
+                f"Port {daemon.host}:{daemon.port} đang listen nhưng không thuộc "
+                "PID Bridge được quản lý."
+            )
+        elif (
+            daemon_status["pid_running"]
+            and not daemon_status["port_open"]
+            and error is None
+        ):
+            error = (
+                f"Bridge PID {daemon_status['pid']} đang sống nhưng port "
+                f"{daemon.host}:{daemon.port} chưa listen."
+            )
+
+        token = None
+        if token_exists:
+            try:
+                token = daemon.read_token()
+            except OSError as exc:
+                error = f"Không đọc được token: {type(exc).__name__}: {exc}"
+
+        if is_running and token and bridge_transport_cls is not None:
+            try:
+                probe = bridge_transport_cls(
+                    host=daemon.host,
+                    port=daemon.port,
+                    token=token,
+                    auto_start_daemon=False,
+                    timeout=3.0,
+                ).probe()
+                extension_connected = bool(probe.get("extension_connected"))
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+
+        if transport_import_error:
+            state = "runtime-unavailable"
+        elif daemon_status["port_conflict"]:
+            state = "port-conflict"
+        elif daemon_status["pid_running"] and not daemon_status["port_open"]:
+            state = "degraded"
+        elif not is_running:
+            state = "stopped"
+        elif not token:
+            state = "token-unavailable"
+        elif extension_connected:
+            state = "ready"
+        elif error:
+            state = "degraded"
+        else:
+            state = "daemon-only"
+
         return {
             "bridge_running": is_running,
+            "pid_running": bool(daemon_status["pid_running"]),
+            "port_open": bool(daemon_status["port_open"]),
+            "port_conflict": bool(daemon_status["port_conflict"]),
+            "extension_connected": extension_connected,
+            "state": state,
+            "error": error,
             "port": daemon.port,
             "host": daemon.host,
             "token_exists": token_exists,
-            "pid": daemon.read_pid() if is_running else None,
+            "pid": daemon_status["pid"],
         }
 
     def check(self, url: str, cookie: Optional[str] = None,
@@ -366,10 +914,17 @@ class HealthService:
                        f"HTTP {status}" if ok else f"HTTP {status} (server trả lỗi)")
             return ok
         except Exception as exc:
+            diag = diagnose_request_exception(exc, method="GET")
+            raw = str(exc).replace("\n", " ").strip()
+            detail = diag.summary
+            if raw and diag.code == "unknown-error":
+                detail += f" · {type(exc).__name__}: {raw[:160]}"
             report.add(
-                "URL sống", False,
-                f"Không kết nối được ({exc.__class__.__name__})",
-                fix="Kiểm tra mạng/VPN rồi thử lại địa chỉ platform.")
+                "URL sống",
+                False,
+                f"Không kết nối được · {diag.code} · {detail}",
+                fix=diag.hint,
+            )
             return False
 
     # ------------------------ 2. 🔍 Detect ---------------------------- #

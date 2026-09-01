@@ -9,7 +9,10 @@ from ctf_downloader.ui.widgets import (
     BRAILLE_UP,
     METER_EMPTY,
     METER_FILL,
+    RISK_STOPS,
     RUBY_RAMP,
+    UTILITY_RAMP,
+    UTILITY_STOPS,
     braille_graph,
     footer_bar,
     gradient,
@@ -78,6 +81,11 @@ class MeterTests(unittest.TestCase):
         t = meter(0, 8, self.ramp)
         self.assertEqual(_strip(t), "▱" * 8)
 
+    def test_tiny_nonzero_progress_gets_one_visible_cell(self):
+        t = meter(2.9, 22, self.ramp)
+        self.assertEqual(_strip(t).count("▰"), 1)
+        self.assertEqual(_strip(t).count("▱"), 21)
+
     def test_clamp(self):
         over = _strip(meter(150, 6, self.ramp))
         exact = _strip(meter(100, 6, self.ramp))
@@ -138,6 +146,10 @@ class PlainMeterTests(unittest.TestCase):
         self.assertEqual(_strip(t), "▰" * 8 + "▱" * 4)
         self.assertEqual(t.spans, [])   # không span màu nào
 
+    def test_tiny_nonzero_progress_gets_one_visible_cell(self):
+        t = plain_meter(2.9, 22)
+        self.assertEqual(_strip(t), "▰" + "▱" * 21)
+
     def test_zero_and_negative_width_empty(self):
         self.assertEqual(_strip(plain_meter(50, 0)), "")
         self.assertEqual(_strip(plain_meter(50, -3)), "")
@@ -171,8 +183,14 @@ class MeterMarkupTests(unittest.TestCase):
 
     def test_ruby_ramp_markup_for_storage_over_threshold(self):
         m = meter_markup(100, 8, RUBY_RAMP)
-        self.assertIn("#e5534b", m)
-        self.assertIn("#ff2e63", m)
+        # Width-8 meter samples interior ramp positions plus the final stop;
+        # every filled cell must remain inside the canonical risk spectrum.
+        import re as _re
+        sampled = _re.findall(r"\[#([0-9a-f]{6})\]", m)
+        allowed = {"{:02x}{:02x}{:02x}".format(*rgb) for rgb in RUBY_RAMP}
+        self.assertEqual(len(sampled), 8)
+        self.assertTrue(set(sampled).issubset(allowed))
+        self.assertEqual(sampled[-1], "ff5c8a")
 
     def test_zero_or_negative_width_returns_empty_string(self):
         self.assertEqual(meter_markup(50, 0, self.RAMP), "")
@@ -188,29 +206,21 @@ class MeterMarkupTests(unittest.TestCase):
 
 
 class RampConstantTests(unittest.TestCase):
-    """SPEC UI v2 §M1: AMBER_RAMP canonical 101 stop 3 mốc; RUBY_RAMP
-    101 stop 2 mốc — ruby CHỈ cho state rủi ro (storage ≥1× ngưỡng)."""
+    """Shared utility/risk ramps are smooth and centrally defined."""
 
-    def test_amber_ramp_exactly_three_spec_stops(self):
-        self.assertEqual(len(AMBER_RAMP), 101)
-        self.assertEqual(set(AMBER_RAMP), {
-            (0x6B, 0x43, 0x00), (0xFF, 0xB0, 0x00), (0xFF, 0xE4, 0x9A)})
-        # Biên quantize: y<34 than hồng · 34≤y<67 hổ phách · y≥67 vàng nhạt.
-        self.assertEqual(AMBER_RAMP[33], (0x6B, 0x43, 0x00))
-        self.assertEqual(AMBER_RAMP[34], (0xFF, 0xB0, 0x00))
-        self.assertEqual(AMBER_RAMP[66], (0xFF, 0xB0, 0x00))
-        self.assertEqual(AMBER_RAMP[67], (0xFF, 0xE4, 0x9A))
+    def test_utility_ramp_is_smooth_teal_spectrum(self):
+        self.assertEqual(len(UTILITY_RAMP), 101)
+        self.assertEqual(UTILITY_RAMP[0], UTILITY_STOPS[0])
+        self.assertEqual(UTILITY_RAMP[-1], UTILITY_STOPS[-1])
+        self.assertGreaterEqual(len(set(UTILITY_RAMP)), 95)
+        # Compatibility only: old imports still see the same canonical ramp.
+        self.assertIs(AMBER_RAMP, UTILITY_RAMP)
 
-    def test_ruby_ramp_two_stops_with_boundary_at_50(self):
+    def test_ruby_ramp_is_smooth_risk_spectrum(self):
         self.assertEqual(len(RUBY_RAMP), 101)
-        self.assertEqual(set(RUBY_RAMP),
-                         {(0xE5, 0x53, 0x4B), (0xFF, 0x2E, 0x63)})
-        self.assertEqual(RUBY_RAMP[49], (0xE5, 0x53, 0x4B))   # ERROR
-        self.assertEqual(RUBY_RAMP[50], (0xFF, 0x2E, 0x63))   # FIRSTBLOOD
-
-    def test_status_service_alias_points_to_canonical(self):
-        from ctf_downloader.services.status_service import _METER_RAMP_3STOP
-        self.assertIs(_METER_RAMP_3STOP, AMBER_RAMP)
+        self.assertEqual(RUBY_RAMP[0], RISK_STOPS[0])
+        self.assertEqual(RUBY_RAMP[-1], RISK_STOPS[-1])
+        self.assertGreaterEqual(len(set(RUBY_RAMP)), 70)
 
 
 class BrailleGraphTests(unittest.TestCase):

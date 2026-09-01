@@ -33,6 +33,13 @@ TYPE_TARGETS = [
     "ctf_downloader/platforms/ctfd.py",
     "ctf_downloader/platforms/gzctf.py",
     "ctf_downloader/platforms/rctf.py",
+    # Browser Bridge reliability boundary
+    "ctf_downloader/bridge/constants.py",
+    "ctf_downloader/bridge/messages.py",
+    "ctf_downloader/bridge/daemon.py",
+    "ctf_downloader/bridge/server.py",
+    "ctf_downloader/bridge/transport.py",
+    "scripts/verify_bridge_browser.py",
     # Generated-doc contract
     "scripts/generate_cli_option_index.py",
 ]

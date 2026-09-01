@@ -160,15 +160,43 @@ def handle_open(args):
 
     chall_dir = str(Path(meta_path).parent)
     Logger.info(f"Đang mở thư mục challenge: {chall_dir}")
-    try:
-        subprocess.run(["xdg-open", chall_dir], check=True, shell=False)
-    except FileNotFoundError:
-        Logger.error("Không tìm thấy lệnh 'xdg-open' — hãy cài gói xdg-utils "
-                     "(vd: sudo apt install xdg-utils).")
-        sys.exit(1)
-    except subprocess.CalledProcessError as e:
-        Logger.error(f"xdg-open thất bại (exit {e.returncode}): {chall_dir}")
-        sys.exit(1)
+
+    if sys.platform == "darwin":
+        opener_commands = [["open", chall_dir]]
+    elif os.name == "nt":
+        try:
+            os.startfile(chall_dir)  # type: ignore[attr-defined]
+            return
+        except OSError as exc:
+            Logger.error(f"Không mở được thư mục bằng Windows shell: {exc}")
+            sys.exit(1)
+    else:
+        # xdg-open is the freedesktop default; gio is a useful fallback on
+        # minimal/desktop Linux installs where xdg-utils isn't present.
+        opener_commands = [
+            ["xdg-open", chall_dir],
+            ["gio", "open", chall_dir],
+        ]
+
+    failures = []
+    for cmd in opener_commands:
+        try:
+            subprocess.run(cmd, check=True, shell=False)
+            return
+        except FileNotFoundError:
+            failures.append(f"{cmd[0]}: missing")
+        except subprocess.CalledProcessError as exc:
+            failures.append(f"{cmd[0]}: exit {exc.returncode}")
+        except OSError as exc:
+            failures.append(f"{cmd[0]}: {type(exc).__name__}: {exc}")
+
+    Logger.error(
+        "Không có desktop opener hoạt động ("
+        + "; ".join(failures)
+        + "). Trên Linux hãy cài xdg-utils hoặc GLib/GIO; "
+          "trên headless shell hãy cd trực tiếp vào thư mục ở trên."
+    )
+    sys.exit(1)
 
 
 def handle_workspaces(args):
@@ -207,13 +235,19 @@ def handle_workspaces(args):
     head.append(base_dir, style=_INFO_COLOR)   # path thật → info literal
     ws_console.print(head)
 
+    # One workspace must stay one physical row even on narrow terminals.
+    # Fixed semantic columns consume ~39 cells including inter-column padding;
+    # the workspace column gets the remainder and ellipsizes instead of wrapping.
+    name_width = min(35, max(12, ws_console.width - 39))
     table = Table(
         box=None, show_header=True, show_edge=False,
-        header_style=_FAINT_COLOR, padding=(0, 2), pad_edge=False)
-    table.add_column("WORKSPACE", no_wrap=False)
-    table.add_column("PLATFORM", no_wrap=True)
-    table.add_column("PROGRESS", no_wrap=True)
-    table.add_column("SOLVED", no_wrap=True, justify="right")
+        header_style=_FAINT_COLOR, padding=(0, 1), pad_edge=False)
+    table.add_column(
+        "WORKSPACE", width=name_width, max_width=name_width,
+        no_wrap=True, overflow="ellipsis")
+    table.add_column("PLATFORM", width=10, max_width=10, no_wrap=True, overflow="ellipsis")
+    table.add_column("PROGRESS", width=15, max_width=15, no_wrap=True)
+    table.add_column("SOLVED", width=8, max_width=8, no_wrap=True, justify="right")
 
     total_solved = 0
     total_challs = 0
@@ -824,10 +858,21 @@ def handle_doctor(args):
     còn ít nhất một check fail | 2 khi input CLI không hợp lệ/thiếu -u."""
     from .services.health_service import HealthService
 
+    if bool(getattr(args, 'runtime', False)):
+        report = HealthService.check_runtime(
+            workspace=getattr(args, 'workspace', None)
+        )
+        report.render()
+        if not report.core_ok:
+            sys.exit(1)
+        return
+
     url = getattr(args, 'url', None)
     if not url:
-        Logger.error("Usage: ctf doctor -u <platform-url> "
-                     "[-w workspace] [-c cookie] [-t token]")
+        Logger.error(
+            "Usage: ctf doctor -u <platform-url> [-w workspace] "
+            "[-c cookie] [-t token] | ctf doctor --runtime"
+        )
         sys.exit(2)
 
     try:
@@ -1556,15 +1601,31 @@ def handle_bridge(args):
     daemon = BridgeDaemon()
 
     if action == "start":
-        if daemon.is_running() and daemon.is_port_open():
-            Logger.info(f"Bridge daemon đã đang chạy tại ws://{daemon.host}:{daemon.port}/ws (PID: {daemon.read_pid()}).")
+        daemon_status = daemon.inspect_status()
+        if daemon_status["owned"]:
+            Logger.info(
+                f"Bridge daemon đã đang chạy tại "
+                f"ws://{daemon.host}:{daemon.port}/ws "
+                f"(PID: {daemon_status['pid']})."
+            )
             return
-        token = daemon.get_or_create_token()
+        if daemon_status["port_conflict"]:
+            Logger.error(
+                f"Port {daemon.host}:{daemon.port} bị process khác chiếm."
+            )
+            Logger.info("Action: dừng process đó hoặc đổi port Bridge.")
+            sys.exit(1)
+        try:
+            daemon.get_or_create_token()
+        except Exception as exc:
+            Logger.error(f"Không chuẩn bị được Bridge token: {exc}")
+            sys.exit(1)
         ok = daemon.ensure_running()
         if ok:
             Logger.success(f"Đã khởi chạy Bridge daemon tại ws://{daemon.host}:{daemon.port}/ws (PID: {daemon.read_pid()}).")
         else:
-            Logger.error("Không thể khởi chạy Bridge daemon.")
+            detail = daemon.last_error or "không có chi tiết"
+            Logger.error(f"Không thể khởi chạy Bridge daemon: {detail}")
             sys.exit(1)
 
     elif action == "stop":
@@ -1575,19 +1636,68 @@ def handle_bridge(args):
         Logger.success("Đã dừng Bridge daemon.")
 
     elif action == "token":
-        token = daemon.get_or_create_token()
+        try:
+            token = daemon.get_or_create_token()
+        except Exception as exc:
+            Logger.error(f"Không đọc/tạo được Bridge token: {exc}")
+            sys.exit(1)
         print(token)
 
     else:  # status
-        is_running = daemon.is_running() and daemon.is_port_open()
-        token = daemon.get_or_create_token()
-        pid = daemon.read_pid() if is_running else "-"
-        status_str = f"[bold {SOLVED}]🟢 RUNNING[/bold {SOLVED}]" if is_running else f"[bold {WARN}]🔴 STOPPED[/bold {WARN}]"
+        from .services.health_service import HealthService
 
-        Logger.info(f"CTF OPERATIONS BRIDGE // [bold]{status_str}[/bold]", markup=True)
-        Logger.info(f"  • Host / Port: {daemon.host}:{daemon.port}")
-        Logger.info(f"  • Daemon PID : {pid}")
-        Logger.info(f"  • Token File : {daemon.token_path}")
-        Logger.info(f"  • Token      : {token[:8]}...{token[-8:]}")
-        if not is_running:
-            Logger.info(f"\n[italic {FG_MUTED}]Dùng `ctf bridge start` để bật daemon hoặc tải Extension trên trình duyệt để tự động kết nối.[/italic {FG_MUTED}]", markup=True)
+        info = HealthService.check_bridge_health()
+        state = str(info.get("state") or "unknown")
+        state_style = SOLVED if state == "ready" else WARN
+        state_label = {
+            "ready": "READY",
+            "daemon-only": "DAEMON ONLY",
+            "degraded": "DEGRADED",
+            "port-conflict": "PORT CONFLICT",
+            "runtime-unavailable": "RUNTIME ERROR",
+            "token-unavailable": "TOKEN ERROR",
+            "stopped": "STOPPED",
+        }.get(state, state.upper())
+
+        Logger.info(
+            f"BROWSER BRIDGE // [bold {state_style}]{state_label}[/bold {state_style}]",
+            markup=True,
+        )
+        Logger.info(f"  Host / Port : {daemon.host}:{daemon.port}")
+        Logger.info(f"  Daemon PID  : {info.get('pid') or '-'}")
+        if info.get("port_conflict"):
+            port_state = "foreign listener"
+        elif info.get("port_open"):
+            port_state = "listening"
+        else:
+            port_state = "closed"
+        Logger.info(f"  Port State  : {port_state}")
+        Logger.info(
+            "  Extension   : "
+            + ("connected" if info.get("extension_connected") else "not connected")
+        )
+        Logger.info(
+            "  Token File  : "
+            + ("present" if info.get("token_exists") else "missing")
+        )
+
+        if info.get("error") and state != "port-conflict":
+            Logger.warning(f"Bridge probe: {info['error']}")
+        if state == "runtime-unavailable":
+            Logger.info(
+                "  Action      : chạy 'python -m pip install -r requirements.txt'"
+            )
+        elif state == "port-conflict":
+            Logger.info(
+                "  Action      : dừng process chiếm port / đổi port"
+            )
+        elif state == "stopped":
+            Logger.info("  Action      : chạy 'ctf bridge start'")
+        elif state in {"daemon-only", "degraded"}:
+            Logger.info(
+                "  Action      : mở browser có CTF Bridge Extension và kiểm tra token"
+            )
+        elif state == "token-unavailable":
+            Logger.info(
+                "  Action      : kiểm tra quyền token file hoặc chạy 'ctf bridge token'"
+            )

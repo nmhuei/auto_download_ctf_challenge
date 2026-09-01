@@ -38,7 +38,8 @@ from ..ui.theme import (
     ERROR, FG_BASE, FG_FAINT, FG_MUTED, INFO, SOLVED, WARN,
     load_theme,
 )
-from ..ui.widgets import AMBER_RAMP, footer_bar, meter
+from ..ui.widgets import UTILITY_RAMP, footer_bar, meter
+from ..utils.http_client import parse_retry_after_seconds
 from ..utils.logger import Logger
 
 try:
@@ -1152,11 +1153,12 @@ class WatchService:
             # (R1/R2): sống qua reward của tick này, không đổi interval
             # cơ sở — hết rate-limit là tự quay về lịch thường.
             ra = resp_headers.get("Retry-After")
-            try:
-                delay = max(1.0, float(ra))
+            parsed_retry_after = parse_retry_after_seconds(ra)
+            if parsed_retry_after is not None:
+                delay = max(1.0, parsed_retry_after)
                 why = "theo Retry-After"
                 self.scheduler.clear_rate_limit("notices")
-            except (TypeError, ValueError):
+            else:
                 delay = self.scheduler.rate_limit_backoff("notices")
                 why = "backoff ×2 nội bộ"
             self.scheduler.set_penalty("notices", delay)
@@ -1240,11 +1242,12 @@ class WatchService:
 
         if http_status == 429:
             ra = result.get("_retry_after")
-            try:
-                delay = max(1.0, float(ra))
+            parsed_retry_after = parse_retry_after_seconds(ra)
+            if parsed_retry_after is not None:
+                delay = max(1.0, parsed_retry_after)
                 why = "theo Retry-After"
                 self.scheduler.clear_rate_limit("scoreboard")
-            except (TypeError, ValueError):
+            else:
                 delay = self.scheduler.rate_limit_backoff("scoreboard")
                 why = "backoff ×2 nội bộ"
             self.scheduler.set_penalty("scoreboard", delay)
@@ -1545,7 +1548,7 @@ class WatchService:
             top = max(float(r.get("score") or 0) for r in rows)
         except (TypeError, ValueError):
             top = 0.0
-        colors = AMBER_RAMP
+        colors = UTILITY_RAMP
         meter_w = 16
         parts.append(Text("🏆 SCOREBOARD TOP-5", style=FG_FAINT))
         for r in rows:

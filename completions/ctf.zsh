@@ -191,7 +191,8 @@ _ctf() {
                         '(-u --url)'{-u,--url}'[platform URL]:url' \
                         '(-w --workspace)'{-w,--workspace}'[workspace lấy auth từ auth map]:dir:_directories' \
                         '(-c --cookie)'{-c,--cookie}'[cookie string or path]:cookie:_files' \
-                        '(-t --token)'{-t,--token}'[API token or Bearer token]:token'
+                        '(-t --token)'{-t,--token}'[API token or Bearer token]:token' \
+                        '--runtime[chỉ kiểm local runtime/dependency/tool; không cần URL]'
                     ;;
                 menu|ui|console)
                     _arguments \

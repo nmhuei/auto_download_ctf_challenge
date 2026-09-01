@@ -1,16 +1,10 @@
-"""Rich theme built from semantic palette tokens, with TOML override support.
+"""Semantic terminal theme for UCS_ExOdia.
 
-AMBER REFIT (palette C1, combo B): lineage PHOSPHOR FIELD KIT — accent
-amber ``#FFB000`` duy nhất trên nền tối; fg/muted/solved retune theo C1,
-mọi màu khác trung tính hoặc gắn ngữ nghĩa glyph
-(✔ solved / ◆ firstblood / ✗ error / ! warn). Users can override any
-style with a TOML file::
-
-    [styles]
-    solved = "green bold"
-    firstblood = "#ff004f"
-
-Load it via :func:`load_theme`; ``None`` means defaults only.
+The palette is intentionally small and role-driven: cyan/teal owns identity,
+active information and important chrome; cool neutrals carry normal text;
+solve/success, warning and error keep distinct semantic colors. Callers should
+prefer named Rich styles over raw colors so a TOML override can reskin the CLI
+from one place.
 """
 
 from __future__ import annotations
@@ -20,41 +14,66 @@ from pathlib import Path
 
 from rich.theme import Theme
 
-from .style import PALETTE
+# Core semantic palette.
+BG = "#070B10"
+SURFACE = "#0D141C"
+BORDER = "#244650"
 
-# AMBER REFIT (palette C1 "Phosphor Amber Refit", combo B) trên nền token set
-# PHOSPHOR FIELD KIT (spec §3). Dotted keys
-# are resolved verbatim by rich's theme stack before any color parsing, so
-# they are safe in markup.
-#
-# Palette kỷ luật: neutral fg.* + MỘT accent amber ``#FFB000`` family
-# (#6B4300 → #FFB000 → #FFE49A — trùng đúng 3 mốc meter §3.3; bg tham chiếu
-# ``#171209`` do terminal tự quản). Semantic chỉ còn 3 glyph vai trò:
-# ✔ solved-green / ✗ error-red / ! warn. Cyan/green/red trang trí và vàng
-# ngoài token đã bị bỏ — path/literal/lệnh dùng neutral.
-FG_BASE = "#E6E1D3"       # nội dung chính (fg C1)
-FG_MUTED = "#99917E"      # thông tin phụ (muted C1)
-FG_FAINT = "#595246"      # chrome: nhãn cột, đường nối, glyph trống
-                          # (derive C1: cùng bậc L/S như faint cũ, hue ấm)
-ACCENT = "#FFB000"        # amber phosphor — giọng nói duy nhất
-ACCENT_HI = "#FFE49A"     # đỉnh nhấn amber — trùng mốc cuối meter §3.3
-ACCENT_DEEP = "#6B4300"   # amber tắt đèn — trùng mốc đầu meter §3.3
-INFO = FG_BASE            # path/literal/lệnh → neutral (đã bỏ cyan)
-SOLVED = "#62C97E"        # ✔ solved-green (semantic duy nhất cùng ✗/!)
-FIRSTBLOOD = "#FF2E63"    # ◆ + bold
-ERROR = "#E5534B"         # ✗ đỏ
-WARN = "#EAC54F"          # !
+TEXT = "#E6EDF3"
+MUTED = "#8B98A5"
+FAINT = "#50606C"
 
-# SPEC UI v2 §S1 — selection state: reverse highlight fg near-black trên
-# nền accent amber (không hue mới; nền trùng đúng ACCENT lead).
-SEL_FG = "#14100A"        # chữ trên nền chọn
-SEL_BG = ACCENT           # nền chọn = amber lead
+CYAN = "#5EEAD4"
+CYAN_HI = "#A7F3E8"
+CYAN_DEEP = "#1F6F78"
+
+SUCCESS = "#9BE15D"
+WARNING = "#FF9F43"
+ERROR = "#E5534B"
+FIRSTBLOOD = "#FF5C8A"
+
+SELECTED_FG = "#DFFFFA"
+SELECTED_BG = "#163A42"
+
+# Stable category accents. Use only where category differentiation helps.
+CATEGORY_WEB = CYAN
+CATEGORY_CRYPTO = "#A7C7FF"
+CATEGORY_PWN = "#FF8A65"
+CATEGORY_REV = "#C9B5FF"
+CATEGORY_FORENSICS = SUCCESS
+CATEGORY_MISC = MUTED
+
+# Backward-compatible aliases used by existing surfaces.
+FG_BASE = TEXT
+FG_MUTED = MUTED
+FG_FAINT = FAINT
+ACCENT = CYAN
+ACCENT_HI = CYAN_HI
+ACCENT_DEEP = CYAN_DEEP
+INFO = CYAN
+SOLVED = SUCCESS
+WARN = WARNING
+SEL_FG = SELECTED_FG
+SEL_BG = SELECTED_BG
 
 DEFAULT_STYLES: dict[str, str] = {
-    # --- Legacy aliases (PALETTE) ĐẨY TRƯỚC để token spec ghi đè hết:
-    # trước đây "error" của PALETTE đè token hex (codex-r3 #1) ---
-    **PALETTE,  # dim / path / literal / hint / title nền chung
-    # --- Token spec §3 ---
+    # New semantic token family.
+    "bg": f"on {BG}",
+    "surface": f"on {SURFACE}",
+    "border": BORDER,
+    "text": TEXT,
+    "muted": MUTED,
+    "faint": FAINT,
+    "cyan": CYAN,
+    "selected": f"bold {SELECTED_FG} on {SELECTED_BG}",
+    "category.web": CATEGORY_WEB,
+    "category.crypto": CATEGORY_CRYPTO,
+    "category.pwn": CATEGORY_PWN,
+    "category.rev": CATEGORY_REV,
+    "category.forensics": CATEGORY_FORENSICS,
+    "category.misc": CATEGORY_MISC,
+
+    # Existing UI token names mapped onto the semantic palette.
     "fg.base": FG_BASE,
     "fg.muted": FG_MUTED,
     "fg.faint": FG_FAINT,
@@ -66,28 +85,23 @@ DEFAULT_STYLES: dict[str, str] = {
     "firstblood": FIRSTBLOOD,
     "error": ERROR,
     "warn": WARN,
-    "success": SOLVED,
-    "warning": WARN,
+    "success": SUCCESS,
+    "warning": WARNING,
     "hint": INFO,
     "path": INFO,
     "literal": INFO,
     "title": f"bold {ACCENT}",
-    "div_line": ACCENT_DEEP,
+    "div_line": BORDER,
     "hi_fg": ACCENT,
     "unsolved": FG_FAINT,
-    # --- Selection state §S1 ---
-    "sel": f"{SEL_FG} on {SEL_BG}",
+    "sel": f"bold {SEL_FG} on {SEL_BG}",
     "done": f"strike {FG_MUTED}",
+    "dim": "dim",
 }
 
 
 def load_theme(path: str | Path | None) -> Theme:
-    """Build a :class:`rich.theme.Theme`, optionally overridden by a TOML file.
-
-    The TOML file may contain a top-level ``styles`` table whose entries
-    replace same-named default styles. Unknown keys are kept as-is so a
-    theme file can add brand-new styles too.
-    """
+    """Build a Rich Theme, optionally overridden by a TOML file."""
     styles = dict(DEFAULT_STYLES)
     if path is not None:
         with open(path, "rb") as fh:
@@ -102,8 +116,14 @@ def load_theme(path: str | Path | None) -> Theme:
 
 __all__ = [
     "DEFAULT_STYLES", "load_theme",
+    "BG", "SURFACE", "BORDER",
+    "TEXT", "MUTED", "FAINT",
+    "CYAN", "CYAN_HI", "CYAN_DEEP",
+    "SUCCESS", "WARNING", "ERROR", "FIRSTBLOOD",
+    "SELECTED_FG", "SELECTED_BG",
+    "CATEGORY_WEB", "CATEGORY_CRYPTO", "CATEGORY_PWN",
+    "CATEGORY_REV", "CATEGORY_FORENSICS", "CATEGORY_MISC",
     "FG_BASE", "FG_MUTED", "FG_FAINT",
     "ACCENT", "ACCENT_HI", "ACCENT_DEEP",
-    "INFO", "SOLVED", "FIRSTBLOOD", "ERROR", "WARN",
-    "SEL_FG", "SEL_BG",
+    "INFO", "SOLVED", "WARN", "SEL_FG", "SEL_BG",
 ]

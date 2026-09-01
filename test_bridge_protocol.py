@@ -82,3 +82,29 @@ def test_deserialize_invalid_message():
     
     with pytest.raises(ValueError):
         deserialize_message('{"type": "UNKNOWN_TYPE", "data": {}}')
+
+
+
+def test_stream_backed_response_serialization_omits_runtime_file():
+    import tempfile
+
+    with tempfile.TemporaryFile("w+b") as body_file:
+        body_file.write(b"streamed")
+        body_file.seek(0)
+        response = BridgeResponse(
+            id="stream_serialization",
+            status_code=200,
+            headers={"content-type": "application/octet-stream"},
+            body_file=body_file,
+        )
+        payload = response.to_dict()
+
+    assert payload == {
+        "id": "stream_serialization",
+        "status_code": 200,
+        "status_text": "OK",
+        "headers": {"content-type": "application/octet-stream"},
+        "body": None,
+        "is_base64": False,
+        "error": None,
+    }

@@ -140,7 +140,7 @@ class TestMenuIntegration(unittest.TestCase):
 
     def test_splash_called_exactly_once_on_launch(self):
         calls, _ = self._launch_with_spies()
-        self.assertEqual([None], calls)
+        self.assertEqual([120], calls)
 
     def test_splash_printed_before_compact_header(self):
         _, out = self._launch_with_spies()
@@ -152,6 +152,25 @@ class TestMenuIntegration(unittest.TestCase):
     def test_full_logo_appears_only_once(self):
         _, out = self._launch_with_spies()
         self.assertEqual(1, out.count("██╗   ██╗"))
+
+    def test_launch_suppresses_immediate_duplicate_brand(self):
+        con = Console(file=io.StringIO(), force_terminal=False, width=100)
+        instances = []
+
+        class StubApp:
+            def __init__(self, **kwargs):
+                self._suppress_next_brand = False
+                instances.append(self)
+
+            def run(self):
+                pass
+
+        with mock.patch.object(im, "CTFInteractiveConsole", StubApp), \
+                mock.patch.object(im, "_menu_console", lambda: con):
+            im.launch_interactive_menu()
+
+        self.assertEqual(1, len(instances))
+        self.assertTrue(instances[0]._suppress_next_brand)
 
 
 class TestNonTTY(unittest.TestCase):

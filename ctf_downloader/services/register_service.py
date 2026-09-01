@@ -13,7 +13,7 @@ import random
 import string
 import time
 import urllib.parse
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
 
 from rich.markup import escape
 
@@ -241,8 +241,8 @@ class RegisterService:
         return auth_key(workspace, url) or url
 
     @staticmethod
-    def _cookies_to_header(cookies: Dict[str, str]) -> str:
-        return "; ".join(f"{k}={v}" for k, v in (cookies or {}).items())
+    def _cookies_to_header(cookies: Mapping[str, Optional[str]]) -> str:
+        return "; ".join(f"{k}={v}" for k, v in (cookies or {}).items() if v is not None)
 
     # ------------------------------------------------------------------ #
     # Email: --email | --tempmail | fallback tempmail tự thử

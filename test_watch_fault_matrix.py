@@ -102,6 +102,22 @@ class TestScoreboardWatchFaults(unittest.TestCase):
         self.assertGreaterEqual(deadline - before, 90.0)
         self.assertIsNone(svc.scheduler._tasks["scoreboard"]["penalty"])
 
+    def test_429_http_date_retry_after_is_honored(self):
+        import time
+        from email.utils import formatdate
+
+        retry_at = formatdate(time.time() + 120, usegmt=True)
+        svc = make_watch({
+            "_http_status": 429,
+            "_retry_after": retry_at,
+        })
+        out = svc._tick_scoreboard()
+        self.assertIn("Retry-After", out[0])
+        penalty = svc.scheduler._tasks["scoreboard"]["penalty"]
+        self.assertIsNotNone(penalty)
+        self.assertGreater(penalty, 100.0)
+        self.assertLessEqual(penalty, 120.0)
+
     def test_401_surfaces_auth_expiry_and_slows_poll(self):
         svc = make_watch({"_http_status": 401})
         out = svc._tick_scoreboard()

@@ -28,7 +28,7 @@ from .ui.banner import app_header
 from .ui.selection import MENU_CURSOR, fit_cells, selected_row
 from .ui.splash import splash
 from .ui.theme import ACCENT, FG_BASE, FG_FAINT, FG_MUTED, INFO, WARN, load_theme
-from .ui.widgets import AMBER_RAMP, footer_bar, meter
+from .ui.widgets import SOLVE_RAMP, meter
 
 #: Meter dùng chung ramp 3 mốc spec §3.3 (than hồng → hổ phách → vàng nhạt)
 #: — ``ui.widgets.AMBER_RAMP`` canonical theo SPEC UI v2 §M1: mỗi ô nhận
@@ -38,6 +38,38 @@ from .ui.widgets import AMBER_RAMP, footer_bar, meter
 #: width kèm ``…`` (MUST uiv2 #4), không bao giờ để dữ liệu tràn cột.
 SWITCHER_TITLE_W = 30
 SWITCHER_PLATFORM_W = 8
+
+_MAIN_ACTIONS_FULL = (
+    ('1', 'Clone / Tải giải đấu CTF mới về máy'),
+    ('2', 'Chọn / Chuyển đổi Workspace giải đấu đang làm việc'),
+    ('3', 'Xem Cây Cấu trúc & Tiến độ bài thi (Tree View)'),
+    ('4', 'Tra cứu & Xem chi tiết đề bài, hints, file đính kèm'),
+    ('5', 'Quản lý Container / Instance động (bật / tắt / gia hạn / trạng thái)'),
+    ('6', 'Nộp flag cho một bài thi cụ thể'),
+    ('7', 'Tự động quét & nộp hàng loạt flag đã giải trong workspace'),
+    ('8', 'Quét & tổng kết toàn bộ các giải đấu trên máy'),
+    ('9', 'Cấu hình & Lưu Cookie / Token cho giải này (nhớ vĩnh viễn)'),
+    ('0', 'Thoát'),
+)
+
+_MAIN_ACTIONS_COMPACT = (
+    ('1', 'Clone / Tải giải đấu mới'),
+    ('2', 'Chọn / Đổi workspace'),
+    ('3', 'Cây challenge & tiến độ'),
+    ('4', 'Xem đề bài / hints / files'),
+    ('5', 'Container / Instance: trạng thái & gia hạn'),
+    ('6', 'Nộp flag'),
+    ('7', 'Quét & nộp flag hàng loạt'),
+    ('8', 'Tổng kết các giải trên máy'),
+    ('9', 'Cấu hình Cookie / Token'),
+    ('0', 'Thoát'),
+)
+
+
+def _main_menu_actions(width: int):
+    """Return one-line action labels appropriate for the terminal width."""
+    return _MAIN_ACTIONS_COMPACT if width < 72 else _MAIN_ACTIONS_FULL
+
 
 _MENU_CON = None
 
@@ -88,15 +120,6 @@ def _prompt(msg: str) -> str:
     return _menu_console().input(t).strip()
 
 
-def _footer(bindings=None):
-    """FooterBar spec §4.7: phím amber + nhãn fg.base, phân cách dim."""
-    con = _menu_console()
-    bindings = bindings or [('?', 'help'), ('q', 'thoát')]
-    width = max(40, con.width - 2)
-    con.print()
-    con.print(f'  {footer_bar(bindings, width)}')
-
-
 def _workspace_rows(workspaces, active: str):
     """Các dòng workspace cho switcher (SPEC UI v2 §S1.2).
 
@@ -140,6 +163,7 @@ class CTFInteractiveConsole:
         self.workspace_path = self._resolve_initial_workspace(workspace_path)
         self.cookie = cookie
         self.token = token
+        self._suppress_next_brand = False
         self._load_saved_auth()
 
     def _resolve_initial_workspace(self, user_ws: Optional[str]) -> str:
@@ -174,55 +198,56 @@ class CTFInteractiveConsole:
     # ------------------------------------------------------------------
 
     def _print_header(self):
-        """Compact UCS_ExOdia AppHeader — đồng bộ mọi surface framed
-        (MUST uiv2 #1: bỏ Banner B half-block gây chia hai nhận diện), sau đó
-        khối context WORKSPACE."""
+        """Render one compact menu identity + workspace state block.
+
+        The full splash owns branding on the first frame, so the immediate
+        duplicate AppHeader is suppressed once. Routine auth success, full
+        paths and user/team IDs stay hidden; only actionable warnings remain.
+        """
         con = _menu_console()
-        con.print(app_header('menu', context=self.workspace_path,
-                             timestamp=_frame_timestamp(), width=con.width))
+        if bool(getattr(self, "_suppress_next_brand", False)):
+            self._suppress_next_brand = False
+        else:
+            con.print(
+                app_header(
+                    "menu",
+                    context=os.path.basename(self.workspace_path),
+                    timestamp=_frame_timestamp(),
+                    width=con.width,
+                )
+            )
 
         ws_name = os.path.basename(self.workspace_path)
-        dash = CTFDashboard(self.workspace_path)
-        stats = dash.get_summary_stats()
+        stats = CTFDashboard(self.workspace_path).get_summary_stats()
+        total = stats.get("total_challenges", 0)
 
-        ctx = Text('  WORKSPACE\n', style=f'bold {FG_FAINT}')
-        if stats.get('total_challenges', 0) > 0:
-            title = stats.get('title', ws_name)
-            plat = stats.get('platform', 'generic').upper()
-            solved = stats.get('solved_challenges', 0)
-            total = stats.get('total_challenges', 0)
-            rate = stats.get('completion_rate', 0)
-            pts = stats.get('earned_points', 0)
-            tot_pts = stats.get('total_points', 0)
+        ctx = Text()
+        if total > 0:
+            title = stats.get("title", ws_name)
+            plat = str(stats.get("platform", "generic")).upper()
+            solved = stats.get("solved_challenges", 0)
+            rate = stats.get("completion_rate", 0)
+            pts = stats.get("earned_points", 0)
+            tot_pts = stats.get("total_points", 0)
 
-            ctx.append('  ')
-            ctx.append(str(title), style=f'bold {FG_BASE}')
-            ctx.append(f'  ·  {plat}', style=FG_MUTED)
-            ctx.append('\n  ')
-            ctx.append(self.workspace_path, style=INFO)
+            ctx.append("  ")
+            ctx.append(str(title), style=f"bold {FG_BASE}")
+            ctx.append(f" · {plat}", style=FG_MUTED)
+            if str(title) != ws_name:
+                ctx.append(f" · {ws_name}", style=FG_MUTED)
 
-            bar_len = 20
-            ctx.append('\n  ')
-            ctx.append_text(meter(rate, bar_len, AMBER_RAMP))
-            ctx.append(f'  {solved}/{total} solved · {rate:.1f}%', style=FG_MUTED)
-            ctx.append(f'  ·  {pts}/{tot_pts} pts', style=FG_MUTED)
-
-            if stats.get('user') or stats.get('team'):
-                u = stats.get('user', '')
-                t = f" (Team: {stats.get('team')})" if stats.get('team') else ''
-                ctx.append('\n  ')
-                ctx.append(f'{u}{t}' if u else t.strip(), style=FG_MUTED)
+            ctx.append("\n  ")
+            ctx.append_text(meter(rate, 18, SOLVE_RAMP))
+            ctx.append(f"  {solved}/{total} · {rate:.1f}%", style=FG_MUTED)
+            ctx.append(f" · {pts}/{tot_pts} pts", style=FG_MUTED)
         else:
-            ctx.append('  ')
-            ctx.append(self.workspace_path, style=INFO)
-            ctx.append('  (chưa có giải đấu nào ở đây)', style=FG_MUTED)
+            ctx.append("  ")
+            ctx.append(ws_name or self.workspace_path, style=INFO)
+            ctx.append(" · chưa có challenge", style=FG_MUTED)
 
-        ctx.append('\n  ')
-        if self.cookie or self.token:
-            ctx.append('cookie/token: đã lưu cho giải này', style=FG_MUTED)
-        else:
-            ctx.append('! cookie/token chưa cấu hình — dùng [9] để lưu',
-                       style=WARN)
+        if not (self.cookie or self.token):
+            ctx.append("\n  ")
+            ctx.append("! auth chưa cấu hình · dùng [9]", style=WARN)
         con.print(ctx)
 
     def run(self):
@@ -235,18 +260,7 @@ class CTFInteractiveConsole:
                 self._print_header()
 
                 _section('Chức năng')
-                for key, label in (
-                    ('1', 'Clone / Tải giải đấu CTF mới về máy'),
-                    ('2', 'Chọn / Chuyển đổi Workspace giải đấu đang làm việc'),
-                    ('3', 'Xem Cây Cấu trúc & Tiến độ bài thi (Tree View)'),
-                    ('4', 'Tra cứu & Xem chi tiết đề bài, hints, file đính kèm'),
-                    ('5', 'Quản lý Container / Instance động (bật / tắt / gia hạn / trạng thái)'),
-                    ('6', 'Nộp flag cho một bài thi cụ thể'),
-                    ('7', 'Tự động quét & nộp hàng loạt flag đã giải trong workspace'),
-                    ('8', 'Quét & tổng kết toàn bộ các giải đấu trên máy'),
-                    ('9', 'Cấu hình & Lưu Cookie / Token cho giải này (nhớ vĩnh viễn)'),
-                    ('0', 'Thoát'),
-                ):
+                for key, label in _main_menu_actions(_menu_console().width):
                     # §S1.1: option là hành động gần nhất → dòng ❯ reverse;
                     # option thường giữ _option() nguyên trạng.
                     if key == self._last_action:
@@ -254,8 +268,6 @@ class CTFInteractiveConsole:
                             selected_row(f'[{key}] {label}', selected=True))
                     else:
                         _option(key, label)
-                _footer()
-
                 choice = _prompt('Chọn chức năng (0-9): ')
 
                 if choice == '0':
@@ -672,9 +684,14 @@ def _pause():
 
 
 def launch_interactive_menu(workspace_path: Optional[str] = None, cookie: Optional[str] = None, token: Optional[str] = None):
-    # UCS_ExOdia splash: full brutalist ≥80 cols, compact <80 — in đúng
-    # một lần khi vào menu, trước compact AppHeader đầu tiên của vòng lặp.
-    _menu_console().print(splash())
-    # Sau splash, menu chỉ dùng compact UCS_ExOdia header ở mỗi vòng lặp.
-    app = CTFInteractiveConsole(workspace_path=workspace_path, cookie=cookie, token=token)
+    # Full brand owns the first frame. The first menu redraw therefore skips
+    # AppHeader to avoid showing UCS_ExOdia twice back-to-back.
+    con = _menu_console()
+    con.print(splash(con.width))
+    app = CTFInteractiveConsole(
+        workspace_path=workspace_path,
+        cookie=cookie,
+        token=token,
+    )
+    app._suppress_next_brand = True
     app.run()

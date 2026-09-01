@@ -1,8 +1,8 @@
 """SPEC UI v2 §S1 — selection state (theme tokens sel/done + ui/selection.py).
 
 Khóa contract:
-- token ``sel`` = reverse highlight ``#14100A on #FFB000`` (fg near-black
-  trên nền accent amber — không hue mới); export hằng SEL_FG/SEL_BG.
+- token ``sel`` = cyan/teal selected state with high-contrast text on a
+  subdued teal surface; export hằng SEL_FG/SEL_BG.
 - token ``done`` = strike-through muted cho item đã giải hết trong list chọn.
 - :func:`ui.selection.selected_row` trả :class:`rich.text.Text` thuần:
   ❯ CHỈ xuất hiện trên dòng được chọn; dòng thường prefix đúng 2 space,
@@ -25,11 +25,12 @@ def _span_text(t: Text, span) -> str:
 
 
 class ThemeSelectionTokens(unittest.TestCase):
-    def test_sel_token_is_reverse_amber(self):
-        self.assertEqual(theme.SEL_FG, "#14100A")
-        self.assertEqual(theme.SEL_BG, theme.ACCENT)  # trùng accent Amber Refit
+    def test_sel_token_is_teal_semantic_state(self):
+        self.assertEqual(theme.SEL_FG, theme.SELECTED_FG)
+        self.assertEqual(theme.SEL_BG, theme.SELECTED_BG)
+        self.assertNotEqual(theme.SEL_BG, theme.ACCENT)
         self.assertEqual(theme.DEFAULT_STYLES["sel"],
-                         f"{theme.SEL_FG} on {theme.SEL_BG}")
+                         f"bold {theme.SEL_FG} on {theme.SEL_BG}")
 
     def test_done_token_is_strike_muted(self):
         style = theme.DEFAULT_STYLES["done"]
@@ -40,6 +41,16 @@ class ThemeSelectionTokens(unittest.TestCase):
         styles = theme.load_theme(None).styles
         self.assertIn("sel", styles)
         self.assertIn("done", styles)
+
+
+class ResponsiveMenuActionTests(unittest.TestCase):
+    def test_compact_actions_fit_60_columns_without_wrap(self):
+        for key, label in im._main_menu_actions(60):
+            self.assertLessEqual(cell_len(f"  [{key}] {label}"), 60)
+
+    def test_wide_and_compact_action_sets_switch_at_breakpoint(self):
+        self.assertIs(im._main_menu_actions(100), im._MAIN_ACTIONS_FULL)
+        self.assertIs(im._main_menu_actions(60), im._MAIN_ACTIONS_COMPACT)
 
 
 class SelectedRowTests(unittest.TestCase):
@@ -218,6 +229,82 @@ class MenuHeaderRadarTests(unittest.TestCase):
         self.assertIn("UCS_ExOdia // menu", rendered)
         self.assertIn("▰▰▰", rendered)
         self.assertNotIn("██╗   ██╗", rendered, "compact header không được lặp full splash")
+
+
+    def test_workspace_summary_filters_redundant_identity_and_auth_success(self):
+        from unittest.mock import patch
+
+        class Dash:
+            def __init__(self, _path):
+                pass
+
+            def get_summary_stats(self):
+                return {
+                    "title": "Demo CTF",
+                    "platform": "gzctf",
+                    "total_challenges": 10,
+                    "solved_challenges": 5,
+                    "completion_rate": 50.0,
+                    "earned_points": 500,
+                    "total_points": 1000,
+                    "user": "user-123",
+                    "team": "team-secret",
+                }
+
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = "/demo/ws"
+        app.cookie = "session=ok"
+        app.token = None
+        app._suppress_next_brand = False
+
+        rendered = []
+        with patch.object(im, "CTFDashboard", Dash), patch.object(im, "_menu_console") as mc:
+            mc.return_value.width = 100
+            mc.return_value.print.side_effect = (
+                lambda value=None, *a, **k: rendered.append(
+                    getattr(value, "plain", str(value or ""))
+                )
+            )
+            app._print_header()
+
+        out = "\n".join(rendered)
+        self.assertIn("Demo CTF · GZCTF · ws", out)
+        self.assertIn("5/10 · 50.0%", out)
+        self.assertNotIn("/demo/ws", out)
+        self.assertNotIn("user-123", out)
+        self.assertNotIn("team-secret", out)
+        self.assertNotIn("cookie/token", out)
+        self.assertNotIn("auth chưa cấu hình", out)
+
+    def test_workspace_summary_only_surfaces_auth_when_missing(self):
+        from unittest.mock import patch
+
+        class Dash:
+            def __init__(self, _path):
+                pass
+
+            def get_summary_stats(self):
+                return {"total_challenges": 0}
+
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = "/demo/ws"
+        app.cookie = None
+        app.token = None
+        app._suppress_next_brand = True
+
+        rendered = []
+        with patch.object(im, "CTFDashboard", Dash), patch.object(im, "_menu_console") as mc:
+            mc.return_value.width = 80
+            mc.return_value.print.side_effect = (
+                lambda value=None, *a, **k: rendered.append(
+                    getattr(value, "plain", str(value or ""))
+                )
+            )
+            app._print_header()
+
+        out = "\n".join(rendered)
+        self.assertIn("auth chưa cấu hình", out)
+        self.assertNotIn("UCS_ExOdia // menu", out)
 
 
 class MenuWiringTests(unittest.TestCase):

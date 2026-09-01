@@ -134,29 +134,50 @@ class TestFallbackPlain(MeterTestCase):
         self.assertNotIn("#", bar.plain)
 
 
-class TestPhosphorMeterRamp(MeterTestCase):
-    """codex-r3 #1: meter chỉ dùng ĐÚNG 3 mốc màu spec §3.3 — không còn
-    các bước nội suy trung gian (#885800/#FFD97B cũ)."""
+class TestSolveMeterRamp(MeterTestCase):
+    """Solve progress uses a smooth per-cell semantic spectrum."""
 
-    SPEC_HEXES = {"#6b4300", "#ffb000", "#ffe49a"}
+    @staticmethod
+    def _filled_styles(bar: Text):
+        return [str(span.style) for span in bar.spans
+                if span.style and str(span.style).startswith("#")]
 
-    def test_ramp_constant_is_exactly_three_spec_stops(self):
-        from ctf_downloader.services.status_service import _METER_RAMP_3STOP
-        self.assertEqual(set(_METER_RAMP_3STOP), {
-            (0x6B, 0x43, 0x00), (0xFF, 0xB0, 0x00), (0xFF, 0xE4, 0x9A)})
-        self.assertEqual(len(_METER_RAMP_3STOP), 101)
+    def test_ramp_is_smooth_multi_stop_spectrum(self):
+        from ctf_downloader.services.status_service import _SOLVE_RAMP
+        from ctf_downloader.ui.widgets import SOLVE_STOPS
 
-    def test_rendered_meter_cells_use_only_spec_colors(self):
-        bar = StatusService._meter_only(100.0, 30)  # non-TTY → plain
-        self.assertNotIn("#", bar.plain)
+        self.assertEqual(len(_SOLVE_RAMP), 101)
+        self.assertEqual(_SOLVE_RAMP[0], SOLVE_STOPS[0])
+        self.assertEqual(_SOLVE_RAMP[-1], SOLVE_STOPS[-1])
+        self.assertGreaterEqual(len(set(_SOLVE_RAMP)), 95)
+        for stop in SOLVE_STOPS:
+            self.assertIn(stop, _SOLVE_RAMP)
+
+    def test_18_cell_full_meter_has_distinct_progressive_colors(self):
+        from ctf_downloader.services.status_service import _SOLVE_RAMP
+
         with patch.object(status_service.sys, "stdout", FakeTTY()), \
              patch.object(status_service.shutil, "get_terminal_size",
                           return_value=os.terminal_size((100, 24))):
-            bar = StatusService._meter_only(73.0, 30)
-        filled_styles = {s.style for s in bar.spans
-                         if s.style and str(s.style).startswith("#")}
-        self.assertEqual(filled_styles, self.SPEC_HEXES,
-                         f"meter lộ màu ngoài 3 mốc: {filled_styles}")
+            bar = StatusService._meter_only(100.0, 18)
+
+        filled_styles = self._filled_styles(bar)
+        allowed = {"#{:02x}{:02x}{:02x}".format(*rgb) for rgb in _SOLVE_RAMP}
+        self.assertEqual(len(filled_styles), 18)
+        self.assertGreaterEqual(len(set(filled_styles)), 15)
+        self.assertTrue(set(filled_styles).issubset(allowed))
+        self.assertEqual(bar.plain, "▰" * 18)
+
+    def test_partial_meter_keeps_empty_cells_dim(self):
+        with patch.object(status_service.sys, "stdout", FakeTTY()), \
+             patch.object(status_service.shutil, "get_terminal_size",
+                          return_value=os.terminal_size((100, 24))):
+            bar = StatusService._meter_only(50.0, 18)
+
+        self.assertIn("▱", bar.plain)
+        empty_spans = [span for span in bar.spans if str(span.style) == "dim"]
+        self.assertTrue(empty_spans)
+        self.assertEqual(bar.plain.count("▰") + bar.plain.count("▱"), 18)
 
 
 if __name__ == "__main__":

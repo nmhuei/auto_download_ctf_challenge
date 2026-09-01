@@ -507,7 +507,7 @@ class TestRegisterReservationConcurrency(unittest.TestCase):
 
 
 class TestTempMailRateLimit(unittest.TestCase):
-    def test_explicit_429_respects_retry_after_once(self):
+    def test_explicit_429_get_respects_retry_after_once(self):
         sleeps = []
 
         class Resp:
@@ -532,10 +532,38 @@ class TestTempMailRateLimit(unittest.TestCase):
             base_url="https://mail.test",
             sleep_fn=sleeps.append,
         )
-        resp = client._request("POST", "/accounts", json={"x": 1})
+        resp = client._request("GET", "/domains")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(sess.calls, 2)
         self.assertEqual(sleeps, [2.0])
+
+    def test_explicit_429_post_is_not_replayed(self):
+        sleeps = []
+
+        class Resp:
+            status_code = 429
+            headers = {"Retry-After": "2"}
+            text = "limited"
+
+        class Session:
+            def __init__(self):
+                self.calls = 0
+
+            def request(self, method, url, timeout=None, **kwargs):
+                self.calls += 1
+                return Resp()
+
+        sess = Session()
+        client = TempMailClient(
+            session=sess,
+            base_url="https://mail.test",
+            sleep_fn=sleeps.append,
+        )
+        from ctf_downloader.utils.tempmail import TempMailError
+        with self.assertRaisesRegex(TempMailError, "Mutation không được tự replay"):
+            client._request("POST", "/accounts", json={"x": 1})
+        self.assertEqual(sess.calls, 1)
+        self.assertEqual(sleeps, [])
 
     def test_network_error_on_post_is_not_retried_blindly(self):
         class Session:
