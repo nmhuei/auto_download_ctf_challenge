@@ -819,6 +819,11 @@ def handle_instance(args):
         for k, v in st.items():
             print(f'  {k}: {v}')
 
+    diag = getattr(svc, 'last_diagnostic', None)
+    if diag and getattr(diag, 'recovery', None):
+        from .bqa_recovery import offer_bqa_recovery
+        offer_bqa_recovery(diag)
+
 
 def handle_submit(args):
     try:

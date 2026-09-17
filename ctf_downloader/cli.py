@@ -550,10 +550,14 @@ def _exit_code(exc: SystemExit) -> int:
 def _skip_bqa_recovery(argv) -> bool:
     if os.environ.get("CTF_BQA_RETRY") == "1":
         return True
+    if os.environ.get("CTF_DISABLE_BQA") == "1":
+        return True
     if any(value in {"-h", "--help", "-v", "--version"} for value in argv):
         return True
     subcommand = next((arg for arg in argv if not arg.startswith("-")), None)
-    if subcommand is not None and subcommand not in {"pull", "download", "clone"}:
+    if subcommand in {"submit", "hoard"}:
+        return True
+    if subcommand is not None and subcommand not in {"pull", "download", "clone", "instance", "sync"}:
         return True
     return False
 

@@ -60,6 +60,13 @@ _PROMPT_FILES = {
     "CTF-PULL-D99": "unhandled_crash",
 }
 
+_GENERAL_PROMPT_FILES = {
+    "CTF-INSTANCE-U01": "unsupported_platform_feature",
+    "CTF-PLATFORM-D01": "platform_schema_drift",
+    "CTF-AUTH-A01": "auth_session_expired",
+    "CTF-RUNTIME-R01": "uncaught_runtime_exception",
+}
+
 _ERROR_TITLES = {
     "CTF-PULL-D01": "Input hoặc cookie không hợp lệ",
     "CTF-PULL-D02": "Không nhận diện được platform",
@@ -77,6 +84,10 @@ _ERROR_TITLES = {
     "CTF-PULL-D14": "Lỗi mạng, rate limit hoặc Cloudflare",
     "CTF-PULL-D15": "BQA recovery hoặc verification thất bại",
     "CTF-PULL-D99": "Pull bị crash chưa phân loại",
+    "CTF-INSTANCE-U01": "Tính năng container instance chưa được nền tảng hỗ trợ",
+    "CTF-PLATFORM-D01": "Thay đổi định dạng API hoặc cấu trúc nền tảng",
+    "CTF-AUTH-A01": "Phiên xác thực hoặc thông tin đăng nhập hết hạn",
+    "CTF-RUNTIME-R01": "Lỗi runtime chưa được xử lý",
 }
 
 
@@ -143,10 +154,14 @@ def _classify_exception(exc: Optional[BaseException]) -> str:
 
 def load_prompt_template(error_code: str) -> str:
     """Load the base policy plus the incident-specific bundled prompt."""
-    code = error_code if error_code in _PROMPT_FILES else "CTF-PULL-D99"
     root = resources.files("ctf_downloader").joinpath("bqa_prompts")
     base = root.joinpath("base.md").read_text(encoding="utf-8")
-    detail = root.joinpath("pull", f"{_PROMPT_FILES[code]}.md").read_text(encoding="utf-8")
+    if error_code in _PROMPT_FILES:
+        detail = root.joinpath("pull", f"{_PROMPT_FILES[error_code]}.md").read_text(encoding="utf-8")
+    elif error_code in _GENERAL_PROMPT_FILES:
+        detail = root.joinpath("general", f"{_GENERAL_PROMPT_FILES[error_code]}.md").read_text(encoding="utf-8")
+    else:
+        detail = root.joinpath("pull", "unhandled_crash.md").read_text(encoding="utf-8")
     return f"{base.rstrip()}\n\n{detail.rstrip()}\n"
 
 
@@ -159,7 +174,8 @@ def request_bqa_help(
     input_stream = input_stream or sys.stdin
     output = output or sys.stdout
     code = incident.error_code
-    print(f"[{code}] {_ERROR_TITLES[code]}", file=output, flush=True)
+    title = _ERROR_TITLES.get(code, "Sự cố chưa phân loại")
+    print(f"[{code}] {title}", file=output, flush=True)
     print("BQA có thể chẩn đoán, sửa source, chạy test và retry lệnh gốc.",
           file=output, flush=True)
     if not getattr(input_stream, "isatty", lambda: False)():
@@ -410,6 +426,34 @@ class RecoveryIncident:
             cookie_shapes=cookie_shapes,
             error_code=error_code,
             evidence=_safe_bqa_evidence(getattr(exc, "bqa_evidence", None)),
+        )
+
+    @classmethod
+    def from_hint(
+        cls,
+        hint: Any,
+        exit_code: int = 1,
+        argv: Optional[Sequence[str]] = None,
+    ) -> "RecoveryIncident":
+        retry_argv = tuple(hint.retry.argv) if getattr(hint, "retry", None) and getattr(hint.retry, "argv", None) else ((hint.operation,) if getattr(hint, "operation", None) else ("unknown",))
+        clean_argv = tuple(redact_argv(retry_argv))
+        safe_evidence = dict(hint.evidence) if getattr(hint, "evidence", None) else {}
+        if getattr(hint, "platform", None):
+            safe_evidence["platform"] = hint.platform
+        if getattr(hint, "operation", None):
+            safe_evidence["operation"] = hint.operation
+        err_code = getattr(hint, "error_code", "CTF-INSTANCE-U01")
+        kind_val = getattr(hint, "kind", None)
+        exc_type = kind_val.value if hasattr(kind_val, "value") else str(kind_val or "unknown")
+        return cls(
+            argv=clean_argv,
+            retry_argv=retry_argv,
+            exit_code=int(exit_code),
+            exception_type=exc_type,
+            trace=(),
+            cookie_shapes=(),
+            error_code=err_code,
+            evidence=safe_evidence,
         )
 
     def to_prompt(self) -> str:
@@ -731,3 +775,96 @@ def retry_command(
     except OSError:
         return 127
     return int(getattr(result, "returncode", 1))
+
+
+def offer_bqa_recovery(
+    diagnostic: Any,
+    source_root: Optional[os.PathLike[str] | str] = None,
+    input_stream: Optional[Any] = None,
+    output_stream: Optional[Any] = None,
+    runner: Optional[Any] = None,
+) -> bool:
+    """Prompt user in TTY to let Antigravity (agy / BQA) repair or open an interactive session.
+
+    Returns True if an action was executed, False if skipped/cancelled.
+    """
+    from .incidents import may_spawn_agy
+
+    hint = getattr(diagnostic, "recovery", None)
+    if hint is None or not getattr(hint, "repair_eligible", False):
+        return False
+
+    input_stream = input_stream or sys.stdin
+    output_stream = output_stream or sys.stdout
+
+    if not may_spawn_agy(stdin=input_stream):
+        return False
+
+    if source_root is None:
+        source_root = Path(__file__).resolve().parent.parent
+    else:
+        source_root = Path(source_root).resolve()
+
+    print(
+        "\n? Antigravity can inspect this local source checkout, edit code, and run tests.\n"
+        "  [a] Diagnose and repair   [i] Open interactive agy   [Enter] Return",
+        file=output_stream,
+        flush=True,
+    )
+    print("Choice [Enter to skip]: ", end="", file=output_stream, flush=True)
+    choice = input_stream.readline().strip().lower()
+
+    if choice == "a":
+        incident = RecoveryIncident.from_hint(hint, exit_code=getattr(diagnostic, "exit_code", 1))
+        recovery_worker = runner or BqaRecovery(source_root)
+        print("[BQA] Starting Antigravity automated repair...", file=output_stream, flush=True)
+        result = recovery_worker.repair(incident)
+        if result.returncode != 0 or not result.conversation_id:
+            print(f"[BQA] Repair did not succeed: {result.reason}", file=output_stream, flush=True)
+            return True
+        print("[BQA] Repair completed. Verifying changes...", file=output_stream, flush=True)
+        if not verify_bqa_changes(source_root, result.changed_test_paths):
+            print("[BQA] Verification failed; cannot retry action.", file=output_stream, flush=True)
+            return True
+        print("[BQA] All verification gates passed.", file=output_stream, flush=True)
+        retry_plan = getattr(hint, "retry", None)
+        if retry_plan and retry_plan.argv:
+            default_yes = retry_plan.safe_to_retry
+            prompt_msg = "Retry action in a fresh process? [Y/n]: " if default_yes else "Action may have side effects. Retry in a fresh process? [y/N]: "
+            print(prompt_msg, end="", file=output_stream, flush=True)
+            ans = input_stream.readline().strip().lower()
+            should_retry = (ans in {"y", "yes"} or (default_yes and ans == ""))
+            if should_retry:
+                print(f"[BQA] Retrying: ctf {' '.join(redact_argv(retry_plan.argv))}", file=output_stream, flush=True)
+                retry_code = retry_command(retry_plan.argv, source_root)
+                if retry_code != 0:
+                    print(f"[BQA] Retry exited with code {retry_code}.", file=output_stream, flush=True)
+                else:
+                    print("[BQA] Retry completed successfully.", file=output_stream, flush=True)
+        return True
+
+    elif choice == "i":
+        agy_bin = resolve_agy_binary("agy")
+        print(f"[BQA] Handing terminal to Antigravity ({agy_bin})...", file=output_stream, flush=True)
+        subprocess.run(
+            [agy_bin],
+            cwd=str(source_root),
+            stdin=sys.stdin,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            check=False,
+        )
+        retry_plan = getattr(hint, "retry", None)
+        if retry_plan and retry_plan.argv:
+            print("Retry action in a fresh process? [y/N]: ", end="", file=output_stream, flush=True)
+            ans = input_stream.readline().strip().lower()
+            if ans in {"y", "yes"}:
+                print(f"[BQA] Retrying: ctf {' '.join(redact_argv(retry_plan.argv))}", file=output_stream, flush=True)
+                retry_code = retry_command(retry_plan.argv, source_root)
+                if retry_code != 0:
+                    print(f"[BQA] Retry exited with code {retry_code}.", file=output_stream, flush=True)
+                else:
+                    print("[BQA] Retry completed successfully.", file=output_stream, flush=True)
+        return True
+
+    return False

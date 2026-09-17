@@ -891,7 +891,16 @@ class CTFInteractiveConsole:
             mgr.extend_instance(cid)
         elif act == '4':
             mgr.stop_instance(cid)
-        _pause()
+        else:
+            return
+
+        diag = getattr(mgr, 'last_diagnostic', None)
+        if diag and getattr(diag, 'recovery', None):
+            from .bqa_recovery import offer_bqa_recovery
+            if not offer_bqa_recovery(diag):
+                _pause()
+        else:
+            _pause()
 
     def _run_solver_for_target(self, target: dict):
         from .services.solver_service import SolverService

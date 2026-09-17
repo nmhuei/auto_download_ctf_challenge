@@ -100,8 +100,34 @@ def diag_detect_failure(exc: Exception) -> Diagnostic:
     )
 
 
-def diag_start_instance_fail(challenge_id: Any, name: str, msg: str) -> Diagnostic:
+def diag_start_instance_fail(
+    challenge_id: Any,
+    name: str,
+    msg: str,
+    platform_name: Optional[str] = None,
+    workspace_path: Optional[str] = None,
+) -> Diagnostic:
     """Không tạo được container instance cho challenge."""
+    is_unsupported = "không được hỗ trợ" in (msg or "").lower() or "not supported" in (msg or "").lower()
+    recovery = None
+    if is_unsupported:
+        from ..incidents import IncidentKind, RecoveryHint, RetryPlan
+        plat = platform_name or "unknown"
+        argv = ("instance", "start", "--id", str(challenge_id))
+        if workspace_path:
+            argv = ("instance", "start", "-w", workspace_path, "--id", str(challenge_id))
+        recovery = RecoveryHint(
+            kind=IncidentKind.UNSUPPORTED_PLATFORM_FEATURE,
+            operation="instance.start",
+            platform=plat,
+            evidence={"challenge_id": str(challenge_id), "adapter": plat, "error": msg},
+            retry=RetryPlan(
+                argv=argv,
+                safe_to_retry=False,
+            ),
+            repair_eligible=True,
+            error_code="CTF-INSTANCE-U01",
+        )
     return Diagnostic(
         "error",
         f"Không tạo được container instance cho {name} (ID: {challenge_id})",
@@ -112,6 +138,87 @@ def diag_start_instance_fail(challenge_id: Any, name: str, msg: str) -> Diagnost
             "(có thể đã hết slot hoặc hết thời gian)",
             "chạy 'ctf instance status <id>' xem trạng thái hiện tại rồi thử start lại",
         ),
+        recovery=recovery,
+    )
+
+
+def diag_stop_instance_fail(
+    challenge_id: Any,
+    name: str,
+    msg: str,
+    platform_name: Optional[str] = None,
+    workspace_path: Optional[str] = None,
+) -> Diagnostic:
+    """Không dừng được container instance cho challenge."""
+    is_unsupported = "không được hỗ trợ" in (msg or "").lower() or "not supported" in (msg or "").lower()
+    recovery = None
+    if is_unsupported:
+        from ..incidents import IncidentKind, RecoveryHint, RetryPlan
+        plat = platform_name or "unknown"
+        argv = ("instance", "stop", "--id", str(challenge_id))
+        if workspace_path:
+            argv = ("instance", "stop", "-w", workspace_path, "--id", str(challenge_id))
+        recovery = RecoveryHint(
+            kind=IncidentKind.UNSUPPORTED_PLATFORM_FEATURE,
+            operation="instance.stop",
+            platform=plat,
+            evidence={"challenge_id": str(challenge_id), "adapter": plat, "error": msg},
+            retry=RetryPlan(
+                argv=argv,
+                safe_to_retry=False,
+            ),
+            repair_eligible=True,
+            error_code="CTF-INSTANCE-U01",
+        )
+    return Diagnostic(
+        "error",
+        f"Không dừng được container instance cho {name} (ID: {challenge_id})",
+        cause=msg or None,
+        hints=(
+            *_DOCTOR_HINTS,
+            "kiểm tra trạng thái container trên nền tảng",
+        ),
+        recovery=recovery,
+    )
+
+
+def diag_extend_instance_fail(
+    challenge_id: Any,
+    name: str,
+    msg: str,
+    platform_name: Optional[str] = None,
+    workspace_path: Optional[str] = None,
+) -> Diagnostic:
+    """Không gia hạn được container instance cho challenge."""
+    is_unsupported = "không được hỗ trợ" in (msg or "").lower() or "not supported" in (msg or "").lower()
+    recovery = None
+    if is_unsupported:
+        from ..incidents import IncidentKind, RecoveryHint, RetryPlan
+        plat = platform_name or "unknown"
+        argv = ("instance", "extend", "--id", str(challenge_id))
+        if workspace_path:
+            argv = ("instance", "extend", "-w", workspace_path, "--id", str(challenge_id))
+        recovery = RecoveryHint(
+            kind=IncidentKind.UNSUPPORTED_PLATFORM_FEATURE,
+            operation="instance.extend",
+            platform=plat,
+            evidence={"challenge_id": str(challenge_id), "adapter": plat, "error": msg},
+            retry=RetryPlan(
+                argv=argv,
+                safe_to_retry=False,
+            ),
+            repair_eligible=True,
+            error_code="CTF-INSTANCE-U01",
+        )
+    return Diagnostic(
+        "error",
+        f"Không gia hạn được container instance cho {name} (ID: {challenge_id})",
+        cause=msg or None,
+        hints=(
+            *_DOCTOR_HINTS,
+            "kiểm tra trạng thái container và thời hạn tối đa trên nền tảng",
+        ),
+        recovery=recovery,
     )
 
 
@@ -123,6 +230,12 @@ class InstanceService:
         self.repo = WorkspaceRepo(self.workspace_path)
         self.challenges_data = self._load_challenges_data()
         self.platform = self._init_platform()
+        self.last_diagnostic: Optional[Diagnostic] = None
+
+    def _platform_name(self) -> Optional[str]:
+        if not hasattr(self, "platform") or self.platform is None:
+            return None
+        return getattr(self.platform, "name", None) or getattr(getattr(self.platform, "ctf_info", None), "platform_type", None)
 
     def _load_challenges_data(self) -> Dict[str, Any]:
         data = self.repo.read_challenges()
@@ -210,7 +323,13 @@ class InstanceService:
             return True, info
         else:
             msg = info.get('message', 'Lỗi không xác định')
-            render_diagnostic(diag_start_instance_fail(challenge_id, name, msg))
+            diag = diag_start_instance_fail(
+                challenge_id, name, msg,
+                platform_name=self._platform_name(),
+                workspace_path=self.workspace_path,
+            )
+            self.last_diagnostic = diag
+            render_diagnostic(diag)
             return False, info
 
     def stop_instance(self, challenge_id: Any) -> Tuple[bool, str]:
@@ -222,7 +341,15 @@ class InstanceService:
         if success:
             Logger.success(f'Đã dừng container cho {name}: {msg}')
             self._update_local_instance_info(challenge_id, entry=None, time_left=0, status='stopped')
+            self.last_diagnostic = None
         else:
+            diag = diag_stop_instance_fail(
+                challenge_id, name, msg,
+                platform_name=self._platform_name(),
+                workspace_path=self.workspace_path,
+            )
+            self.last_diagnostic = diag
+            render_diagnostic(diag)
             Logger.error(f'Dừng container thất bại: {msg}')
         return success, msg
 
@@ -237,7 +364,15 @@ class InstanceService:
             st = self.platform.get_instance_status(challenge_id)
             if st.get('status') == 'running':
                 self._update_local_instance_info(challenge_id, st.get('entry'), st.get('time_left'), status='running')
+            self.last_diagnostic = None
         else:
+            diag = diag_extend_instance_fail(
+                challenge_id, name, msg,
+                platform_name=self._platform_name(),
+                workspace_path=self.workspace_path,
+            )
+            self.last_diagnostic = diag
+            render_diagnostic(diag)
             Logger.error(f'Gia hạn container thất bại: {msg}')
         return success, msg
 

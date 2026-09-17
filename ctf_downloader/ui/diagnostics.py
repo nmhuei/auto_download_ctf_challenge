@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import textwrap
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from rich.console import Console
 from rich.text import Text
@@ -67,6 +67,7 @@ class Diagnostic:
     cause: Optional[str] = None
     hints: tuple[str, ...] = ()
     exit_code: int = 1
+    recovery: Optional[Any] = None
 
 
 def error(
