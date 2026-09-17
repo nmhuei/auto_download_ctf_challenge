@@ -271,3 +271,32 @@ class TestInteractiveMenuContainerRecovery(unittest.TestCase):
         mock_mgr.start_instance.assert_called_once_with("72")
         offer_mock.assert_called_once_with(mock_diag)
         pause_mock.assert_not_called()
+
+    def test_menu_container_manager_direct_id_when_no_containers(self):
+        from ctf_downloader.interactive_menu import CTFInteractiveConsole
+
+        menu = CTFInteractiveConsole(workspace_path="/tmp/fake_ws")
+        mock_mgr = MagicMock()
+        mock_mgr.list_containers.return_value = []
+        mock_mgr.find_challenge.return_value = {"id": 72, "name": "LeakMeAk"}
+
+        with patch("ctf_downloader.interactive_menu.InstanceManager", return_value=mock_mgr):
+            with patch("ctf_downloader.interactive_menu._prompt", return_value="72"):
+                with patch.object(menu, "_run_container_action_for_id") as run_mock:
+                    menu._menu_container_manager()
+
+        run_mock.assert_called_once_with("72", challenge_name="LeakMeAk")
+
+    def test_menu_container_manager_cancel_when_no_containers(self):
+        from ctf_downloader.interactive_menu import CTFInteractiveConsole
+
+        menu = CTFInteractiveConsole(workspace_path="/tmp/fake_ws")
+        mock_mgr = MagicMock()
+        mock_mgr.list_containers.return_value = []
+
+        with patch("ctf_downloader.interactive_menu.InstanceManager", return_value=mock_mgr):
+            with patch("ctf_downloader.interactive_menu._prompt", return_value="0"):
+                with patch.object(menu, "_run_container_action_for_id") as run_mock:
+                    menu._menu_container_manager()
+
+        run_mock.assert_not_called()

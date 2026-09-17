@@ -513,6 +513,7 @@ class CTFInteractiveConsole:
                     )
         except Exception as e:
             Logger.error(f'Download failed: {e}')
+        _pause()
 
     def _menu_switch_workspace(self):
         base_ctf = resolve_workspace_root()
@@ -568,6 +569,7 @@ class CTFInteractiveConsole:
                 Logger.success(f"Switched to workspace: {os.path.basename(self.workspace_path)}")
             except Exception:
                 Logger.error('Invalid selection.')
+                _pause()
 
     def _save_current_workspace(self):
         """Persist workspace mặc định (+auth nếu có) NGUYÊN TỬ qua khóa
@@ -768,12 +770,20 @@ class CTFInteractiveConsole:
             mgr = InstanceManager(self.workspace_path, cookie=self.cookie, token=self.token)
         except Exception as e:
             Logger.error(f'Failed to initialize Container Manager: {e}')
+            _pause()
             return
 
         containers = mgr.list_containers()
         _section('Manage Dynamic Containers / Instances')
         if not containers:
-            Logger.info('No challenges support Dynamic Containers in this workspace.')
+            Logger.info('No challenges with auto-detected dynamic containers found in workspace metadata.')
+            cid_in = _prompt('Enter Challenge ID or Name to manage container directly [0 to cancel]: ').strip()
+            if not cid_in or cid_in in ('0', 'q', 'cancel', 'back'):
+                return
+            target = mgr.find_challenge(challenge_id=cid_in) or mgr.find_challenge(challenge_name=cid_in)
+            cid = target.get('id') if target else cid_in
+            cname = str(target.get('name') or f'ID {cid_in}') if target else f'ID {cid_in}'
+            self._run_container_action_for_id(str(cid), challenge_name=cname)
             return
 
         con = _menu_console()
@@ -791,16 +801,22 @@ class CTFInteractiveConsole:
             con.print(row)
 
         ch = _prompt(f'Select challenge for container actions (1-{len(containers)}), or enter ID/Name [0 to cancel]: ').strip()
+        if not ch or ch in ('0', 'q', 'cancel', 'back'):
+            return
         target, err = _resolve_challenge_selection(containers, ch)
         if not target:
-            if err:
-                Logger.error(err)
+            target = mgr.find_challenge(challenge_id=ch) or mgr.find_challenge(challenge_name=ch)
+            if not target:
+                if err:
+                    Logger.error(err)
+                else:
+                    Logger.error(f'Challenge not found: {ch}')
                 _pause()
-            return
+                return
 
         cid = target.get('id')
         cname = str(target.get('name') or f'ID {cid}')
-        self._run_container_action_for_id(cid, challenge_name=cname)
+        self._run_container_action_for_id(str(cid), challenge_name=cname)
 
     def _menu_submit_flag(self):
         dash = CTFDashboard(self.workspace_path)
@@ -1250,7 +1266,9 @@ class CTFInteractiveConsole:
         ch = _prompt('Choice (0-3): ').strip()
 
         if ch == '1':
-            c_in = _prompt('Paste Cookie: ').strip()
+            c_in = _prompt('Paste Cookie [Enter to cancel]: ').strip()
+            if not c_in:
+                return
             if os.path.isfile(c_in):
                 with open(c_in, 'r', encoding='utf-8') as f:
                     self.cookie = f.read().strip()
@@ -1258,15 +1276,21 @@ class CTFInteractiveConsole:
                 self.cookie = c_in
             self._save_current_workspace()
             Logger.success('Cookie saved successfully for this workspace!')
+            _pause()
         elif ch == '2':
-            self.token = _prompt('Paste API/Bearer Token: ').strip()
+            t_in = _prompt('Paste API/Bearer Token [Enter to cancel]: ').strip()
+            if not t_in:
+                return
+            self.token = t_in
             self._save_current_workspace()
             Logger.success('Token saved successfully for this workspace!')
+            _pause()
         elif ch == '3':
             self.cookie = None
             self.token = None
             self._save_current_workspace()
             Logger.info('Credentials cleared.')
+            _pause()
 
 
 def _pause():
