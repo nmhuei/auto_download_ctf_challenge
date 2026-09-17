@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import glob
 from typing import Optional
 
@@ -12,6 +13,8 @@ from .submitter import FlagSubmitter
 from .core import CTFDownloader
 from .config import DownloaderConfig
 from .utils.logger import Logger
+from .utils.sanitize import sanitize_cookie_input
+from .services.auth_service import AuthService
 
 from .services.status_service import StatusService
 from .storage.global_config import (  # noqa: F401 — re-export để giữ tương thích
@@ -40,29 +43,31 @@ SWITCHER_TITLE_W = 30
 SWITCHER_PLATFORM_W = 8
 
 _MAIN_ACTIONS_FULL = (
-    ('1', 'Clone / Tải giải đấu CTF mới về máy'),
-    ('2', 'Chọn / Chuyển đổi Workspace giải đấu đang làm việc'),
-    ('3', 'Xem Cây Cấu trúc & Tiến độ bài thi (Tree View)'),
-    ('4', 'Tra cứu & Xem chi tiết đề bài, hints, file đính kèm'),
-    ('5', 'Quản lý Container / Instance động (bật / tắt / gia hạn / trạng thái)'),
-    ('6', 'Nộp flag cho một bài thi cụ thể'),
-    ('7', 'Tự động quét & nộp hàng loạt flag đã giải trong workspace'),
-    ('8', 'Quét & tổng kết toàn bộ các giải đấu trên máy'),
-    ('9', 'Cấu hình & Lưu Cookie / Token cho giải này (nhớ vĩnh viễn)'),
-    ('0', 'Thoát'),
+    ('1', 'Clone / Download new CTF challenge files'),
+    ('2', 'Select / Switch active competition workspace'),
+    ('3', 'View challenge tree & progress (Tree View)'),
+    ('4', 'Lookup & view challenge description, hints, files'),
+    ('5', 'Manage dynamic container / instance (start / stop / renew)'),
+    ('6', 'Submit flag for a specific challenge'),
+    ('7', 'Auto scan & submit hoarded flags in workspace'),
+    ('8', 'Scan & summarize all CTF workspaces on machine'),
+    ('9', 'Configure & save Cookie / Token for this event'),
+    ('S', 'SUPERBQA EATING'),
+    ('0', 'Exit'),
 )
 
 _MAIN_ACTIONS_COMPACT = (
-    ('1', 'Clone / Tải giải đấu mới'),
-    ('2', 'Chọn / Đổi workspace'),
-    ('3', 'Cây challenge & tiến độ'),
-    ('4', 'Xem đề bài / hints / files'),
-    ('5', 'Container / Instance: trạng thái & gia hạn'),
-    ('6', 'Nộp flag'),
-    ('7', 'Quét & nộp flag hàng loạt'),
-    ('8', 'Tổng kết các giải trên máy'),
-    ('9', 'Cấu hình Cookie / Token'),
-    ('0', 'Thoát'),
+    ('1', 'Clone / Download CTF event'),
+    ('2', 'Select / Switch workspace'),
+    ('3', 'Challenge tree & progress'),
+    ('4', 'View challenge / hints / files'),
+    ('5', 'Container / Instance: status & renew'),
+    ('6', 'Submit flag'),
+    ('7', 'Auto-submit hoarded flags'),
+    ('8', 'Summarize local workspaces'),
+    ('9', 'Configure Cookie / Token'),
+    ('S', 'SUPERBQA EATING'),
+    ('0', 'Exit'),
 )
 
 
@@ -151,6 +156,130 @@ def _workspace_rows(workspaces, active: str):
         row.append(f' {meta}', style=FG_MUTED)
         rows.append(row)
     return rows
+
+
+def _resolve_challenge_selection(challs: list[dict], query: str) -> tuple[Optional[dict], Optional[str]]:
+    """Resolve a challenge selection query from interactive menus.
+
+    Returns:
+        (challenge_dict, None) on success
+        (None, None) if cancelled (empty string or '0')
+        (None, error_message) if resolution failed or was ambiguous
+    """
+    if not isinstance(query, str):
+        return None, None
+    q = query.strip()
+    if not q or q == '0':
+        return None, None
+
+    valid_challs = [c for c in challs if isinstance(c, dict)]
+    if not valid_challs:
+        return None, "No challenges available to select."
+
+    # 1. Explicit syntax: @<index> for positional index
+    if q.startswith("@"):
+        idx_str = q[1:].strip()
+        if idx_str.isdecimal():
+            idx = int(idx_str)
+            if 1 <= idx <= len(valid_challs):
+                return valid_challs[idx - 1], None
+            return None, f"Row index @{idx_str} is out of range (1-{len(valid_challs)})."
+        return None, f"Invalid row index: {q}"
+
+    # 2. Explicit ID prefixes (#<id> or id:<id>)
+    if q.startswith("#") or q.lower().startswith("id:"):
+        target_id = q[1:].strip() if q.startswith("#") else q[3:].strip()
+        matched = [c for c in valid_challs if c.get('id') is not None and str(c['id']).strip() == target_id]
+        if len(matched) == 1:
+            return matched[0], None
+        if len(matched) > 1:
+            names = ", ".join(f"'{c.get('name')}'" for c in matched[:3])
+            return None, f'Multiple ({len(matched)}) challenges share ID "{target_id}" ({names}). Please use challenge name (name:...) to select.'
+        return None, f'No challenge found with ID {q}.'
+
+    # 3. Explicit Name prefix (name:<name>)
+    if q.lower().startswith("name:"):
+        raw_name = q[5:].strip().casefold()
+        exact = [c for c in valid_challs if str(c.get('name') or '').strip().casefold() == raw_name]
+        if len(exact) == 1:
+            return exact[0], None
+        if len(exact) > 1:
+            cids = ", ".join(str(c.get('id', '?')) for c in exact)
+            return None, f'Multiple ({len(exact)}) challenges share exact name "{raw_name}" (IDs: {cids}). Please use #<ID> to select.'
+        substr = [c for c in valid_challs if raw_name in str(c.get('name') or '').casefold()]
+        if len(substr) == 1:
+            return substr[0], None
+        if len(substr) > 1:
+            cands = ", ".join(f"[{c.get('id')}] {c.get('name')}" for c in substr[:4])
+            return None, f'Found {len(substr)} challenges matching "{raw_name}": {cands}. Please be more specific or use #<ID>.'
+        return None, f'No challenge found matching name "{raw_name}".'
+
+    # 4. Standard query resolution:
+    q_norm = q.casefold()
+    exact_names = [
+        c for c in valid_challs
+        if str(c.get('name') or '').strip().casefold() == q_norm
+    ]
+
+    id_matches = [
+        c for c in valid_challs
+        if c.get('id') is not None and str(c['id']).strip() == q
+    ]
+
+    index_match = None
+    if q.isdecimal():
+        idx = int(q)
+        if 1 <= idx <= len(valid_challs):
+            index_match = valid_challs[idx - 1]
+
+    # Check for cross-tier ambiguity between exact name, ID, and row index
+    distinct_candidates = set()
+    for c in exact_names:
+        distinct_candidates.add(id(c))
+    for c in id_matches:
+        distinct_candidates.add(id(c))
+    if index_match is not None:
+        distinct_candidates.add(id(index_match))
+
+    if len(distinct_candidates) > 1:
+        id_desc = f"challenge with ID \"{q}\" ('{id_matches[0].get('name')}')" if id_matches else None
+        idx_desc = f"row [{q}] ('{index_match.get('name')}')" if index_match else None
+        name_desc = f"challenge named '{q}' (ID #{exact_names[0].get('id')})" if exact_names else None
+        parts = [p for p in (id_desc, idx_desc, name_desc) if p]
+        return None, (
+            f'Selection "{q}" is ambiguous between {", ".join(parts)}.\n'
+            f'  -> Please use @{q} for row index, #{q} for ID, or name:{q} for name.'
+        )
+
+    if len(exact_names) == 1:
+        return exact_names[0], None
+    if len(exact_names) > 1:
+        cids = ", ".join(str(c.get('id', '?')) for c in exact_names)
+        return None, f'Multiple ({len(exact_names)}) challenges share exact name "{q}" (IDs: {cids}). Please use #<ID> to select.'
+
+    if len(id_matches) == 1:
+        return id_matches[0], None
+    if len(id_matches) > 1:
+        names = ", ".join(f"'{c.get('name')}'" for c in id_matches[:3])
+        return None, f'Multiple ({len(id_matches)}) challenges share ID "{q}" ({names}). Please use @<row> or name:... to select.'
+
+    if index_match is not None:
+        return index_match, None
+
+    # 5. Substring name match
+    sub_names = [
+        c for c in valid_challs
+        if q_norm in str(c.get('name') or '').casefold()
+    ]
+    if len(sub_names) == 1:
+        return sub_names[0], None
+    if len(sub_names) > 1:
+        cands = ", ".join(f"[{c.get('id')}] {c.get('name')}" for c in sub_names[:4])
+        if len(sub_names) > 4:
+            cands += f" ... (+{len(sub_names) - 4} more)"
+        return None, f'Found {len(sub_names)} challenges matching "{q}": {cands}. Please be more specific or use #<ID>.'
+
+    return None, f'No challenge found matching "{q}".'
 
 
 class CTFInteractiveConsole:
@@ -243,11 +372,11 @@ class CTFInteractiveConsole:
         else:
             ctx.append("  ")
             ctx.append(ws_name or self.workspace_path, style=INFO)
-            ctx.append(" · chưa có challenge", style=FG_MUTED)
+            ctx.append(" · no challenges", style=FG_MUTED)
 
         if not (self.cookie or self.token):
             ctx.append("\n  ")
-            ctx.append("! auth chưa cấu hình · dùng [9]", style=WARN)
+            ctx.append("! auth not configured · use [9]", style=WARN)
         con.print(ctx)
 
     def run(self):
@@ -259,7 +388,7 @@ class CTFInteractiveConsole:
                 self._load_saved_auth()
                 self._print_header()
 
-                _section('Chức năng')
+                _section('Actions')
                 for key, label in _main_menu_actions(_menu_console().width):
                     # §S1.1: option là hành động gần nhất → dòng ❯ reverse;
                     # option thường giữ _option() nguyên trạng.
@@ -268,67 +397,93 @@ class CTFInteractiveConsole:
                             selected_row(f'[{key}] {label}', selected=True))
                     else:
                         _option(key, label)
-                choice = _prompt('Chọn chức năng (0-9): ')
 
-                if choice == '0':
+                prompt_msg = 'Select action (0-9, S): '
+                if self._last_action:
+                    prompt_msg = f'Select action (0-9, S) [default {self._last_action}]: '
+                raw_choice = _prompt(prompt_msg).strip()
+                choice = raw_choice.strip(" []().")
+                if not choice and self._last_action:
+                    choice = self._last_action
+
+                # Map alias/shortcuts to canonical action keys
+                choice_lower = choice.lower()
+                key_map = {
+                    '0': '0', 'q': '0', 'quit': '0', 'exit': '0', 'thoat': '0',
+                    '1': '1', 'clone': '1', 'pull': '1', 'download': '1',
+                    '2': '2', 'switch': '2', 'workspace': '2', 'ws': '2',
+                    '3': '3', 'tree': '3', 'ls': '3', 'status': '3',
+                    '4': '4', 'view': '4', 'detail': '4', 'cat': '4', 'info': '4',
+                    '5': '5', 'container': '5', 'instance': '5', 'docker': '5',
+                    '6': '6', 'submit': '6', 'flag': '6', 'nop': '6',
+                    '7': '7', 'auto': '7', 'auto-submit': '7',
+                    '8': '8', 'scan': '8', 'summary': '8',
+                    '9': '9', 'auth': '9', 'cookie': '9', 'token': '9', 'config': '9',
+                    's': 'S', 'solve': 'S', 'solver': 'S', 'bqa': 'S', 'eating': 'S', 'eat': 'S',
+                }
+                canonical = key_map.get(choice_lower, choice.upper() if choice.upper() == 'S' else choice)
+
+                if canonical == '0':
                     _menu_console().print(
-                        Text('\nTạm biệt! Chúc bạn thi đấu CTF đạt kết quả cao.\n',
+                        Text('\nGoodbye! Good luck with your CTF competition.\n',
                              style=FG_MUTED))
                     break
-                elif choice == '1':
+                elif canonical == '1':
                     self._menu_download_new()
-                elif choice == '2':
+                elif canonical == '2':
                     self._menu_switch_workspace()
-                elif choice == '3':
+                elif canonical == '3':
                     self._menu_view_tree()
-                elif choice == '4':
+                elif canonical == '4':
                     self._menu_view_challenge_detail()
-                elif choice == '5':
+                elif canonical == '5':
                     self._menu_container_manager()
-                elif choice == '6':
+                elif canonical == '6':
                     self._menu_submit_flag()
-                elif choice == '7':
+                elif canonical == '7':
                     self._menu_auto_submit()
-                elif choice == '8':
+                elif canonical == '8':
                     self._menu_scan_workspaces()
-                elif choice == '9':
+                elif canonical == '9':
                     self._menu_configure_auth()
+                elif canonical == 'S':
+                    self._menu_solver()
                 else:
-                    Logger.warning('Lựa chọn không hợp lệ. Vui lòng chọn số từ 0 đến 9.')
+                    Logger.warning('Invalid selection. Please choose an option from 0 to 9 (or S).')
                 # Ghi nhớ hành động gần nhất để vòng sau đánh dấu ❯ (§S1.1);
                 # input lạ ('x', '99') không được tính là action.
-                if len(choice) == 1 and '1' <= choice <= '9':
-                    self._last_action = choice
+                if canonical in ('1', '2', '3', '4', '5', '6', '7', '8', '9', 'S'):
+                    self._last_action = canonical
             except (EOFError, KeyboardInterrupt):
                 _menu_console().print(
-                    Text('\nTạm biệt! Chúc bạn thi đấu CTF đạt kết quả cao.\n',
+                    Text('\nGoodbye! Good luck with your CTF competition.\n',
                          style=FG_MUTED))
                 break
 
     def _menu_download_new(self):
-        _section('Tải & khởi tạo giải đấu CTF mới')
-        url = _prompt('URL sàn CTF (ví dụ: https://ctf.example.com): ').strip()
+        _section('Download & Initialize New CTF Competition')
+        url = _prompt('CTF platform URL (e.g. https://ctf.example.com): ').strip()
         if not url:
-            Logger.warning('URL không được để trống.')
+            Logger.warning('URL cannot be empty.')
             return
 
         con = _menu_console()
         con.print()
-        con.print('  Phương thức xác thực:', style=FG_MUTED)
-        _option('1', 'Session Cookie (F12 -> Cookies -> copy session=xxx hoặc GZCTF_Token=xxx)')
+        con.print('  Authentication method:', style=FG_MUTED)
+        _option('1', 'Session Cookie (F12 -> Cookies -> copy session=xxx or GZCTF_Token=xxx)')
         _option('2', 'API Token / Bearer Token')
-        _option('3', 'Không cần đăng nhập (sàn public)')
-        ach = _prompt('Lựa chọn (1-3) [mặc định 1]: ') or '1'
+        _option('3', 'No authentication required (public platform)')
+        ach = _prompt('Choice (1-3) [default 1]: ') or '1'
 
         cookie = None
         token = None
         if ach == '1':
-            cookie = _prompt('Dán Cookie: ').strip()
+            cookie = sanitize_cookie_input(_prompt('Paste Cookie: ').strip())
         elif ach == '2':
-            token = _prompt('Dán Token: ').strip()
+            token = _prompt('Paste Token: ').strip()
 
         root_hint = resolve_workspace_root()
-        out = _prompt(f'Thư mục lưu (Enter để tự lưu vào {root_hint}/<Tên_Giải>): ').strip()
+        out = _prompt(f'Save directory (Enter to save to {root_hint}/<Competition_Name>): ').strip()
         out_dir = out if out else None
 
         cfg = DownloaderConfig(
@@ -344,14 +499,20 @@ class CTFInteractiveConsole:
         try:
             dl = CTFDownloader(cfg)
             if dl.run():
-                Logger.success('Tải giải đấu hoàn tất!')
+                Logger.success('Competition download completed!')
                 if dl.output_dir and os.path.exists(dl.output_dir):
                     self.workspace_path = dl.output_dir
                     self.cookie = cookie
                     self.token = token
                     self._save_current_workspace()
+                    AuthService.save_auth(
+                        workspace=dl.output_dir,
+                        url=url,
+                        cookie=cookie,
+                        token=token,
+                    )
         except Exception as e:
-            Logger.error(f'Quá trình tải thất bại: {e}')
+            Logger.error(f'Download failed: {e}')
 
     def _menu_switch_workspace(self):
         base_ctf = resolve_workspace_root()
@@ -365,10 +526,10 @@ class CTFInteractiveConsole:
                     if st.get('total_challenges', 0) > 0:
                         workspaces.append((p, st))
 
-        _section('Chọn workspace giải đấu đang làm việc')
+        _section('Select Active CTF Workspace')
         if not workspaces:
-            Logger.warning(f'Chưa có workspace nào trong {base_ctf}.')
-            custom_p = _prompt('Nhập đường dẫn thư mục giải đấu: ').strip()
+            Logger.warning(f'No workspaces found in {base_ctf}.')
+            custom_p = _prompt('Enter competition directory path: ').strip()
             if os.path.exists(custom_p):
                 self.workspace_path = os.path.abspath(custom_p)
                 self._save_current_workspace()
@@ -379,13 +540,13 @@ class CTFInteractiveConsole:
         for row in _workspace_rows(workspaces, active):
             con.print(row)
 
-        _option('C', 'Nhập đường dẫn thư mục tuỳ chỉnh')
-        _option('0', 'Quay lại')
-        ch = _prompt(f'Chọn Workspace (1-{len(workspaces)}): ').strip()
+        _option('C', 'Enter custom directory path')
+        _option('0', 'Back')
+        ch = _prompt(f'Select Workspace (1-{len(workspaces)}): ').strip()
         if ch == '0':
             return
         elif ch.upper() == 'C':
-            custom_p = _prompt('Nhập đường dẫn: ').strip()
+            custom_p = _prompt('Enter path: ').strip()
             if os.path.exists(custom_p):
                 self.workspace_path = os.path.abspath(custom_p)
                 self.cookie = None
@@ -404,9 +565,9 @@ class CTFInteractiveConsole:
                 self.token = None
                 self._load_saved_auth()
                 self._save_current_workspace()
-                Logger.success(f"Đã chuyển sang workspace: {os.path.basename(self.workspace_path)}")
+                Logger.success(f"Switched to workspace: {os.path.basename(self.workspace_path)}")
             except Exception:
-                Logger.error('Lựa chọn không hợp lệ.')
+                Logger.error('Invalid selection.')
 
     def _save_current_workspace(self):
         """Persist workspace mặc định (+auth nếu có) NGUYÊN TỬ qua khóa
@@ -435,7 +596,7 @@ class CTFInteractiveConsole:
             saved_state = update_global_config(_mut)
         except OSError as e:
             # Storage hỏng (PermissionError...) — menu không crash, log rõ.
-            Logger.warning(f'Không lưu được config: {e}')
+            Logger.warning(f'Failed to save config: {e}')
             return
         if saved_state is not None:
             self.config = saved_state
@@ -444,18 +605,18 @@ class CTFInteractiveConsole:
             # là thư mục global config biến mất giữa chừng (không raise
             # OSError). Log cùng mức nhánh OSError thay vì im lặng; cache
             # nội bộ giữ nguyên — không refresh từ None.
-            Logger.warning('Không lưu được config: thư mục global config '
-                           'đã biến mất.')
+            Logger.warning('Failed to save config: global config directory '
+                           'disappeared.')
 
     def _menu_view_tree(self):
         dash = CTFDashboard(self.workspace_path)
-        _section('Tuỳ chọn hiển thị cây bài thi')
-        _option('1', 'Hiển thị TẤT CẢ bài thi')
-        _option('2', 'Chỉ hiển thị các bài CHƯA GIẢI (unsolved)')
-        _option('3', 'Chỉ hiển thị các bài ĐÃ GIẢI (solved)')
-        _option('4', 'Chỉ hiển thị các bài có DYNAMIC CONTAINER')
-        _option('5', 'Lọc theo thể loại (Web, Crypto, Pwn, Rev, Forensics, Misc)')
-        fch = _prompt('Lựa chọn (1-5) [mặc định 1]: ') or '1'
+        _section('Challenge Tree Display Options')
+        _option('1', 'Show ALL challenges')
+        _option('2', 'Show UNSOLVED challenges only')
+        _option('3', 'Show SOLVED challenges only')
+        _option('4', 'Show challenges with DYNAMIC CONTAINER only')
+        _option('5', 'Filter by category (Web, Crypto, Pwn, Rev, Forensics, Misc)')
+        fch = _prompt('Choice (1-5) [default 1]: ') or '1'
 
         if fch == '2':
             dash.render_tree(only_unsolved=True)
@@ -464,7 +625,7 @@ class CTFInteractiveConsole:
         elif fch == '4':
             dash.render_tree(only_container=True)
         elif fch == '5':
-            cat_in = _prompt('Nhập thể loại (ví dụ: Web Crypto): ').strip().split()
+            cat_in = _prompt('Enter categories (e.g. Web Crypto): ').strip().split()
             dash.render_tree(filter_cat=cat_in)
         else:
             dash.render_tree()
@@ -473,65 +634,146 @@ class CTFInteractiveConsole:
     def _menu_view_challenge_detail(self):
         dash = CTFDashboard(self.workspace_path)
         challs = dash.local_challenges
+        _section('Challenge Lookup & Details')
         if not challs:
-            Logger.warning('Chưa có bài thi nào trong workspace hiện tại.')
+            Logger.warning('No challenges found in current workspace.')
+            _pause()
             return
-
-        q = _prompt('Nhập ID bài hoặc Tên bài: ').strip()
-        if not q:
-            return
-        target = next((c for c in challs if str(c.get('id')) == q or q.lower() in c.get('name', '').lower()), None)
-        if not target:
-            Logger.error(f'Không tìm thấy bài thi "{q}".')
-            return
-
-        folder = target.get('_folder', '')
-        readme_p = os.path.join(folder, 'README.md')
 
         con = _menu_console()
+        for idx, c in enumerate(challs, 1):
+            name = fit_cells(str(c.get('name') or 'Unknown'), 28, pad=True)
+            cat = fit_cells(str(c.get('category') or 'Other'), 12, pad=True)
+            pts = f"{c.get('points', '-'):>4} pts"
+            cid = str(c.get('id', ''))
+            is_solved = bool(c.get('solved_by_me'))
+
+            row = Text('  ')
+            row.append(f'[{idx:>2}]', style=ACCENT)
+            row.append(f' {name} ', style=FG_BASE)
+            row.append(f'{cat} ', style=FG_MUTED)
+            row.append(f'{pts} ', style=FG_MUTED)
+            if is_solved:
+                row.append('✔ SOLVED', style='solved')
+            else:
+                row.append('· Unsolved', style=FG_FAINT)
+            if cid:
+                row.append(f' (ID: {cid})', style=FG_FAINT)
+            con.print(row)
+
+        con.print()
+        q = _prompt(f'Select challenge (1-{len(challs)}), or enter ID/Name [0 to return]: ').strip()
+        target, err = _resolve_challenge_selection(challs, q)
+        if not target:
+            if err:
+                Logger.error(err)
+                _pause()
+            return
+
+        ws_root = os.path.abspath(self.workspace_path)
+        raw_folder = str(target.get('_folder') or '')
+        if raw_folder:
+            abs_folder = os.path.abspath(raw_folder if os.path.isabs(raw_folder) else os.path.join(ws_root, raw_folder))
+            folder = abs_folder if os.path.isdir(abs_folder) else ''
+        else:
+            folder = ''
+
         con.print()
         # §S1.3: candidate khớp đầu tiên đánh dấu ❯ + reverse highlight.
-        head = selected_row(str(target.get('name')), selected=True)
+        head = selected_row(str(target.get('name') or 'Unknown'), selected=True)
         head.append(f"  ID: {target.get('id')}  ", style=FG_FAINT)
         if target.get('solved_by_me'):
-            head.append('✔ ĐÃ GIẢI', style='solved')
+            head.append('✔ SOLVED', style='solved')
         else:
-            head.append('· CHƯA GIẢI', style=FG_FAINT)
+            head.append('· UNSOLVED', style=FG_FAINT)
         con.print(head)
 
-        meta = Text('  Thể loại: ')
-        meta.append(str(target.get('category')), style=FG_BASE)
+        meta = Text('  Category: ')
+        meta.append(str(target.get('category') or 'Other'), style=FG_BASE)
         meta.append('  ·  ', style=FG_FAINT)
-        meta.append(f"{target.get('points')} pts", style=FG_MUTED)
+        meta.append(f"{target.get('points', '-')} pts", style=FG_MUTED)
         meta.append('  ·  ', style=FG_FAINT)
-        meta.append(f"{target.get('solves_count', '-')} giải", style=FG_MUTED)
+        meta.append(f"{target.get('solves_count', '-')} solves", style=FG_MUTED)
         con.print(meta)
 
-        loc = Text('  Thư mục local: ')
-        loc.append(str(target.get('_rel_folder')), style=INFO)
+        rel_loc = target.get('_rel_folder') or folder or '(not downloaded)'
+        loc = Text('  Local directory: ')
+        loc.append(str(rel_loc), style=INFO)
         con.print(loc)
         if target.get('connection_info'):
-            ci = Text('  Kết nối: ')
+            ci = Text('  Connection: ')
             ci.append(str(target.get('connection_info')), style=INFO)
             con.print(ci)
 
-        if os.path.exists(readme_p):
-            con.print(Text('  Nội dung đề bài (README.md)', style=f'bold {FG_FAINT}'))
-            with open(readme_p, 'r', encoding='utf-8') as rf:
-                con.print(rf.read()[:2000])
-        _pause()
+        if folder and os.path.isdir(folder):
+            att_dir = os.path.join(folder, 'challenge')
+            if os.path.isdir(att_dir):
+                try:
+                    files = [f for f in sorted(os.listdir(att_dir)) if not f.startswith('.') and f not in ('README.md', 'NOTE.md', 'metadata.json')]
+                    if files:
+                        con.print(Text(f"  Attachments ({len(files)} files): {', '.join(files)}", style=INFO))
+                except OSError as e:
+                    Logger.warning(f"Cannot read challenge/ directory: {e}")
+
+            readme_candidates = [
+                os.path.join(folder, 'challenge', 'README.md'),
+                os.path.join(folder, 'README.md'),
+            ]
+            for rp in readme_candidates:
+                if os.path.isfile(rp):
+                    try:
+                        with open(rp, 'r', encoding='utf-8', errors='replace') as rf:
+                            con.print(Text('\n  Challenge Description (README.md):', style=f'bold {FG_FAINT}'))
+                            con.print(rf.read()[:2000])
+                        break
+                    except (OSError, UnicodeError) as e:
+                        Logger.warning(f"Cannot read README.md ({rp}): {e}")
+
+            note_candidates = [
+                os.path.join(folder, 'challenge', 'NOTE.md'),
+                os.path.join(folder, 'NOTE.md'),
+            ]
+            for np in note_candidates:
+                if os.path.isfile(np):
+                    try:
+                        with open(np, 'r', encoding='utf-8', errors='replace') as nf:
+                            con.print(Text('\n  Notes / Triage (NOTE.md):', style=f'bold {FG_FAINT}'))
+                            con.print(nf.read()[:1000])
+                        break
+                    except (OSError, UnicodeError) as e:
+                        Logger.warning(f"Cannot read NOTE.md ({np}): {e}")
+        else:
+            con.print(Text('  (Challenge does not have a valid local directory)', style=FG_MUTED))
+
+        while True:
+            con.print()
+            con.print('  Actions for this challenge:', style=FG_MUTED)
+            _option('1', 'Submit flag for this challenge')
+            _option('2', 'Manage Container / Instance (if available)')
+            _option('3', 'BQA EATING for this challenge')
+            _option('0', 'Back')
+            act = _prompt('Choice (0-3) [Enter to return]: ').strip()
+            if act == '1':
+                self._submit_flag_for_target(target)
+            elif act == '2':
+                cid = str(target.get('id', ''))
+                self._run_container_action_for_id(cid, challenge_name=str(target.get('name') or ''))
+            elif act == '3':
+                self._run_solver_for_target(target)
+            else:
+                break
 
     def _menu_container_manager(self):
         try:
             mgr = InstanceManager(self.workspace_path, cookie=self.cookie, token=self.token)
         except Exception as e:
-            Logger.error(f'Không thể khởi tạo Container Manager: {e}')
+            Logger.error(f'Failed to initialize Container Manager: {e}')
             return
 
         containers = mgr.list_containers()
-        _section('Quản lý dynamic container / instance')
+        _section('Manage Dynamic Containers / Instances')
         if not containers:
-            Logger.info('Không có bài nào hỗ trợ Dynamic Container trong workspace này.')
+            Logger.info('No challenges support Dynamic Containers in this workspace.')
             return
 
         con = _menu_console()
@@ -545,68 +787,69 @@ class CTFInteractiveConsole:
             row.append(f' {c_name:<30}', style=FG_BASE)
             row.append(f'ID {c_id:<4}', style=FG_MUTED)
             row.append(f' {c_cat}', style=FG_MUTED)
-            row.append(f'  ·  {solves} giải', style=FG_MUTED)
+            row.append(f'  ·  {solves} solves', style=FG_MUTED)
             con.print(row)
 
-        ch = _prompt(f'Chọn bài để thao tác Container (1-{len(containers)}), hoặc nhập ID [0 để huỷ]: ').strip()
-        if ch == '0' or not ch:
+        ch = _prompt(f'Select challenge for container actions (1-{len(containers)}), or enter ID/Name [0 to cancel]: ').strip()
+        target, err = _resolve_challenge_selection(containers, ch)
+        if not target:
+            if err:
+                Logger.error(err)
+                _pause()
             return
 
-        if ch.isdigit() and not ch.isdecimal():
-            # C13-MENU1: '²'/'①' trông như số nhưng int() không parse được —
-            # từ chối sạch thay vì nổ ValueError ngoài mọi try.
-            Logger.warning(f'Chọn bằng số thập phân hoặc nhập ID: {ch}')
-            return
-
-        if ch.isdecimal() and 1 <= int(ch) <= len(containers):
-            target_chall = containers[int(ch) - 1]
-            cid = target_chall.get('id')
-        else:
-            cid = ch
-
-        con.print()
-        con.print(f'  Hành động cho Challenge ID {cid}:', style=FG_MUTED)
-        _option('1', 'Bật / Khởi tạo container (lấy IP:Port & netcat command)')
-        _option('2', 'Kiểm tra trạng thái & thời gian sống còn lại')
-        _option('3', 'Gia hạn thời gian sống (extend countdown)')
-        _option('4', 'Tắt / Giải phóng container')
-        _option('0', 'Quay lại')
-        act = _prompt('Lựa chọn (1-4): ').strip()
-
-        if act == '1':
-            mgr.start_instance(cid)
-        elif act == '2':
-            st = mgr.get_status(cid)
-            Logger.info(f'Trạng thái ID {cid}: {st}')
-        elif act == '3':
-            mgr.extend_instance(cid)
-        elif act == '4':
-            mgr.stop_instance(cid)
-        _pause()
+        cid = target.get('id')
+        cname = str(target.get('name') or f'ID {cid}')
+        self._run_container_action_for_id(cid, challenge_name=cname)
 
     def _menu_submit_flag(self):
         dash = CTFDashboard(self.workspace_path)
         challs = dash.local_challenges
-        _section('Nộp flag cho bài thi')
-
-        q = _prompt('Nhập ID bài hoặc Tên bài: ').strip()
-        if not q:
+        _section('Submit Flag for Challenge')
+        if not challs:
+            Logger.warning('No challenges found in current workspace.')
+            _pause()
             return
 
-        target = next((c for c in challs if str(c.get('id')) == q or q.lower() in c.get('name', '').lower()), None)
-        target_id = target.get('id') if target else (q if q.isdigit() else None)
-        target_name = target.get('name') if target else (q if not q.isdigit() else None)
+        con = _menu_console()
+        for idx, c in enumerate(challs, 1):
+            name = fit_cells(str(c.get('name') or 'Unknown'), 28, pad=True)
+            cat = fit_cells(str(c.get('category') or 'Other'), 12, pad=True)
+            pts = f"{c.get('points', '-'):>4} pts"
+            cid = str(c.get('id', ''))
+            is_solved = bool(c.get('solved_by_me'))
+            row = Text('  ')
+            row.append(f'[{idx:>2}]', style=ACCENT)
+            row.append(f' {name} ', style=FG_BASE)
+            row.append(f'{cat} ', style=FG_MUTED)
+            row.append(f'{pts} ', style=FG_MUTED)
+            row.append('✔ SOLVED' if is_solved else '· Unsolved', style='solved' if is_solved else FG_FAINT)
+            if cid:
+                row.append(f' (ID: {cid})', style=FG_FAINT)
+            con.print(row)
 
-        if target:
-            sel = Text('  Đã chọn: ')
-            sel.append(str(target.get('name')), style=f'bold {FG_BASE}')
-            sel.append(f"  (ID: {target.get('id')}, Thể loại: {target.get('category')})",
-                       style=FG_MUTED)
-            _menu_console().print(sel)
+        con.print()
+        q = _prompt(f'Select challenge to submit flag (1-{len(challs)}), or enter ID/Name [0 to cancel]: ').strip()
+        target, err = _resolve_challenge_selection(challs, q)
+        if not target:
+            if err:
+                Logger.error(err)
+                _pause()
+            return
 
-        flag_str = _prompt('Nhập chuỗi Flag: ').strip()
+        self._submit_flag_for_target(target)
+
+    def _submit_flag_for_target(self, target: dict):
+        con = _menu_console()
+        con.print()
+        sel = Text('  Selected challenge: ')
+        sel.append(str(target.get('name')), style=f'bold {FG_BASE}')
+        sel.append(f" (ID: {target.get('id')}, Category: {target.get('category')})", style=FG_MUTED)
+        con.print(sel)
+
+        flag_str = _prompt('Enter flag string [Enter to cancel]: ').strip()
         if not flag_str:
-            Logger.warning('Flag không được để trống.')
+            Logger.info('Flag submission cancelled.')
             return
 
         sub = FlagSubmitter(
@@ -615,15 +858,353 @@ class CTFInteractiveConsole:
             token=self.token
         )
         sub.submit_single_flag(
-            challenge_id=target_id,
-            challenge_name=target_name,
+            challenge_id=target.get('id'),
+            challenge_name=target.get('name'),
             flag_value=flag_str
         )
         _pause()
 
+    def _run_container_action_for_id(self, cid: str, challenge_name: str = ""):
+        try:
+            mgr = InstanceManager(self.workspace_path, cookie=self.cookie, token=self.token)
+        except Exception as e:
+            Logger.error(f'Failed to initialize Container Manager: {e}')
+            _pause()
+            return
+
+        con = _menu_console()
+        con.print()
+        title = f'  Container actions for {challenge_name} (ID: {cid}):' if challenge_name else f'  Container actions for Challenge ID {cid}:'
+        con.print(title, style=FG_MUTED)
+        _option('1', 'Start / Spawn container (get IP:Port & netcat command)')
+        _option('2', 'Check status & remaining lifetime')
+        _option('3', 'Extend lifetime (renew countdown)')
+        _option('4', 'Stop / Destroy container')
+        _option('0', 'Back')
+        act = _prompt('Choice (1-4) [0 to return]: ').strip()
+        if act == '1':
+            mgr.start_instance(cid)
+        elif act == '2':
+            st = mgr.get_status(cid)
+            Logger.info(f'Status for ID {cid}: {st}')
+        elif act == '3':
+            mgr.extend_instance(cid)
+        elif act == '4':
+            mgr.stop_instance(cid)
+        _pause()
+
+    def _run_solver_for_target(self, target: dict):
+        from .services.solver_service import SolverService
+        from .cli_commands import _solver_table
+        from rich.live import Live
+
+        try:
+            service = SolverService(self.workspace_path)
+            jobs = service.scan()
+            target_folder = target.get('_folder') or target.get('_local_path')
+            matched_job = None
+            if target_folder:
+                abs_tf = os.path.abspath(target_folder if os.path.isabs(target_folder) else os.path.join(self.workspace_path, target_folder))
+                matched_job = next((j for j in jobs if os.path.abspath(str(j.path)) == abs_tf), None)
+            if not matched_job:
+                matched_job = next(
+                    (j for j in jobs if str(j.challenge_id) == str(target.get('id')) or str(j.name).lower() == str(target.get('name', '')).lower()),
+                    None
+                )
+            if not matched_job:
+                Logger.warning('This challenge does not have a valid challenge/ directory or metadata to run SuperBQA.')
+                _pause()
+                return
+
+            con = _menu_console()
+            res = service.spawn_background(str(matched_job.display_id), workers=1)
+            if not res.get("success"):
+                Logger.error(res.get("message", "SuperBQA startup failed."))
+                _pause()
+                return
+
+            con.print()
+            con.print(f"  [bold green]✔ {res.get('message')}[/bold green]")
+            con.print("  [dim]Press Ctrl+C to detach.[/dim]\n")
+
+            try:
+                with Live(_solver_table(service), console=con, refresh_per_second=4) as live:
+                    while True:
+                        time.sleep(0.25)
+                        live.update(_solver_table(service))
+            except KeyboardInterrupt:
+                con.print("\n  [dim]Detached.[/dim]")
+        except Exception as e:
+            Logger.error(f'SuperBQA error: {e}')
+        _pause()
+
+    def _menu_solver(self):
+        from .services.solver_service import SolverService
+        from .cli_commands import _solver_table, render_active_agy_workers
+        from rich.live import Live
+
+        while True:
+            _section('SuperBQA')
+            try:
+                service = SolverService(self.workspace_path)
+                jobs = service.scan()
+            except Exception as e:
+                Logger.error(f'Failed to initialize Solver Service: {e}')
+                _pause()
+                return
+
+            if not jobs:
+                Logger.warning('No challenges with valid source code or metadata found in this workspace.')
+                _pause()
+                return
+
+            con = _menu_console()
+            con.print(_solver_table(service, animate=False))
+
+            daemon_info = service.get_daemon_status()
+            if daemon_info.get("is_running"):
+                d_pid = daemon_info.get("daemon_pid")
+                d_targets = daemon_info.get("target_ids", "-")
+                d_active = ", ".join(daemon_info.get("active_ids", [])) or "preparing"
+                con.print()
+                st_text = Text("  🟢 SUPERBQA EATING ACTIVE ", style="bold green")
+                st_text.append(f"[PID: {d_pid}]  ·  Targets: {d_targets}  ·  Active: {d_active}", style=FG_MUTED)
+                con.print(st_text)
+
+            cat_sessions = service.get_category_sessions()
+            if cat_sessions:
+                sess_strs = [f"{cat} ({info.get('conversation_id', '')[:8]}...)" for cat, info in cat_sessions.items()]
+                con.print(f"  [dim]📁 Persistent Sessions: {', '.join(sess_strs)}[/dim]")
+
+            active_jobs = [
+                j for j in jobs
+                if service.read_job(j).get("state") in ("running", "starting")
+            ]
+            opt3_label = f"Active BQA · {len(active_jobs)} running" if active_jobs else "Active BQA"
+
+            con.print()
+            _option('1', 'BQA EATING')
+            _option('2', 'SUPERBQA EATING')
+            _option('3', opt3_label)
+            _option('4', 'Worker log tail')
+            _option('5', 'Stop / Cancel')
+            _option('6', 'Distill category playbook')
+            _option('7', 'Help')
+            _option('0', 'Back to main menu')
+
+            try:
+                act = _prompt('Choice (0-7) [default 1]: ').strip() or '1'
+            except (EOFError, KeyboardInterrupt):
+                return
+            act_clean = act.lower()
+
+            if act_clean in ('0', 'q', 'back', 'exit'):
+                return
+            elif act_clean in ('1', 'bqa', 'eat', 'eating'):
+                try:
+                    ids = _prompt('Enter display ID for BQA EATING (e.g. 1 or 1,3,5): ').strip()
+                except (EOFError, KeyboardInterrupt):
+                    return
+                if not ids:
+                    continue
+                res = service.spawn_background(ids, workers=3)
+                if not res.get("success"):
+                    Logger.error(res.get("message", "BQA EATING startup failed."))
+                    _pause()
+                    continue
+                con.print()
+                con.print(f"  [bold green]✔ {res.get('message')}[/bold green]")
+                try:
+                    watch_now = _prompt('  Attach Live Radar now? [Y/n]: ').strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    return
+                if watch_now != 'n':
+                    con.print("\n  [dim]Press Ctrl+C to detach.[/dim]\n")
+                    try:
+                        with Live(_solver_table(service), console=con, refresh_per_second=4) as live:
+                            while True:
+                                time.sleep(0.25)
+                                live.update(_solver_table(service))
+                    except KeyboardInterrupt:
+                        con.print("\n  [dim]Detached.[/dim]")
+                _pause()
+                continue
+            elif act_clean in ('2', 'superbqa', 'super', 'all', 'feast'):
+                solvable = [j for j in jobs if j.has_source or j.has_instance]
+                if not solvable:
+                    Logger.warning('No challenges found with attachments or dynamic containers.')
+                    _pause()
+                    continue
+                unsolved = [j for j in solvable if not j.is_solved]
+                target_jobs = unsolved if unsolved else solvable
+                source_ids = ",".join(str(j.display_id) for j in target_jobs)
+                con.print()
+                con.print(f"  [bold yellow]Preparing SUPERBQA EATING on {len(target_jobs)} challenges ({source_ids}).[/bold yellow]")
+                try:
+                    confirm = Confirm.ask('  Confirm execution?', default=True)
+                except (EOFError, KeyboardInterrupt):
+                    return
+                if not confirm:
+                    continue
+                res = service.spawn_background(source_ids, workers=3)
+                if not res.get("success"):
+                    Logger.error(res.get("message", "SUPERBQA EATING startup failed."))
+                    _pause()
+                    continue
+                con.print(f"\n  [bold green]✔ {res.get('message')}[/bold green]")
+                try:
+                    watch_now = _prompt('  Attach Live Radar now? [Y/n]: ').strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    return
+                if watch_now != 'n':
+                    con.print("\n  [dim]Press Ctrl+C to detach.[/dim]\n")
+                    try:
+                        with Live(_solver_table(service), console=con, refresh_per_second=4) as live:
+                            while True:
+                                time.sleep(0.25)
+                                live.update(_solver_table(service))
+                    except KeyboardInterrupt:
+                        con.print("\n  [dim]Detached.[/dim]")
+                _pause()
+                continue
+            elif act_clean in ('3', 'bqa', 'active', 'agy', 'workers', 'tasks', 'running'):
+                active_list = render_active_agy_workers(service, console_inst=con)
+                if active_list:
+                    con.print()
+                    try:
+                        follow = _prompt('  Enter display ID to tail worker log (or Enter to return): ').strip()
+                    except (EOFError, KeyboardInterrupt):
+                        return
+                    if follow:
+                        try:
+                            matched_job = service.select_ids(follow)[0]
+                            if matched_job and matched_job.log_path.is_file():
+                                con.print(f"\n  [bold cyan]Latest log for {matched_job.name} ({matched_job.log_path}):[/bold cyan]\n")
+                                lines = matched_job.log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                                tail = lines[-40:] if len(lines) > 40 else lines
+                                for line in tail:
+                                    con.print(f"    {line}")
+                                con.print()
+                            else:
+                                Logger.warning(f'No log file found for {matched_job.name if matched_job else follow}.')
+                        except Exception as e:
+                            Logger.error(f'Selection error: {e}')
+                        _pause()
+                else:
+                    _pause()
+                continue
+            elif act == '4':
+                try:
+                    tid = _prompt('Enter display ID to view log [Enter for first]: ').strip()
+                except (EOFError, KeyboardInterrupt):
+                    return
+                matched_job = None
+                if tid:
+                    try:
+                        matched_job = service.select_ids(tid)[0]
+                    except Exception as e:
+                        Logger.error(f'Selection error: {e}')
+                        _pause()
+                        continue
+                else:
+                    matched_job = jobs[0] if jobs else None
+
+                if not matched_job or not matched_job.log_path.is_file():
+                    Logger.warning(f'No log file found for {matched_job.name if matched_job else tid}.')
+                    _pause()
+                    continue
+                con.print(f"\n  [bold cyan]Latest log for {matched_job.name} ({matched_job.log_path}):[/bold cyan]\n")
+                try:
+                    with matched_job.log_path.open('r', encoding='utf-8', errors='replace') as lf:
+                        lines = lf.readlines()
+                        con.print(''.join(lines[-40:]), markup=False)
+                except OSError as e:
+                    Logger.error(f'Unable to read log file: {e}')
+                _pause()
+                continue
+            elif act == '5':
+                try:
+                    tid = _prompt('Enter display ID to stop [Enter to stop all workers]: ').strip()
+                    confirm = Confirm.ask('  Confirm stopping workers?', default=True)
+                except (EOFError, KeyboardInterrupt):
+                    return
+                if confirm:
+                    res = service.stop_background(tid if tid else None)
+                    Logger.info(res.get("message", "Stop signal sent."))
+                _pause()
+                continue
+            elif act == '6':
+                cat_sessions = service.get_category_sessions()
+                known_cats = sorted(cat_sessions.keys()) if cat_sessions else sorted({j.category for j in jobs if j.category})
+                if not known_cats:
+                    Logger.warning('No categories available in this workspace.')
+                    _pause()
+                    continue
+                con.print("\n  [bold cyan]Available categories to distill:[/bold cyan]")
+                for idx, cname in enumerate(known_cats, 1):
+                    con.print(f"    [{idx}] {cname}")
+                try:
+                    c_input = _prompt('Select category number or name [Enter for all]: ').strip()
+                except (EOFError, KeyboardInterrupt):
+                    return
+                target_cat = None
+                if c_input.isdigit() and 1 <= int(c_input) <= len(known_cats):
+                    target_cat = known_cats[int(c_input) - 1]
+                elif c_input:
+                    target_cat = c_input
+                targets = [target_cat] if target_cat else known_cats
+
+                for c in targets:
+                    con.print(f"\n  [dim]Distilling operational playbook for {c}...[/dim]")
+                    res = service.distill_playbook(c)
+                    if res.get("success"):
+                        con.print(f"  [bold green]✔ Playbook updated for {c}:[/bold green]")
+                        con.print(f"    📄 File: [cyan]{res.get('playbook_path')}[/cyan]")
+                        if res.get("main_conversation_id"):
+                            con.print(f"    🧠 Master Session: [dim]{res.get('main_conversation_id')}[/dim]")
+                    else:
+                        Logger.error(f"Failed to distill playbook for {c}")
+                _pause()
+                continue
+            elif act_clean in ('7', 'help', 'h', 'ask', 'astra', 'ctf-ask'):
+                from .cli_commands import handle_ask
+                import argparse
+                con.print("\n  [bold cyan]Help: Escalate formal math/logic roadblock to Codex Astra (ctf-ask)[/bold cyan]")
+                try:
+                    ws_input = _prompt('  Enter formal workspace path [Enter for ./math_workspace]: ').strip() or 'math_workspace'
+                    ws_path = Path(self.workspace_path) / ws_input if not Path(ws_input).is_absolute() else Path(ws_input)
+                    if not ws_path.is_dir():
+                        Logger.error(f'Workspace not found: {ws_path}')
+                        _pause()
+                        continue
+                    mode_choice = _prompt('  Mode: [1] Full Escalation to Astra  [2] Preflight check only  [3] Dry-run [default 1]: ').strip() or '1'
+                except (EOFError, KeyboardInterrupt):
+                    return
+                args = argparse.Namespace(
+                    workspace=str(ws_path),
+                    output=None,
+                    model=None,
+                    effort=None,
+                    preflight_only=(mode_choice == '2'),
+                    verify_only=None,
+                    dry_run=(mode_choice == '3'),
+                )
+                try:
+                    handle_ask(args)
+                except SystemExit:
+                    pass
+                except Exception as e:
+                    Logger.error(f"Help (ctf-ask) execution error: {e}")
+                _pause()
+                continue
+            else:
+                Logger.warning('Invalid selection. Please choose an option from 0 to 7.')
+                _pause()
+                continue
+
     def _menu_auto_submit(self):
-        _section('Tự động quét & nộp toàn bộ flag đã giải trong workspace')
-        confirm = Confirm.ask('Bạn có muốn quét tất cả README.md và nộp tự động các flag đã điền?', default=True)
+        _section('Auto-Scan & Submit Solved Flags in Workspace')
+        confirm = Confirm.ask('Scan all README.md files and auto-submit filled flags?', default=True)
         if confirm:
             sub = FlagSubmitter(
                 workspace_dir=self.workspace_path,
@@ -635,52 +1216,52 @@ class CTFInteractiveConsole:
 
     def _menu_scan_workspaces(self):
         base_dir = resolve_workspace_root()
-        # Bản duy nhất của bảng scan nằm ở StatusService.scan_all_workspaces
-        # (dùng chung với cli handle_workspaces / manage.py -A)
+        # Single scan table located in StatusService.scan_all_workspaces
+        # (shared with cli handle_workspaces / manage.py -A)
         StatusService.scan_all_workspaces(base_dir)
         _pause()
 
     def _menu_configure_auth(self):
-        _section(f'Cấu hình xác thực cho: {os.path.basename(self.workspace_path)}')
+        _section(f'Configure Authentication for: {os.path.basename(self.workspace_path)}')
         con = _menu_console()
-        ck_show = self.cookie if self.cookie else '(Chưa có)'
-        tk_show = self.token if self.token else '(Chưa có)'
-        cur = Text('  Cookie hiện tại: ')
+        ck_show = f"Saved ({self.cookie[:8]}...)" if self.cookie else '(None)'
+        tk_show = f"Saved ({self.token[:8]}...)" if self.token else '(None)'
+        cur = Text('  Current Cookie: ')
         cur.append(ck_show, style=INFO if self.cookie else FG_FAINT)
         con.print(cur)
-        cur2 = Text('  Token hiện tại : ')
+        cur2 = Text('  Current Token : ')
         cur2.append(tk_show, style=INFO if self.token else FG_FAINT)
         con.print(cur2)
 
         con.print()
-        _option('1', 'Nhập / Dán Session Cookie mới (session=... hoặc GZCTF_Token=...)')
-        _option('2', 'Nhập API Token / Bearer Token')
-        _option('3', 'Xoá thông tin xác thực đã lưu')
-        _option('0', 'Quay lại')
-        ch = _prompt('Lựa chọn (0-3): ').strip()
+        _option('1', 'Enter / Paste new Session Cookie (session=... or GZCTF_Token=...)')
+        _option('2', 'Enter API Token / Bearer Token')
+        _option('3', 'Clear saved credentials')
+        _option('0', 'Back')
+        ch = _prompt('Choice (0-3): ').strip()
 
         if ch == '1':
-            c_in = _prompt('Dán Cookie: ').strip()
+            c_in = _prompt('Paste Cookie: ').strip()
             if os.path.isfile(c_in):
                 with open(c_in, 'r', encoding='utf-8') as f:
                     self.cookie = f.read().strip()
             else:
                 self.cookie = c_in
             self._save_current_workspace()
-            Logger.success('Đã lưu Cookie thành công vĩnh viễn cho giải này!')
+            Logger.success('Cookie saved successfully for this workspace!')
         elif ch == '2':
-            self.token = _prompt('Dán API/Bearer Token: ').strip()
+            self.token = _prompt('Paste API/Bearer Token: ').strip()
             self._save_current_workspace()
-            Logger.success('Đã lưu Token thành công vĩnh viễn cho giải này!')
+            Logger.success('Token saved successfully for this workspace!')
         elif ch == '3':
             self.cookie = None
             self.token = None
             self._save_current_workspace()
-            Logger.info('Đã xoá thông tin xác thực.')
+            Logger.info('Credentials cleared.')
 
 
 def _pause():
-    _prompt('Nhấn Enter để quay lại...')
+    _prompt('Press Enter to continue...')
 
 
 def launch_interactive_menu(workspace_path: Optional[str] = None, cookie: Optional[str] = None, token: Optional[str] = None):

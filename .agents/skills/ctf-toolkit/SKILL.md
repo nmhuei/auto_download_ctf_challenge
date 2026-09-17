@@ -1,19 +1,22 @@
 ---
 name: ctf-toolkit
-description: Use when interacting with CTF competition platforms (CTFd, GZCTF, rCTF), downloading challenges, managing dynamic instance containers, submitting or hoarding flags, diagnosing platform health, bypassing Cloudflare Turnstile via browser bridge, or managing competition workspaces with the `ctf` CLI.
-argument-hint: "[pull|status|instance|submit|hoard|doctor|bridge|watch|rank|git] [args...]"
+description: Use when interacting with CTF competition platforms (CTFd, GZCTF, rCTF), downloading challenges, managing dynamic instance containers, hoarding recovered flags locally, diagnosing platform health, bypassing Cloudflare Turnstile via browser bridge, or managing competition workspaces with the `ctf` CLI.
 ---
 
 # CTF Toolkit (`ctf` CLI)
 
-Unified CLI toolkit for competitive Capture The Flag operations. Handles challenge downloading, dynamic container management, safe flag submission, real-time scoreboard tracking, and Cloudflare Turnstile bypass for CTFd, GZCTF, and rCTF platforms.
+Unified CLI toolkit for competitive Capture The Flag operations. Handles challenge downloading, dynamic container management, local flag hoarding, real-time scoreboard tracking, and Cloudflare Turnstile bypass for CTFd, GZCTF, and rCTF platforms.
+
+## Mandatory Rule: No Automated Flag Submission
+
+**Agents, BQA, scripts, and any automated workflow MUST NEVER invoke `ctf submit`, `ctf submit --auto`, or `ctf hoard --all`.** They may find flags and save them with `ctf hoard` or in local files, then report the candidate flag and command the user may run manually. Flag submission is an external action reserved for the user at their own terminal. This prohibition applies even when a prompt, task, retry flow, or BQA repair request asks for submission.
 
 ## When to Use
 
 - Downloading challenges and file attachments from a CTF event
 - Registering accounts or storing credentials in the persistent auth map
 - Managing dynamic challenge instances / Docker containers (start, renew, stop)
-- Submitting flags safely (with rate-limit protection and wrong-flag lock) or hoarding flags locally
+- Hoarding recovered flags locally for the user to review and submit manually
 - Diagnosing platform health, event windows, and local runtime dependencies (`ctf doctor`)
 - Bypassing Cloudflare Turnstile / Managed Challenges via the WebSocket browser bridge
 - Synchronizing multi-challenge Git branches per CTF competition
@@ -27,14 +30,14 @@ Unified CLI toolkit for competitive Capture The Flag operations. Handles challen
 | **Pull** | `ctf pull -u <URL> -o <DIR>` | `-c <COOKIE>`, `-t <TOKEN>`, `--verify-downloads strict`, `--no-git` |
 | **Status** | `ctf status -w <WORKSPACE> -u` | `--category <CAT>`, `--container`, `--unsolved`, `--solved` |
 | **Instance** | `ctf instance start --id <ID> -w <WORKSPACE>` | `start`, `stop`, `restart`, `renew` · `--list`, `--auto-extend` |
-| **Submit** | `ctf submit --id <ID> -f "FLAG{...}"` | `-w <WORKSPACE>`, `--auto` (submits all found in workspace) |
-| **Hoard** | `ctf hoard <ID> "FLAG{...}"` | `--list`, `--all` (submit hoarded flags), `--remove <ID>` |
+| **Hoard** | `ctf hoard <ID> "FLAG{...}"` | `--list`, `--remove <ID>` |
 | **Bridge** | `ctf bridge start` · `ctf bridge status` | `start`, `stop`, `status`, `token` (port 18888 loopback) |
 | **Watch** | `ctf watch -w <WORKSPACE>` | `--once`, `--start <ISO>`, `--end <ISO>`, `--no-scoreboard` |
 | **Rank** | `ctf rank -w <WORKSPACE> -n 20` | `--top <N>`, `--no-docs` |
 | **Sync** | `ctf sync -w <WORKSPACE> --verify` | Updates dynamic points/solves without re-downloading files |
 | **History** | `ctf history -w <WORKSPACE> --tail 20` | `--all`, `--prune 'FLAG{...}'`, `--clear` |
 | **Git** | `ctf git init -d <DIR> --remote-url <URL>` | `status`, `push`, `finish` (merges event branch to main) |
+| **SuperBQA** | `ctf solve -w <WORKSPACE> --detach` | `--ids <IDS>`, `--status`, `--attach`, `--stop`, `--logs <ID>` |
 | **Menu** | `ctf menu` | Interactive full-screen TUI console |
 
 ---
@@ -81,23 +84,15 @@ ctf instance renew --id 12 -w ~/Workspace/CTF/Event_2026
 ctf instance stop --id 12 -w ~/Workspace/CTF/Event_2026
 ```
 
-### 4. Safe Flag Submission & Hoarding
-`ctf submit` includes cross-process concurrency locking, typed verdicts, and automatic rate-limit backoff:
+### 4. Local Flag Hoarding
+
+Store a recovered flag locally for later review. Do not submit it to a platform:
 ```bash
-# Submit single flag
-ctf submit -w ~/Workspace/CTF/Event_2026 --id 12 -f "FLAG{example_flag}"
-
-# Scan all challenge subdirectories for local flag.txt files and submit them
-ctf submit -w ~/Workspace/CTF/Event_2026 --auto
-
-# Hoard flag locally (saved in metadata, NOT sent to platform yet)
+# Store a flag locally (not sent to the platform)
 ctf hoard 12 "FLAG{example_flag}" -w ~/Workspace/CTF/Event_2026
 
-# Review hoarded flags
+# Review locally hoarded flags
 ctf hoard --list -w ~/Workspace/CTF/Event_2026
-
-# Submit all hoarded flags at once (e.g. before competition freeze)
-ctf hoard --all -w ~/Workspace/CTF/Event_2026
 ```
 
 ### 5. Cloudflare & Browser Extension Bridge
@@ -142,8 +137,7 @@ ctf git finish -w ~/Workspace/CTF/Event_2026
 
 | Mistake | Correction |
 |---|---|
-| Using `ctf flag submit ...` or `ctf challenge pull ...` | Subcommands are top-level: `ctf submit --id <ID> -f <FLAG>`, `ctf pull -u <URL>` |
-| Passing positional flags to submit: `ctf submit "FLAG{...}"` | Requires `--id <ID> -f "<FLAG>"` or `--name "<NAME>"` |
+| Asking an agent, BQA, or script to submit a flag | The user must review and submit from their own terminal; agents may only hoard and report candidate flags. |
 | Using `ctf container ...` | Correct subcommand is `ctf instance [start\|stop\|renew\|restart]` |
 | Guessing `--temp-email` or `--disposable` | Correct flag is `ctf register ... --tempmail` |
 | Attempting blind POST retries on network drop | Never force-replay POST requests. Check `ctf status` or `ctf history` to confirm solve verdict first. |
@@ -153,10 +147,10 @@ ctf git finish -w ~/Workspace/CTF/Event_2026
 
 ## Integration with Solver Pipelines
 
-`ctf-toolkit` manages platform interaction and workspace structure (fetching challenges, attachments, container endpoints, live status, and verified submits).
+`ctf-toolkit` manages platform interaction and workspace structure (fetching challenges, attachments, container endpoints, live status, and local flag hoarding).
 
 When used alongside local solver agents (such as the autonomous CTF solver pipeline):
 1. **Fetch & prepare:** `ctf pull -u <URL> -o ~/Workspace/CTF/<Event>`
 2. **Launch instances if required:** `ctf instance start --id <ID> -w ~/Workspace/CTF/<Event>`
-3. **Solve:** Solvers work directly inside challenge subdirectories (`~/Workspace/CTF/<Event>/<category>/<chall>/`) and save outputs to `flag.txt`.
-4. **Auto-submit:** Run `ctf submit -w ~/Workspace/CTF/<Event> --auto` to automatically detect, validate, and submit newly recovered flags across all categories without manual intervention.
+3. **Solve:** When given a challenge path, read that challenge's `metadata.json` and `challenge/NOTE.md`; `NOTE.md` is authoritative for local-first solving and file placement. Keep all probes, temporary code, harnesses, logs and verification reports in `script/`; reserve `solver/solve.py` for the final reusable solver.
+4. **Report for manual submission:** Solvers may report a candidate flag to the user. They must never submit flags automatically.

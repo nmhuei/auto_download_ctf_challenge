@@ -25,9 +25,12 @@ import random
 import re
 import socket
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .instance_service import parse_host_port
 from ..storage.workspace_repo import WorkspaceRepo
+from ..utils.http_client import parse_retry_after_seconds
 from ..utils.logger import Logger
 
 # ---------------------------------------------------------------------- #
@@ -72,17 +75,8 @@ def _now() -> float:
 
 
 def _parse_entry(entry: Any) -> Optional[Tuple[str, int]]:
-    """'host:port' → (host, port); bỏ qua URL http(s)."""
-    s = str(entry or "").strip()
-    if not s or s.startswith("http"):
-        return None
-    m = re.match(r"^([\w.\-]+):(\d+)$", s)
-    if not m:
-        return None
-    try:
-        return m.group(1), int(m.group(2))
-    except ValueError:
-        return None
+    """Compatibility wrapper around the shared safe endpoint parser."""
+    return parse_host_port(entry)
 
 
 def tcp_probe(host: str, port: int, timeout: float = 3.0) -> bool:
@@ -217,7 +211,7 @@ class InstanceKeepAlive:
         return None
 
     def _flag_status(self, tracker: InstanceTracker) -> dict:
-        """status.flag qua repo.read_status (R-A). Thiếu → flag coi như null."""
+        """status.flag qua repo.read_status (R-A). Thiếu → flag coi như null. Lỗi → unknown."""
         if self.repo is None or not tracker.meta_path:
             return {"value": None, "state": "none"}
         try:
@@ -226,7 +220,7 @@ class InstanceKeepAlive:
             return {"value": flag.get("value"),
                     "state": flag.get("state", "none")}
         except Exception:
-            return {"value": None, "state": "none"}
+            return {"value": None, "state": "unknown"}
 
     @staticmethod
     def renew_threshold(lifetime: Optional[float]) -> float:
@@ -242,11 +236,28 @@ class InstanceKeepAlive:
         if tracker.platform_kind == "gzctf":
             return True
         last = tracker.last_op_mono
-        return last is None or (_now() - last) >= WHALE_OP_GAP
+        if last is not None and (_now() - last) < WHALE_OP_GAP:
+            return False
+        if tracker.meta_path:
+            op_file = Path(tracker.meta_path).parent / ".whale_last_op"
+            if op_file.is_file():
+                try:
+                    raw = op_file.read_text(encoding="utf-8").strip()
+                    if raw and (time.time() - float(raw)) < WHALE_OP_GAP:
+                        return False
+                except (OSError, ValueError):
+                    pass
+        return True
 
     def _mark_whale_op(self, tracker: InstanceTracker) -> None:
         if tracker.platform_kind != "gzctf":
             tracker.last_op_mono = _now()
+            if tracker.meta_path:
+                op_file = Path(tracker.meta_path).parent / ".whale_last_op"
+                try:
+                    op_file.write_text(str(time.time()), encoding="utf-8")
+                except OSError:
+                    pass
 
     # ------------------------------------------------------------------ #
     # Tick chính — level-triggered reconciliation
@@ -280,6 +291,10 @@ class InstanceKeepAlive:
             if tracker.backoff_deadline is not None and _now() >= tracker.backoff_deadline:
                 return self._begin_restart(tracker)
             return events
+        if tracker.state == RENEW_FAILED:
+            if tracker.phase_deadline is not None and _now() < tracker.phase_deadline:
+                return events
+            tracker.phase_deadline = None
 
         # ---- Observe ---------------------------------------------------- #
         status = self._get_status_safe(tracker)
@@ -336,12 +351,16 @@ class InstanceKeepAlive:
             return self._try_renew(tracker, events, remaining,
                                    was_renew_failed=was_renew_failed)
         tracker.state = ALIVE
+        tracker.phase_deadline = None
         return events
 
     # ------------------------------------------------------------------ #
     def _get_status_safe(self, tracker: InstanceTracker) -> dict:
         try:
-            return self.svc.platform.get_instance_status(tracker.challenge_id) or {}
+            res = self.svc.platform.get_instance_status(tracker.challenge_id)
+            if isinstance(res, tuple):
+                res = res[1] if len(res) > 1 and isinstance(res[1], dict) else res[0]
+            return res if isinstance(res, dict) else {}
         except Exception:
             return {"status": "unknown", "entry": None}
 
@@ -422,6 +441,7 @@ class InstanceKeepAlive:
             tracker.renew_attempts = 0
             tracker.tcp_fail_count = 0
             tracker.state = ALIVE
+            tracker.phase_deadline = None
             if tracker.platform_kind != "gzctf":
                 tracker.renew_count += 1
             # Neo lại lifetime sau renew (remaining mới ≈ cửa sổ đầy đủ)
@@ -440,6 +460,7 @@ class InstanceKeepAlive:
             if tracker.platform_kind != "gzctf":
                 tracker.renew_count = WHALE_MAX_RENEWS   # circuit breaker OPEN
             tracker.state = GIVE_UP
+            tracker.phase_deadline = None
             ev = tracker.escalate(CRITICAL, f"📢 {tracker.name}: renew bị từ chối "
                                             f"cố định ({msg}) — dừng auto-renew.")
             if ev:
@@ -448,7 +469,10 @@ class InstanceKeepAlive:
 
         tracker.renew_attempts += 1
         tracker.state = RENEW_FAILED
-        delay = random.uniform(EXT_RETRY_MIN, EXT_RETRY_MAX)   # full-jitter
+        retry_after = self._retry_after_seconds(msg)
+        delay = (retry_after if retry_after is not None
+                 else random.uniform(EXT_RETRY_MIN, EXT_RETRY_MAX))
+        tracker.phase_deadline = _now() + delay
         # C12-K1b: counter/delay đổi mỗi tick → phải tách khỏi escalation
         # key, nếu không repeat-suppression vô hiệu (WARNING spam mỗi tick).
         ev = tracker.escalate(
@@ -459,6 +483,15 @@ class InstanceKeepAlive:
         if ev:
             events.append(ev)
         return events
+
+    @staticmethod
+    def _retry_after_seconds(message: Any) -> Optional[float]:
+        """Extract a Retry-After header surfaced by a platform adapter."""
+        match = re.search(r"retry-after\s*[=:]\s*([^\s,;)]+)",
+                          str(message or ""), flags=re.IGNORECASE)
+        if not match:
+            return None
+        return parse_retry_after_seconds(match.group(1))
 
     @staticmethod
     def _is_fatal_renew_error(msg: Any) -> bool:
@@ -483,14 +516,14 @@ class InstanceKeepAlive:
             # GZCTF: recreate giữ flag — auto-restart an toàn
             return self._begin_restart(tracker)
 
-        # R-A: whale / platform không rõ — cấm auto-restart khi đã có flag
+        # R-A: whale / platform không rõ — cấm auto-restart khi đã có flag hoặc không xác minh được
         flag = self._flag_status(tracker)
-        if flag.get("value") or flag.get("state", "none") != "none":
+        if flag.get("value") or flag.get("state") not in ("none", None):
             tracker.blocked_flag_rotate = True
             tracker.state = DEAD
             ev = tracker.escalate(CRITICAL,
                                   f"📢 CRITICAL — {tracker.name}: container đã chết nhưng "
-                                  f"bạn đang GIỮ flag (state={flag.get('state')}). "
+                                  f"bạn đang GIỮ flag hoặc không thể xác minh flag (state={flag.get('state')}). "
                                   f"Restart sẽ ĐỔI FLAG — chạy lại lệnh start thủ công "
                                   f"để xác nhận.")
             if ev:
@@ -505,6 +538,9 @@ class InstanceKeepAlive:
         """
         flag = self._flag_status(tracker)
         had_flag = bool(flag.get("value")) or flag.get("state", "none") != "none"
+        if not self._whale_gap_ok(tracker):
+            return False, "Whale đang giới hạn tần suất restart; hãy thử lại sau."
+        self._mark_whale_op(tracker)
         success, info = self.svc.platform.start_instance(tracker.challenge_id)
         if success and had_flag and self.repo is not None and tracker.meta_path:
 
@@ -549,12 +585,27 @@ class InstanceKeepAlive:
             return ([ev] if ev else [])
         tracker.state = RESTARTING
         tracker.health_checks = 0   # M-2: reset bộ đếm health-check mỗi vòng
+        now = _now()
+        if not self._whale_gap_ok(tracker):
+            tracker.restart_phase = "stop_wait"
+            tracker.phase_deadline = max(
+                now, (tracker.last_op_mono or now) + WHALE_OP_GAP)
+            return [(INFO, f"⏳ {tracker.name}: chờ giới hạn Whale trước khi restart...")]
         tracker.restart_phase = "cooldown"
-        tracker.phase_deadline = _now() + RESTART_COOLDOWN
+        tracker.phase_deadline = now + RESTART_COOLDOWN
+        self._mark_whale_op(tracker)
+        stopped = False
         try:
-            self.svc.platform.stop_instance(tracker.challenge_id)
+            res = self.svc.platform.stop_instance(tracker.challenge_id)
+            stopped = bool(res[0]) if isinstance(res, tuple) else bool(res)
         except Exception:
-            pass
+            stopped = False
+        if not stopped:
+            st = self._get_status_safe(tracker)
+            if (st or {}).get("status") not in ("stopped", None, "none"):
+                tracker.restart_phase = "stop_wait"
+                tracker.phase_deadline = now + RESTART_BACKOFF_BASE
+                return [(ERROR, f"⚠️ {tracker.name}: dừng container thất bại; lùi thời gian thử lại.")]
         return [(INFO, f"♻️ {tracker.name}: recreating container "
                        f"(restart {tracker.restart_count}/{MAX_RESTARTS})...")]
 
@@ -564,14 +615,39 @@ class InstanceKeepAlive:
             return []
         if tracker.restart_phase == "cooldown":
             # DELETE xong → POST create lại
+            if not self._whale_gap_ok(tracker):
+                tracker.phase_deadline = max(
+                    now, (tracker.last_op_mono or now) + WHALE_OP_GAP)
+                return []
             tracker.restart_phase = "boot_wait"
             tracker.phase_deadline = now + random.uniform(BOOT_WAIT_MIN, BOOT_WAIT_MAX)
+            self._mark_whale_op(tracker)
             try:
                 success, info = self.svc.platform.start_instance(tracker.challenge_id)
             except Exception:
                 success = False
             if not success:
                 return self._restart_failed(tracker)
+            return []
+        if tracker.restart_phase == "stop_wait":
+            if not self._whale_gap_ok(tracker):
+                tracker.phase_deadline = max(
+                    now, (tracker.last_op_mono or now) + WHALE_OP_GAP)
+                return []
+            self._mark_whale_op(tracker)
+            stopped = False
+            try:
+                res = self.svc.platform.stop_instance(tracker.challenge_id)
+                stopped = bool(res[0]) if isinstance(res, tuple) else bool(res)
+            except Exception:
+                stopped = False
+            if not stopped:
+                st = self._get_status_safe(tracker)
+                if (st or {}).get("status") not in ("stopped", None, "none"):
+                    tracker.phase_deadline = now + RESTART_BACKOFF_BASE
+                    return [(ERROR, f"⚠️ {tracker.name}: dừng container thất bại; lùi thời gian thử lại.")]
+            tracker.restart_phase = "cooldown"
+            tracker.phase_deadline = now + RESTART_COOLDOWN
             return []
         if tracker.restart_phase == "boot_wait":
             # Health check sau boot (M-2: cho phép tối đa 3 lần cách 10s

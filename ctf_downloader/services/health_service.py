@@ -677,6 +677,17 @@ class HealthService:
             fix="Cài megatools; các attachment không phải Mega vẫn tải bình thường." if not mega_tool else "",
         )
 
+        from ..utils.agy_resolver import is_agy_available, resolve_agy_binary
+
+        agy_bin = resolve_agy_binary("agy")
+        agy_ok = is_agy_available("agy")
+        report.add(
+            "Agy CLI",
+            agy_ok,
+            agy_bin if agy_ok else "agy không có trong PATH hoặc ~/.local/bin",
+            fix="Cài agy vào PATH hoặc ~/.local/bin để dùng 'ctf solve' và BQA recovery." if not agy_ok else "",
+        )
+
         tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
         try:
             cols = shutil.get_terminal_size(fallback=(80, 24)).columns

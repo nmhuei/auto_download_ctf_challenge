@@ -176,7 +176,7 @@ class RCTFPlatform(BasePlatform):
         # 1. Try exchanging token if provided in session or URL
         auth_header = self.session.headers.get("Authorization", "")
         extracted_token = None
-        
+
         if auth_header.startswith("Bearer "):
             extracted_token = auth_header.split("Bearer ")[1].strip()
         elif auth_header:
@@ -264,7 +264,7 @@ class RCTFPlatform(BasePlatform):
                 author = item.get("author")
                 description = item.get("description", "")
                 solves = item.get("solves", 0)
-                
+
                 # Parse files: [{"name": "file.zip", "url": "/uploads/..."}]
                 files_list = []
                 for f in item.get("files", []):
@@ -582,3 +582,93 @@ class RCTFPlatform(BasePlatform):
             return None
         return EventTimes(start_utc=start, end_utc=end,
                           confidence=confidence, source=source)
+
+    # ------------------------------------------------------------------
+    # Dynamic container instance support (rCTF v2 Instancer API)
+    # ------------------------------------------------------------------
+
+    def _instancer_url(self, challenge_id: Any) -> str:
+        import urllib.parse
+        encoded = urllib.parse.quote(str(challenge_id))
+        return f"{self.base_url}/api/v2/integrations/challs/{encoded}/instance"
+
+    def _normalize_rctf_instance_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        endpoints = data.get("endpoints") or []
+        entry = None
+        if endpoints and isinstance(endpoints, list):
+            ep = endpoints[0]
+            if isinstance(ep, dict):
+                host = ep.get("host")
+                port = ep.get("port")
+                if host and port:
+                    entry = f"{host}:{port}"
+        time_left_ms = data.get("timeLeftMilliseconds") or 0
+        time_left = round(time_left_ms / 1000) if time_left_ms else None
+        return {
+            "status": data.get("status", "unknown"),
+            "entry": entry,
+            "time_left": time_left,
+            "raw": data,
+        }
+
+    def start_instance(self, challenge_id: Any) -> Tuple[bool, Dict[str, Any]]:
+        url = self._instancer_url(challenge_id)
+        try:
+            resp = self.session.put(url, json={}, timeout=self._timeout(15))
+            if resp.status_code == 200:
+                payload = self._json_object(resp) or {}
+                kind = str(payload.get("kind") or "")
+                if kind.startswith("bad") or kind == "error":
+                    msg = payload.get("message") or f"Instancer error: {kind}"
+                    return False, {"message": msg}
+                data = payload.get("data")
+                if not isinstance(data, dict) and not kind.startswith("good"):
+                    return False, {"message": "Phản hồi start instance rCTF không hợp lệ."}
+                norm = self._normalize_rctf_instance_data(data or {})
+                if norm.get("entry") is None and norm.get("time_left") is None and norm.get("status") == "unknown":
+                    if not kind.startswith("good"):
+                        return False, {"message": "Instancer không cung cấp thông tin container."}
+                return True, norm
+            elif resp.status_code == 400:
+                payload = self._json_object(resp) or {}
+                data_obj = payload.get("data") if isinstance(payload, dict) else {}
+                msg = (data_obj.get("message") if isinstance(data_obj, dict) else None) or "Lỗi instancer"
+                return False, {"message": msg}
+            return False, {"message": f"HTTP {resp.status_code}: {resp.text[:100]}"}
+        except Exception as e:
+            return False, {"message": str(e)}
+
+    def stop_instance(self, challenge_id: Any) -> Tuple[bool, str]:
+        url = self._instancer_url(challenge_id)
+        try:
+            resp = self.session.delete(url, timeout=self._timeout(15))
+            if resp.status_code in (200, 204):
+                return True, "Đã dừng container."
+            return False, f"Dừng container thất bại (HTTP {resp.status_code})"
+        except Exception as e:
+            return False, str(e)
+
+    def extend_instance(self, challenge_id: Any) -> Tuple[bool, str]:
+        url = self._instancer_url(challenge_id)
+        try:
+            resp = self.session.patch(url, json={}, timeout=15)
+            if resp.status_code == 200:
+                return True, "Đã gia hạn thời gian sống của container."
+            return False, f"Gia hạn container thất bại (HTTP {resp.status_code})"
+        except Exception as e:
+            return False, str(e)
+
+    def get_instance_status(self, challenge_id: Any) -> Dict[str, Any]:
+        url = self._instancer_url(challenge_id)
+        try:
+            resp = self.session.get(url, timeout=10)
+            if resp.status_code == 200:
+                payload = self._json_object(resp) or {}
+                data = payload.get("data") or {}
+                norm = self._normalize_rctf_instance_data(data)
+                return norm
+            elif resp.status_code == 400:
+                return {"status": "unsupported", "entry": None, "time_left": None}
+            return {"status": "unknown", "entry": None, "time_left": None}
+        except Exception:
+            return {"status": "unknown", "entry": None, "time_left": None}

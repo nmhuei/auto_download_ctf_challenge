@@ -9,7 +9,7 @@ _ctf() {
 
     local GLOBAL_OPTS="-v --version -i --interactive -w --workspace"
 
-    local SUBCOMMANDS="pull download clone status tree ls dashboard note ghi-chu tag tags workspaces scan instance container spawn submit flag hoard flag-stash rank scoreboard leaderboard watch register reg doctor health checkup menu ui console storage du archive sync resync history log open sniper serve web git config bridge ext"
+    local SUBCOMMANDS="pull download clone status tree ls dashboard solve solver bqa eating note ghi-chu tag tags workspaces scan instance container spawn submit flag hoard flag-stash rank scoreboard leaderboard watch register reg doctor health checkup menu ui console storage du archive sync resync history log open sniper serve web git config bridge ext ask expert astra"
 
     # Tìm subcommand cuối (bỏ qua option và giá trị của nó)
     local cmd=""
@@ -17,6 +17,7 @@ _ctf() {
         case "${COMP_WORDS[i]}" in
             pull|download|clone)          cmd="pull" ;;
             status|tree|ls|dashboard)     cmd="status" ;;
+            solve|solver|bqa|eating)      cmd="solve" ;;
             note|ghi-chu)                 cmd="note" ;;
             tag|tags)                     cmd="tag" ;;
             workspaces|scan)              cmd="workspaces" ;;
@@ -37,6 +38,7 @@ _ctf() {
             bridge|ext)                   cmd="bridge" ;;
             sniper)                       cmd="sniper" ;;
             serve|web)                    cmd="serve" ;;
+            ask|expert|astra)             cmd="ask" ;;
         esac
     done
 
@@ -44,7 +46,8 @@ _ctf() {
     case "$cmd" in
         bridge)      opts="status start stop token" ;;
         pull)        opts="-u --url -c --cookie -t --token -o --output -j --threads -C --category -E --exclude --no-third-party --no-template -f --force --verify-downloads --allow-private-redirects --update --refresh-meta --timeout --no-git --git-base --git-remote --no-git-push -i --interactive" ;;
-        status)      opts="-w --workspace -u --unsolved -s --solved -C --category --container --label --search" ;;
+        status)      opts="-w --workspace -u --unsolved -s --solved -C --category --container --label --search --solver --watch" ;;
+        solve)       opts="-w --workspace --ids --workers --timeout --stale-timeout --detach --bg --foreground --status --active --stop --cancel --logs --attach --watch --new-session --reset-sessions --distill" ;;
         note)        opts="-w --workspace --remove" ;;
         tag)         opts="-r --remove -w --workspace" ;;
         workspaces)  opts="-d --dir" ;;
@@ -64,6 +67,7 @@ _ctf() {
         config)      opts="key value on off auto-sync workspace-root" ;;
         sniper)      opts="-w --workspace --start-at --retry-wrong --poll" ;;
         serve)       opts="-w --workspace --port" ;;
+        ask)         opts="-w --workspace -o --output --model --effort --preflight-only --verify-only --dry-run" ;;
         *)           opts="$GLOBAL_OPTS $SUBCOMMANDS" ;;
     esac
 

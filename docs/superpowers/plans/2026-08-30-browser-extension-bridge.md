@@ -26,7 +26,7 @@
 - Create: `ctf_downloader/bridge/__init__.py`
 - Create: `ctf_downloader/bridge/constants.py`
 - Create: `ctf_downloader/bridge/messages.py`
-- Test: `test_bridge_protocol.py`
+- Test: `tests/test_bridge_protocol.py`
 
 **Interfaces:**
 - Produces:
@@ -36,7 +36,7 @@
   - `serialize_message(msg_type, payload) -> str`
   - `deserialize_message(raw_json) -> tuple[BridgeMessageType, dict]`
 
-- [ ] **Step 1: Write failing tests in `test_bridge_protocol.py`**
+- [ ] **Step 1: Write failing tests in `tests/test_bridge_protocol.py`**
 - [ ] **Step 2: Run test to verify it fails**
 - [ ] **Step 3: Implement `ctf_downloader/bridge/constants.py` and `messages.py`**
 - [ ] **Step 4: Run test to verify it passes**
@@ -49,7 +49,7 @@
 **Files:**
 - Create: `ctf_downloader/bridge/server.py`
 - Create: `ctf_downloader/bridge/daemon.py`
-- Test: `test_bridge_server.py`
+- Test: `tests/test_bridge_server.py`
 
 **Interfaces:**
 - Consumes: `BridgeMessageType`, `BridgeRequest`, `BridgeResponse` from Task 1
@@ -60,7 +60,7 @@
   - `BridgeDaemon.ensure_running() -> BridgeServerInfo`
   - `BridgeDaemon.stop()`
 
-- [ ] **Step 1: Write failing tests in `test_bridge_server.py`**
+- [ ] **Step 1: Write failing tests in `tests/test_bridge_server.py`**
 - [ ] **Step 2: Run test to verify it fails**
 - [ ] **Step 3: Implement `server.py` and `daemon.py`**
 - [ ] **Step 4: Run test to verify it passes**
@@ -73,7 +73,7 @@
 **Files:**
 - Create: `ctf_downloader/bridge/transport.py`
 - Modify: `ctf_downloader/utils/http_client.py`
-- Test: `test_bridge_transport.py`
+- Test: `tests/test_bridge_transport.py`
 
 **Interfaces:**
 - Consumes: `BridgeDaemon`, `BridgeRequest`, `BridgeResponse` from Tasks 1 & 2
@@ -81,7 +81,7 @@
   - `BrowserBridgeTransport.send(request, **kwargs) -> requests.Response`
   - `AdaptiveSession` auto-routing to `BrowserBridgeTransport` when Cloudflare Challenge is triggered or when bridge mode is active.
 
-- [ ] **Step 1: Write failing tests in `test_bridge_transport.py`**
+- [ ] **Step 1: Write failing tests in `tests/test_bridge_transport.py`**
 - [ ] **Step 2: Run test to verify it fails**
 - [ ] **Step 3: Implement `transport.py` and modify `http_client.py`**
 - [ ] **Step 4: Run test to verify it passes**
@@ -101,14 +101,14 @@
 - Create: `extension/popup/popup.js`
 - Create: `extension/icons/icon16.png`, `extension/icons/icon48.png`, `extension/icons/icon128.png`
 - Create: `extension/README.md`
-- Test: `test_extension_manifest.py`
+- Test: `tests/test_extension_manifest.py`
 
 **Interfaces:**
 - Produces:
   - Working Manifest V3 extension ready to load via `chrome://extensions` (Developer mode).
   - Background Service Worker executing `fetch()` on behalf of CLI and streaming base64 chunks.
 
-- [ ] **Step 1: Write validation test `test_extension_manifest.py`**
+- [ ] **Step 1: Write validation test `tests/test_extension_manifest.py`**
 - [ ] **Step 2: Run test to verify it fails**
 - [ ] **Step 3: Implement all files in `extension/`**
 - [ ] **Step 4: Run test to verify it passes**
@@ -122,7 +122,7 @@
 - Modify: `ctf_downloader/cli.py`
 - Modify: `ctf_downloader/cli_commands.py`
 - Modify: `ctf_downloader/services/health_service.py`
-- Test: `test_cli_bridge_commands.py`
+- Test: `tests/test_cli_bridge_commands.py`
 
 **Interfaces:**
 - Produces:
@@ -130,7 +130,7 @@
   - `ctf doctor` diagnostics reporting Bridge daemon status & Extension connection
   - `--bridge` option on `ctf pull` / `ctf sync` / `ctf submit`
 
-- [ ] **Step 1: Write failing tests in `test_cli_bridge_commands.py`**
+- [ ] **Step 1: Write failing tests in `tests/test_cli_bridge_commands.py`**
 - [ ] **Step 2: Run test to verify it fails**
 - [ ] **Step 3: Implement CLI commands and doctor integration**
 - [ ] **Step 4: Run test to verify it passes**
@@ -141,9 +141,9 @@
 ### Task 6: Full Regression Verification & End-to-End Test
 
 **Files:**
-- Test: `test_bridge_e2e.py`
+- Test: `tests/test_bridge_e2e.py`
 - Run entire test suite
 
-- [ ] **Step 1: Write and run `test_bridge_e2e.py`**
+- [ ] **Step 1: Write and run `tests/test_bridge_e2e.py`**
 - [ ] **Step 2: Run full pytest suite across entire repo**
 - [ ] **Step 3: Commit final integration verification**

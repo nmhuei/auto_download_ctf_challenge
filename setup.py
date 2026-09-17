@@ -22,6 +22,9 @@ setup(
     description="Unified CTF Challenge Downloader, Submitter, Container Manager & Dashboard",
     author="Antigravity",
     packages=find_namespace_packages(include=["ctf_downloader*"]),
+    package_data={
+        "ctf_downloader": ["bqa_prompts/*.md", "bqa_prompts/pull/*.md"],
+    },
     cmdclass={"build_py": ForceBuildPy},
     data_files=[
         ("share/bash-completion/completions", ["completions/ctf.bash"]),
@@ -34,7 +37,8 @@ setup(
         "gdown>=4.7.0",
         "urllib3>=1.26.0",
         "cryptography>=41.0.0",
-        "curl_cffi>=0.7.4"
+        "curl_cffi>=0.7.4",
+        "websockets>=15.0"
     ],
     entry_points={
         "console_scripts": [

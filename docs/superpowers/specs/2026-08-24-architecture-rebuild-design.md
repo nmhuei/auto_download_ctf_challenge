@@ -24,7 +24,7 @@
 
 | # | Ràng buộc | Biện pháp kiểm chứng |
 |---|---|---|
-| R1 | 100 test hiện có phải xanh sau MỖI giai đoạn migrate | Chạy `pytest test_suite.py test_sp1_submit.py test_sp2_download.py test_sp3_recon.py -q` cuối mỗi phase |
+| R1 | 100 test hiện có phải xanh sau MỖI giai đoạn migrate | Chạy `pytest tests/test_suite.py tests/test_sp1_submit.py tests/test_sp2_download.py tests/test_sp3_recon.py -q` cuối mỗi phase |
 | R2 | Chuỗi message user-facing trong `downloaders/manager.py` là **tiếng Việt** (i18n toàn bộ từ commit `99ce28d` + các batch sau); keyword kỹ thuật giữ nguyên văn. Khi thay if/elif bằng registry, message phải khớp test SP2 bản i18n hiện hành | Diff chuỗi trước/sau phải rỗng (so baseline i18n) |
 | R3 | Import path công khai hiện tại phải tiếp tục tồn tại: `ctf_downloader.{core,submitter,instance_manager,dashboard,ranking}`, `platforms.detector.PlatformDetector.detect_platform*`, dataclass ở `platforms.base` | File cũ thành facade mỏng re-export |
 | R4 | Cấm import ngược tầng (service→CLI, storage→service, extractor→downloader) | Review thủ công + quy ước ghi trong CLAUDE.md sau này |

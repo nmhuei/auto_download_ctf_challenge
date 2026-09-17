@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import socket
 import threading
 import time
@@ -93,7 +94,11 @@ def parse_cookie_string(cookie_str: str) -> Dict[str, str]:
     if not cookie_str:
         return {}
 
-    cookie_str = cookie_str.strip()
+    from .sanitize import sanitize_cookie_input
+    cleaned = sanitize_cookie_input(cookie_str)
+    if not cleaned:
+        return {}
+    cookie_str = cleaned.strip()
 
     if cookie_str.startswith("{") and cookie_str.endswith("}"):
         try:
@@ -108,9 +113,14 @@ def parse_cookie_string(cookie_str: str) -> Dict[str, str]:
         part = part.strip()
         if not part:
             continue
+        if re.match(r"^[Cc][Oo][Oo][Kk][Ii][Ee]\s*:", part):
+            part = re.sub(r"^[Cc][Oo][Oo][Kk][Ii][Ee]\s*:\s*", "", part).strip()
         if "=" in part:
             key, val = part.split("=", 1)
-            cookies[key.strip()] = val.strip()
+            key = key.strip().strip("'\"")
+            if re.match(r"^[Cc][Oo][Oo][Kk][Ii][Ee]\s*:", key):
+                key = re.sub(r"^[Cc][Oo][Oo][Kk][Ii][Ee]\s*:\s*", "", key).strip()
+            cookies[key] = val.strip().strip("'\"")
         elif "session" not in cookies:
             cookies["session"] = part
     return cookies
@@ -768,7 +778,17 @@ class CloudflareAdaptiveSession(requests.Session):
             response, inspect_body=not bool(kwargs.get("stream"))
         )
 
-        if not challenged or not activated:
+        if not challenged:
+            return response
+
+        if not activated:
+            if method_up in self.SAFE_REPLAY_METHODS and self._enable_bridge:
+                bridge_resp = self._bridge_request(method_up, url, **kwargs)
+                if bridge_resp is not None and not is_cloudflare_challenge(
+                    bridge_resp, inspect_body=not bool(kwargs.get("stream"))
+                ):
+                    self._bridge_active = True
+                    return bridge_resp
             return response
 
         if method_up not in self.SAFE_REPLAY_METHODS:

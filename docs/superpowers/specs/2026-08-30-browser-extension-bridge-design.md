@@ -198,15 +198,15 @@ Trong `AdaptiveSession`:
 
 ## 7. Kế hoạch Kiểm thử & Đảm bảo Chất lượng (Test Strategy)
 
-1. **`test_bridge_protocol.py`**:
+1. **`tests/test_bridge_protocol.py`**:
    - Test Handshake, message serialization/deserialization, error formats.
-2. **`test_bridge_server.py`**:
+2. **`tests/test_bridge_server.py`**:
    - Test WebSocket server lifecycle, xác thực token, xử lý nhiều request đồng thời, timeout handling.
-3. **`test_bridge_transport.py`**:
+3. **`tests/test_bridge_transport.py`**:
    - Test tích hợp `BrowserBridgeTransport` với `AdaptiveSession`:
      - Giả lập mock extension response → verify `requests.Response` đầu ra khớp status, headers, json body.
      - Giả lập binary payload base64 → verify file download nhị phân đúng hash SHA-256.
-4. **`test_cli_bridge_integration.py`**:
+4. **`tests/test_cli_bridge_integration.py`**:
    - Test lệnh `ctf pull`, `ctf sync`, `ctf submit` khi chạy qua Bridge Transport.
 5. **Toàn bộ test suite hiện có (41+ tests)** phải tiếp tục PASS 100%.
 

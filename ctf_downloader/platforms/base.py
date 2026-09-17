@@ -95,8 +95,11 @@ def epoch_ms(value: Any) -> Optional[int]:
 # --------------------------------------------------------------------------- #
 # Tiện ích HTTP an toàn dùng chung (detector/probe đều gọi qua đây)
 # --------------------------------------------------------------------------- #
-def safe_get(session: Any, url: str, timeout: int = 5):
+def safe_get(session: Any, url: str, timeout: Optional[int] = None):
     """GET an toàn: trả response hoặc None (mọi exception bị nuốt)."""
+    if timeout is None:
+        session_timeout = getattr(session, "_timeout", None) or getattr(session, "timeout", None)
+        timeout = int(session_timeout) if isinstance(session_timeout, (int, float)) and session_timeout > 0 else 5
     try:
         return session.get(url, timeout=timeout)
     except Exception:
@@ -125,6 +128,22 @@ class BaseCTFPlatform(ABC):
         self.ctf_info = CTFInfo(url=self.base_url)
         # Verdict chuẩn hoá của lần submit gần nhất: correct | incorrect | unknown | ratelimited
         self.last_verdict: str = "unknown"
+
+    def _timeout(self, default: float = 15.0) -> float:
+        """Return configured session timeout or fallback to default."""
+        session_timeout = getattr(self.session, "_timeout", None) or getattr(self.session, "timeout", None)
+        if isinstance(session_timeout, (int, float)) and session_timeout > 0:
+            return float(session_timeout)
+        return float(default)
+
+    @staticmethod
+    def _json_object(resp: Any) -> Optional[Dict[str, Any]]:
+        """Safe JSON extraction: returns a dict or None (never raises)."""
+        try:
+            data = resp.json()
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
 
     @abstractmethod
     def authenticate(self) -> bool:

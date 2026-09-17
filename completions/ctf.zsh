@@ -21,6 +21,9 @@ _ctf() {
             local -a cmds=(
                 'pull:Download challenges, files & build workspace'
                 'status:Display challenge structure, points, and solve progress'
+                'solve:Chọn challenge và chạy BQA EATING song song'
+                'bqa:Alias của solve (BQA EATING)'
+                'eating:Alias của solve (BQA EATING)'
                 'note:Ghi/xoá note cho một challenge'
                 'tag:Thêm/xoá label cho một challenge'
                 'workspaces:Scan and list all local CTF workspaces'
@@ -41,11 +44,13 @@ _ctf() {
                 'sniper:Nộp flag tự động đúng giờ G'
                 'serve:Dashboard web read-only cho workspace'
                 'bridge:Quản lý Browser Extension Bridge (vượt Cloudflare)'
+                'ask:Chuyển tiếp bài toán hình thức sang chuyên gia Codex Astra'
             )
             # alias map về lệnh chuẩn
             local -a aliases=(
                 'download:alias of pull' 'clone:alias of pull'
                 'tree:alias of status' 'ls:alias of status' 'dashboard:alias of status'
+                'solver:alias of solve'
                 'ghi-chu:alias of note' 'tags:alias of tag'
                 'scan:alias of workspaces'
                 'container:alias of instance' 'spawn:alias of instance'
@@ -58,6 +63,8 @@ _ctf() {
                 'log:alias of history'
                 'web:alias of serve'
                 'ext:alias of bridge'
+                'expert:alias of ask'
+                'astra:alias of ask'
             )
             _describe -t commands 'command' cmds && return 0
             _describe -t commands 'alias' aliases && return 0
@@ -95,7 +102,30 @@ _ctf() {
                         '(-C --category)'{-C,--category}'[filter specific categories]:category:' \
                         '--container[filter only dynamic container challenges]' \
                         '--label[chỉ hiện challenge mang label này]:label:' \
-                        '--search[tìm từ khoá trong tên + note]:keyword:'
+                        '--search[tìm từ khoá trong tên + note]:keyword:' \
+                        '--solver[hiện tiến độ Agy worker của challenge]' \
+                        '--watch[tự refresh khi dùng --solver]'
+                    ;;
+                solve|solver|bqa|eating)
+                    _arguments \
+                        '(-w --workspace)'{-w,--workspace}'[CTF workspace directory]:dir:_directories' \
+                        '--ids[challenge display IDs, ví dụ 1,2,3]:ids:' \
+                        '--workers[số worker chạy song song]:workers:(1 2 3)' \
+                        '--timeout[hard timeout mỗi worker]:seconds:' \
+                        '--stale-timeout[timeout khi worker không có output/heartbeat]:seconds:' \
+                        '--detach[chạy daemon ngầm tách biệt session]' \
+                        '--bg[alias của --detach]' \
+                        '--foreground[chạy foreground có Live table]' \
+                        '--status[xem trạng thái daemon/worker]:target:' \
+                        '--active[liệt kê các bài đang chạy BQA worker]' \
+                        '--stop[dừng worker/daemon]:target:' \
+                        '--cancel[alias của --stop]:target:' \
+                        '--logs[xem tail log của worker]:target:' \
+                        '--attach[kết nối Live table theo dõi daemon]' \
+                        '--watch[tự refresh khi xem status]' \
+                        '--new-session[bắt đầu session mới, không tái sử dụng session của category]' \
+                        '--reset-sessions[xóa lịch sử session các category đã lưu]' \
+                        '--distill[tổng hợp quy trình làm bài vào Playbook category]:category:'
                     ;;
                 note|ghi-chu)
                     _arguments \
@@ -266,6 +296,16 @@ _ctf() {
                 bridge|ext)
                     _arguments \
                         '1:action:(status start stop token)'
+                    ;;
+                ask|expert|astra)
+                    _arguments \
+                        '(-w --workspace)'{-w,--workspace}'[formal workspace directory]:dir:_directories' \
+                        '(-o --output)'{-o,--output}'[output handoff JSON path]:file:_files' \
+                        '--model[Codex model identifier]:model:' \
+                        '--effort[reasoning effort level]:effort:(low medium high xhigh max)' \
+                        '--preflight-only[chạy kiểm tra tiền kiểm sanitizer]' \
+                        '--verify-only[xác minh độc lập candidate solution]:solution:_files' \
+                        '--dry-run[validate preflight without executing model]'
                     ;;
                 *)
                     _arguments $global_opts

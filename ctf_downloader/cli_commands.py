@@ -9,12 +9,15 @@ import os
 import subprocess
 import sys
 import textwrap
+import time
 from collections import Counter
+from pathlib import Path
 from typing import Optional
 
 from rich.console import Console
 from rich.text import Text
 
+from .bqa_recovery import PullCommandFailure
 from .config import DownloaderConfig
 from .interactive_menu import launch_interactive_menu
 from .platforms.registry import display_label
@@ -23,9 +26,11 @@ from .services.instance_service import InstanceService
 from .services.pull_service import PullService
 from .services.rank_service import RankService
 from .services.status_service import StatusService
+from .services.solver_service import SolverAlreadyRunning, SolverSelectionError, SolverService
 from .services.submit_service import SubmitService
 from .storage.workspace_repo import WorkspaceRepo, is_superseded
 from .ui.theme import ERROR as _ERROR_COLOR
+from .ui.theme import FG_BASE
 from .ui.theme import FG_FAINT as _FAINT_COLOR
 from .ui.theme import FG_MUTED as _MUTED_COLOR
 from .ui.theme import INFO as _INFO_COLOR
@@ -56,12 +61,21 @@ def handle_pull(args):
         cookie_val = AuthService.resolve_cookie_arg(args.cookie)
     except RuntimeError as exc:
         Logger.error(str(exc))
-        sys.exit(2)
+        raise PullCommandFailure("CTF-PULL-D01") from exc
+
+    token_val = args.token
+    if not cookie_val and not token_val:
+        target = args.output or args.url
+        c_saved, t_saved = AuthService.resolve(target)
+        if not c_saved and not t_saved and args.output and args.url:
+            c_saved, t_saved = AuthService.resolve(args.url)
+        cookie_val = c_saved
+        token_val = t_saved
 
     config = DownloaderConfig(
         url=args.url,
         cookie=cookie_val,
-        token=args.token,
+        token=token_val,
         output_dir=args.output,
         threads=args.threads,
         download_third_party=not args.no_third_party,
@@ -86,18 +100,28 @@ def handle_pull(args):
         else:
             result = PullService.run(config)
         if not result.get('ok'):
-            sys.exit(1)
+            raise PullCommandFailure(
+                result.get("bqa_error_code", "CTF-PULL-D10"),
+                result.get("bqa_evidence"),
+            )
     except KeyboardInterrupt:
         # Audit màu SEMANTIC: [bold red][!] legacy → Logger.error (token
         # error đỏ semantic, cùng pattern báo lỗi của handle_pull dưới đây).
         Logger.error('Download đã bị huỷ bởi người dùng.')
         sys.exit(130)
-    except Exception as e:
-        Logger.error(f'Lỗi nghiêm trọng khi pull: {e}')
-        sys.exit(1)
+    except PullCommandFailure:
+        raise
+    except Exception as exc:
+        Logger.error(f'Lỗi nghiêm trọng khi pull: {type(exc).__name__}')
+        raise
 
 
 def handle_status(args):
+    if bool(getattr(args, 'solver', False)):
+        service = SolverService(args.workspace)
+        _render_solver_status(service, target=getattr(args, 'target', None),
+                              watch=bool(getattr(args, 'watch', False)))
+        return
     repo = WorkspaceRepo(args.workspace)
     StatusService.render_tree(
         repo,
@@ -108,6 +132,430 @@ def handle_status(args):
         filter_labels=getattr(args, 'labels', None),
         search=getattr(args, 'search', None)
     )
+
+
+def _solver_running_label(*, animate: bool) -> str:
+    """Return a stable pipe-friendly label or a time-varying TTY spinner."""
+    if not animate:
+        return "◌ running"
+    frames = ("◴", "◷", "◶", "◵")
+    return f"{frames[int(time.monotonic() * 8) % len(frames)]} running"
+
+
+def _get_challenge_flag(service: SolverService, job: SolverJob, state: dict) -> str | None:
+    """Retrieve candidate or solved flag from state, local flag files, metadata, or report."""
+    from .services.solver_service import _FLAG_RE, _is_dummy_flag
+
+    candidate = state.get("candidate_flag") or state.get("flag")
+    if isinstance(candidate, str) and candidate.strip() and not _is_dummy_flag(candidate.strip()):
+        return candidate.strip()
+
+    for p in (job.path / "flag.txt", job.path / "solver" / "flag.txt", job.script_dir / "flag.txt"):
+        if p.is_file():
+            try:
+                txt = p.read_text(encoding="utf-8", errors="replace").strip()
+                if txt:
+                    m = _FLAG_RE.search(txt)
+                    cand = m.group(0) if m else txt
+                    if not _is_dummy_flag(cand):
+                        return cand
+            except OSError:
+                pass
+
+    try:
+        meta_path = job.path / "metadata.json"
+        if meta_path.is_file() and hasattr(service, "repo"):
+            st = service.repo.read_status(meta_path)
+            fl_val = str((st.get("flag") or {}).get("value") or "").strip()
+            if fl_val and not _is_dummy_flag(fl_val):
+                return fl_val
+    except Exception:
+        pass
+
+    rep_file = job.script_dir / "worker-report.json"
+    if rep_file.is_file():
+        try:
+            rep = json.loads(rep_file.read_text(encoding="utf-8"))
+            if isinstance(rep, dict):
+                r_cand = rep.get("candidate_flag") or rep.get("flag")
+                if isinstance(r_cand, str) and r_cand.strip() and not _is_dummy_flag(r_cand.strip()):
+                    return r_cand.strip()
+        except (OSError, ValueError):
+            pass
+
+    return None
+
+
+def _solver_table(service: SolverService, *, animate: bool | None = None):
+    """Current solver rows.  It reads durable per-challenge state only."""
+    from rich import box
+    from rich.table import Table
+
+    table = Table(
+        box=box.SIMPLE_HEAVY,
+        show_edge=False,
+        header_style=_FAINT_COLOR,
+        expand=True,
+        padding=(0, 1),
+        pad_edge=False,
+    )
+    table.add_column("ID", justify="right", style=_MUTED_COLOR, no_wrap=True)
+    table.add_column("CHALLENGE", style=FG_BASE, no_wrap=True, overflow="ellipsis")
+    table.add_column("CATEGORY", style=_MUTED_COLOR, no_wrap=True)
+    table.add_column("STATE", no_wrap=True)
+    table.add_column("OUTCOME", no_wrap=True)
+    table.add_column("SRC", justify="center", no_wrap=True)
+    table.add_column("INST", justify="center", no_wrap=True)
+    table.add_column("PHASE", style=_MUTED_COLOR, no_wrap=True, overflow="ellipsis", ratio=1)
+    if animate is None:
+        animate = bool(console.is_terminal)
+    labels = {
+        "queued": ("○ queued", _MUTED_COLOR),
+        "starting": ("◌ starting", _WARN_COLOR),
+        "running": (_solver_running_label(animate=animate), _WARN_COLOR),
+        "completed": ("✓ completed", _SOLVED_COLOR),
+        "failed": ("! failed", _ERROR_COLOR),
+        "filtered": ("! filtered", _ERROR_COLOR),
+        "skipped_no_source": ("— no source", _MUTED_COLOR),
+        "cancelled": ("— cancelled", _MUTED_COLOR),
+    }
+    outcome_labels = {
+        "solved_local": ("★ solved", _SOLVED_COLOR),
+        "candidate_found": ("⚑ candidate", _WARN_COLOR),
+        "analyzed": ("✦ analyzed", _INFO_COLOR),
+    }
+    for job in service.scan():
+        state = service.read_job(job)
+        flag = _get_challenge_flag(service, job, state)
+        value = str(state.get("state") or "idle")
+        shown, style = labels.get(value, ("· idle", _MUTED_COLOR))
+        outcome_val = str(state.get("outcome") or "")
+        if not outcome_val and flag:
+            outcome_val = "solved_local" if (job.path / "solver" / "solve.py").is_file() else "candidate_found"
+        shown_outcome, outcome_style = outcome_labels.get(
+            outcome_val, (outcome_val if outcome_val else "–", _MUTED_COLOR)
+        )
+        phase = str(state.get("phase") or "-")
+        msg = str(state.get("message") or "")
+
+        if flag:
+            phase_text = Text(f"★ {flag}", style=_SOLVED_COLOR)
+        elif state.get("error_code"):
+            phase_text = Text(str(state["error_code"]), style=_ERROR_COLOR)
+        elif msg and phase in ("running", "starting"):
+            phase_text = Text(f"{phase} · {msg[:35]}", style=_WARN_COLOR)
+        elif msg and phase not in ("-", "queued", "completed", "failed", "filtered", "cancelled", "skipped"):
+            phase_text = Text(f"{phase} · {msg[:25]}", style=_MUTED_COLOR)
+        else:
+            phase_text = Text(phase, style=_MUTED_COLOR)
+
+        table.add_row(
+            str(job.display_id),
+            job.name,
+            job.category,
+            Text(shown, style=style),
+            Text(shown_outcome, style=outcome_style),
+            "✓" if job.has_source else "–",
+            "✓" if job.has_instance else "–",
+            phase_text,
+        )
+    return table
+
+
+def _render_solver_status(service: SolverService, *, target: str | None, watch: bool) -> None:
+    """Render one worker detail or a live overview without touching a worker."""
+    from rich.live import Live
+    from rich.panel import Panel
+
+    try:
+        service.recover_stale_jobs()
+        daemon_info = service.get_daemon_status()
+        if daemon_info.get("is_running"):
+            d_pid = daemon_info.get("daemon_pid")
+            d_targets = daemon_info.get("target_ids", "-")
+            d_active = ", ".join(daemon_info.get("active_ids", [])) or "idle"
+            console.print(f"[bold green]🟢 SuperBQA daemon running in background (PID {d_pid})[/bold green] · Targets: {d_targets} · Active: {d_active}\n")
+
+        cat_sessions = service.get_category_sessions()
+        if cat_sessions:
+            sess_strs = [f"{cat} ({info.get('conversation_id', '')[:8]}...)" for cat, info in cat_sessions.items()]
+            console.print(f"[dim]📁 Persistent Sessions: {', '.join(sess_strs)}[/dim]\n")
+
+        if target:
+            try:
+                job = service.select_ids(target)[0]
+            except SolverSelectionError as exc:
+                Logger.error(str(exc))
+                return
+
+            def _make_target_panel() -> Panel:
+                state = service.read_job(job)
+                conv_id = state.get("conversation_id")
+                reused = state.get("reused_session")
+                session_line = f"Session: {conv_id or '-'}" + (" (reused)" if reused else "")
+                lines = [
+                    f"State: {state.get('state', 'idle')}",
+                    f"Outcome: {state.get('outcome', '-')}",
+                    f"Phase: {state.get('phase', '-')}",
+                    session_line,
+                    f"Source: {'yes' if job.has_source else 'no'} · Instance: {'yes' if job.has_instance else 'no'}",
+                    f"PID: {state.get('pid', '-')}",
+                    f"Heartbeat: {state.get('heartbeat_at', '-')}",
+                    f"Last output: {state.get('last_output', '-')}",
+                    f"Log: {job.log_path}",
+                ]
+                chal_flag = _get_challenge_flag(service, job, state)
+                if chal_flag:
+                    lines.insert(2, f"Candidate Flag: {chal_flag}")
+                if state.get("error_code"):
+                    lines.insert(2, f"Error: {state['error_code']}")
+                return Panel("\n".join(lines), title=f"Solver {job.display_id}: {job.name}")
+
+            if not watch:
+                console.print(_make_target_panel())
+                return
+            with Live(_make_target_panel(), console=console, refresh_per_second=5) as live:
+                while True:
+                    time.sleep(0.25)
+                    live.update(_make_target_panel())
+
+        if not watch:
+            console.print(_solver_table(service))
+            return
+        with Live(_solver_table(service), console=console, refresh_per_second=5) as live:
+            while True:
+                time.sleep(0.25)
+                live.update(_solver_table(service))
+    except KeyboardInterrupt:
+        return
+
+
+def render_active_agy_workers(service: SolverService, console_inst=None) -> list[tuple]:
+    """Display all challenges currently running with agy workers."""
+    from rich.table import Table
+    import rich.box as box
+    from datetime import datetime, timezone
+
+    con = console_inst or console
+    service.recover_stale_jobs()
+    jobs = service.scan()
+    active_list = []
+    for j in jobs:
+        st = service.read_job(j)
+        if st.get("state") in ("running", "starting"):
+            pid = st.get("pid")
+            ticks = st.get("pid_start_ticks")
+            boot = st.get("boot_id")
+            is_alive = bool(pid and service._pid_is_alive(pid, start_ticks=ticks, boot_id=boot))
+            active_list.append((j, st, is_alive))
+
+    if active_list:
+        con.print()
+        con.print(f"  [bold green]🟢 {len(active_list)} active BQA worker(s) running:[/bold green]\n")
+
+        active_table = Table(
+            box=box.SIMPLE_HEAVY,
+            show_edge=False,
+            header_style=_FAINT_COLOR,
+            expand=True,
+            padding=(0, 1),
+            pad_edge=False,
+        )
+        active_table.add_column("ID", justify="right", style=_MUTED_COLOR, no_wrap=True)
+        active_table.add_column("CHALLENGE", style=FG_BASE, no_wrap=True, overflow="ellipsis")
+        active_table.add_column("CATEGORY", style=_MUTED_COLOR, no_wrap=True)
+        active_table.add_column("PID", justify="right", style=_INFO_COLOR, no_wrap=True)
+        active_table.add_column("ELAPSED", justify="right", style=_MUTED_COLOR, no_wrap=True)
+        active_table.add_column("PHASE", style=_WARN_COLOR, no_wrap=True)
+        active_table.add_column("SESSION", style=_MUTED_COLOR, no_wrap=True)
+        active_table.add_column("LAST BQA ACTIVITY", style=_MUTED_COLOR, no_wrap=True, overflow="ellipsis", ratio=1)
+
+        now = datetime.now(timezone.utc)
+        for job, st, is_alive in active_list:
+            started_str = st.get("started_at")
+            elapsed_str = "-"
+            if started_str:
+                try:
+                    started_dt = datetime.fromisoformat(str(started_str).replace("Z", "+00:00"))
+                    secs = max(0, int((now - started_dt).total_seconds()))
+                    mm, ss = divmod(secs, 60)
+                    hh, mm = divmod(mm, 60)
+                    elapsed_str = f"{hh:02d}:{mm:02d}:{ss:02d}" if hh else f"{mm:02d}:{ss:02d}"
+                except Exception:
+                    pass
+
+            conv_id = str(st.get("conversation_id") or "")
+            session_disp = (conv_id[:8] + "…") if conv_id else "new"
+            last_act = str(st.get("last_output") or st.get("message") or "analyzing...")
+            if "@@CTF_PROGRESS@@" in last_act:
+                try:
+                    import json
+                    json_part = last_act.split("@@CTF_PROGRESS@@")[1].strip()
+                    pdata = json.loads(json_part)
+                    last_act = pdata.get("message") or pdata.get("phase") or last_act
+                except Exception:
+                    pass
+
+            pid_disp = str(st.get("pid") or "-")
+            if not is_alive and pid_disp != "-":
+                pid_disp += " (stale)"
+
+            active_table.add_row(
+                str(job.display_id),
+                job.name,
+                job.category,
+                pid_disp,
+                elapsed_str,
+                str(st.get("phase") or "running"),
+                session_disp,
+                last_act,
+            )
+        con.print(active_table)
+
+        d_info = service.get_daemon_status()
+        if d_info.get("is_running"):
+            con.print(f"\n  [dim]⚙ SuperBQA Daemon: PID {d_info.get('daemon_pid')} · Targets: {d_info.get('target_ids')} · Active workers: {', '.join(d_info.get('active_ids', []))}[/dim]")
+    else:
+        con.print("\n  [dim]⚪ No active BQA workers running.[/dim]")
+
+    return active_list
+
+
+def handle_solve(args):
+    """SuperBQA solver controller supporting background daemon and live modes."""
+    from rich.live import Live
+
+    service = SolverService(
+        args.workspace,
+        timeout_seconds=getattr(args, 'timeout', 3600),
+        stale_seconds=getattr(args, 'stale_timeout', 300),
+    )
+
+    # 0. Check --reset-sessions
+    if getattr(args, 'reset_sessions', False):
+        service.clear_category_sessions()
+        console.print("[bold green]✔ Cleared persistent category sessions for this workspace.[/bold green]")
+        return
+
+    # 0a. Check --active
+    if getattr(args, 'active', False):
+        render_active_agy_workers(service)
+        return
+
+    # 0b. Check --distill
+    distill_target = getattr(args, 'distill', None)
+    if distill_target is not None:
+        categories = []
+        if distill_target and distill_target != 'all':
+            categories = [distill_target.strip()]
+        else:
+            cat_sessions = service.get_category_sessions()
+            if cat_sessions:
+                categories = list(cat_sessions.keys())
+            else:
+                categories = sorted({j.category for j in service.scan() if j.category})
+
+        if not categories:
+            Logger.warning("No categories found to distill in this workspace.")
+            return
+
+        for cat in categories:
+            with console.status(f"[bold cyan]Distilling SOP Playbook for {cat}...[/bold cyan]"):
+                res = service.distill_playbook(cat)
+            if res.get("success"):
+                console.print(f"[bold green]✔ Distilled operational playbook for {cat}:[/bold green]")
+                console.print(f"  📄 Playbook: [cyan]{res.get('playbook_path')}[/cyan]")
+                if res.get("main_conversation_id"):
+                    console.print(f"  🧠 Updated Master Session: [dim]{res.get('main_conversation_id')}[/dim]")
+            else:
+                Logger.error(f"Failed to distill playbook for {cat}")
+        return
+
+    # 1. Check --status
+    if getattr(args, 'status', None):
+        target = None if args.status == 'all' else args.status
+        _render_solver_status(service, target=target, watch=getattr(args, 'watch', False))
+        return
+
+    # 2. Check --stop / --cancel
+    if getattr(args, 'stop', None):
+        target = None if args.stop == 'all' else args.stop
+        res = service.stop_background(target)
+        console.print(f"[bold green]✔ {res.get('message')}[/bold green]")
+        return
+
+    # 3. Check --logs
+    if getattr(args, 'logs', None):
+        try:
+            jobs = service.select_ids(args.logs)
+        except Exception as e:
+            Logger.error(f"Selection error: {e}")
+            sys.exit(1)
+        if not jobs:
+            Logger.error(f"Challenge with ID '{args.logs}' not found.")
+            sys.exit(1)
+        job = jobs[0]
+        if not job.log_path.is_file():
+            Logger.warning(f"No log file found for {job.name}")
+            return
+        console.print(f"[bold cyan]Latest log for {job.name} ({job.log_path}):[/bold cyan]\n")
+        with job.log_path.open("r", encoding="utf-8", errors="replace") as f:
+            console.print("".join(f.readlines()[-40:]), markup=False)
+        return
+
+    # 4. Check --attach
+    if getattr(args, 'attach', False):
+        console.print("[dim]💡 Connecting to SuperBQA Radar. Press Ctrl+C to detach safely (worker continues in background).[/dim]\n")
+        try:
+            with Live(_solver_table(service), console=console, refresh_per_second=4) as live:
+                while True:
+                    time.sleep(0.25)
+                    live.update(_solver_table(service))
+        except KeyboardInterrupt:
+            console.print("\n[dim]💡 Detached from Radar. SuperBQA is continuing in background.[/dim]")
+        return
+
+    ids = getattr(args, 'ids', None)
+    if not ids:
+        console.print(_solver_table(service))
+        if not sys.stdin.isatty():
+            Logger.error("Missing --ids and stdin is not an interactive terminal.")
+            sys.exit(1)
+        ids = service.prompt_ids()
+
+    reuse_session = not getattr(args, 'new_session', False)
+
+    # 5. Check --detach / --bg
+    if getattr(args, 'detach', False):
+        res = service.spawn_background(
+            ids,
+            workers=getattr(args, 'workers', 3),
+            timeout_seconds=getattr(args, 'timeout', 3600),
+            stale_seconds=getattr(args, 'stale_timeout', 300),
+            reuse_session=reuse_session,
+        )
+        if not res.get("success"):
+            Logger.error(res.get("message", "Background startup failed."))
+            sys.exit(1)
+        console.print(f"\n[bold green]✔ {res.get('message')}[/bold green]")
+        console.print("[dim]💡 Use 'ctf solve --status' or 'ctf solve --attach' to monitor progress.[/dim]")
+        console.print("[dim]💡 Use 'ctf solve --stop' to terminate workers if needed.[/dim]")
+        return
+
+    # 6. Default: Foreground execution with Live table
+    try:
+        with Live(_solver_table(service), console=console, refresh_per_second=8) as live:
+            service.run(
+                ids,
+                workers=getattr(args, 'workers', 3),
+                on_refresh=lambda: live.update(_solver_table(service)),
+                reuse_session=reuse_session,
+            )
+    except (SolverSelectionError, SolverAlreadyRunning) as exc:
+        Logger.error(str(exc))
+        sys.exit(1)
+    except KeyboardInterrupt:
+        Logger.info("Stopped foreground scheduler; cancelled active workers and queued jobs.")
 
 
 def handle_note(args):
@@ -395,8 +843,8 @@ def handle_submit(args):
         svc.auto_submit_all(force=getattr(args, 'force', False))
         return
 
-    chall_id = args.id or (args.target if args.target and args.target.isdigit() else None)
-    chall_name = args.name or (args.target if args.target and not args.target.isdigit() else None)
+    chall_id = args.id or (args.target if args.target and args.target.isdecimal() else None)
+    chall_name = args.name or (args.target if args.target and not args.target.isdecimal() else None)
     flag_value = args.flag or args.flag_val
     force_flag = getattr(args, 'force', False)
 
@@ -1701,3 +2149,139 @@ def handle_bridge(args):
             Logger.info(
                 "  Action      : kiểm tra quyền token file hoặc chạy 'ctf bridge token'"
             )
+
+
+def _resolve_ask_scripts() -> tuple[Path, Path]:
+    candidates = [
+        Path.home() / ".gemini" / "config" / "skills" / "ctf-ask" / "scripts",
+        Path(__file__).resolve().parents[1] / ".agents" / "skills" / "ctf-ask" / "scripts",
+        Path(__file__).resolve().parents[1] / "skills" / "ctf-ask" / "scripts",
+    ]
+    for c in candidates:
+        val = c / "validate_sanitized_handoff.py"
+        run = c / "run_astra_expert.py"
+        if val.is_file() and run.is_file():
+            return val, run
+    raise RuntimeError("Skill ctf-ask scripts not found in ~/.gemini/config/skills/ctf-ask or repo .agents/skills/ctf-ask")
+
+
+def _parse_validator_result(res: subprocess.CompletedProcess) -> dict:
+    """Parse validator JSON output fail-closed."""
+    import json
+    if res.returncode != 0:
+        try:
+            data = json.loads(res.stdout)
+            if isinstance(data, dict):
+                data["ok"] = False
+                return data
+        except Exception:
+            pass
+        err = res.stderr.strip() or res.stdout.strip() or f"Process exited with code {res.returncode}"
+        return {"ok": False, "errors": [err], "findings": []}
+
+    try:
+        data = json.loads(res.stdout)
+        if isinstance(data, dict):
+            if data.get("ok") is not True:
+                data["ok"] = False
+            return data
+    except Exception as exc:
+        return {"ok": False, "errors": [f"Malformed validator output: {exc}"], "findings": []}
+    return {"ok": False, "errors": ["Validator returned non-object JSON"], "findings": []}
+
+
+def handle_ask(args):
+    """Bridge command line to ctf-ask skill (Codex Astra expert escalation)."""
+    import json
+    from pathlib import Path
+
+    try:
+        validator, runner = _resolve_ask_scripts()
+    except Exception as exc:
+        Logger.error(f"Cannot locate ctf-ask scripts: {exc}")
+        sys.exit(1)
+
+    raw_ws = getattr(args, 'workspace', None)
+    if raw_ws:
+        ws = Path(raw_ws).expanduser().resolve()
+    else:
+        cwd = Path.cwd().resolve()
+        if (cwd / "math_workspace").is_dir():
+            ws = (cwd / "math_workspace").resolve()
+        elif (cwd / "formal_workspace").is_dir():
+            ws = (cwd / "formal_workspace").resolve()
+        else:
+            ws = cwd
+
+    if not ws.is_dir():
+        Logger.error(f"Workspace directory not found: {ws}")
+        sys.exit(2)
+
+    if getattr(args, 'preflight_only', False):
+        Logger.info(f"Running preflight sanitizer check on: {ws}")
+        res = subprocess.run([sys.executable, str(validator), "preflight", "--workspace", str(ws)],
+                             capture_output=True, text=True, check=False)
+        data = _parse_validator_result(res)
+
+        if data.get("ok"):
+            file_count = len(data.get("files", []))
+            Logger.success(f"✔ Preflight passed: {file_count} formal file(s) verified, 0 cyber domain leakage findings.")
+            sys.exit(0)
+        else:
+            Logger.error(f"✘ Preflight rejected: workspace contains domain leakage or format errors.")
+            for err in data.get("errors", []):
+                Logger.warning(f"  - Error: {err}")
+            for f in data.get("findings", []):
+                Logger.warning(f"  - Leakage finding [{f.get('label') or f.get('kind')}]: offset {f.get('offset')} in {f.get('file')}")
+            sys.exit(2)
+
+    verify_sol = getattr(args, 'verify_only', None)
+    if verify_sol:
+        sol_path = Path(verify_sol).expanduser().resolve()
+        if not sol_path.is_file():
+            Logger.error(f"Solution file not found: {sol_path}")
+            sys.exit(2)
+        Logger.info(f"Running independent verification on {sol_path.name} against {ws.name}/instance.json...")
+        res = subprocess.run([sys.executable, str(validator), "verify", "--workspace", str(ws), "--solution", str(sol_path)],
+                             capture_output=True, text=True, check=False)
+        data = _parse_validator_result(res)
+        if data.get("ok"):
+            Logger.success(f"✔ Candidate verified independently: {data.get('type')}")
+            for chk in data.get("checks", []):
+                Logger.success(f"  ✔ {chk}")
+            sys.exit(0)
+        else:
+            Logger.error(f"✘ Verification failed: {data.get('errors')}")
+            sys.exit(3)
+
+    out_arg = getattr(args, 'output', None)
+    if out_arg:
+        out_path = Path(out_arg).expanduser().resolve()
+    else:
+        if ws.parent != ws:
+            out_path = ws.parent / f"handoff_{ws.name}.json"
+        else:
+            out_path = ws / ".." / "handoff.json"
+        out_path = out_path.resolve()
+
+    cmd = [
+        sys.executable, str(runner),
+        "--workspace", str(ws),
+        "--output", str(out_path),
+    ]
+    if getattr(args, 'model', None):
+        cmd.extend(["--model", args.model])
+    if getattr(args, 'effort', None):
+        cmd.extend(["--effort", args.effort])
+    if getattr(args, 'dry_run', False):
+        cmd.append("--dry-run")
+
+    Logger.info(f"Initiating ctf-ask expert handoff on {ws.name}...")
+    res = subprocess.run(cmd)
+    if res.returncode == 0:
+        if not getattr(args, 'dry_run', False):
+            Logger.success(f"✔ Verified handoff emitted successfully: {out_path}")
+        sys.exit(0)
+    else:
+        sys.exit(res.returncode)
+

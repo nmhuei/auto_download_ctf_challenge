@@ -40,15 +40,17 @@ class AuthService:
         """
         if not cookie_arg:
             return cookie_arg
+        from ..utils.sanitize import sanitize_cookie_input
         if os.path.isfile(cookie_arg):
             try:
                 with open(cookie_arg, 'r', encoding='utf-8') as f:
-                    return f.read().strip()
+                    content = f.read().strip()
+                    return sanitize_cookie_input(content)
             except OSError as exc:
                 raise RuntimeError(
                     f"Không đọc được cookie file '{cookie_arg}': {exc}"
                 ) from exc
-        return cookie_arg
+        return sanitize_cookie_input(cookie_arg)
 
     @staticmethod
     def resolve(
@@ -156,3 +158,56 @@ class AuthService:
                    and isinstance(v, dict)
                    and cls._url_host(k) == host]
         return matches[0] if len(matches) == 1 else None
+
+    @classmethod
+    def save_auth(
+        cls,
+        workspace: Optional[str] = None,
+        url: Optional[str] = None,
+        cookie: Optional[str] = None,
+        token: Optional[str] = None,
+    ) -> bool:
+        """Lưu hoặc cập nhật auth entry (cookie/token) vào global config dưới khóa flock.
+
+        Tự động sanitize cookie trước khi lưu.
+        Ghi entry vào:
+          - đường dẫn tuyệt đối của workspace (nếu có);
+          - URL platform chuẩn hóa (nếu có).
+        """
+        from ..utils.sanitize import sanitize_cookie_input
+        clean_cookie = sanitize_cookie_input(cookie) if cookie else None
+        clean_token = token.strip() if token else None
+
+        if not clean_cookie and not clean_token:
+            return False
+
+        keys = []
+        if workspace:
+            keys.append(os.path.abspath(str(workspace)))
+        if url:
+            norm_url = str(url).rstrip('/')
+            if norm_url:
+                keys.append(norm_url)
+
+        if not keys:
+            return False
+
+        def _mut(fresh: dict) -> dict:
+            auth_map = fresh.setdefault("auth", {})
+            for k in keys:
+                existing = auth_map.get(k) or {}
+                new_entry = dict(existing)
+                if clean_cookie is not None:
+                    new_entry["cookie"] = clean_cookie
+                if clean_token is not None:
+                    new_entry["token"] = clean_token
+                auth_map[k] = new_entry
+            return fresh
+
+        try:
+            from ..storage.global_config import update_global_config
+            res = update_global_config(_mut)
+            return res is not None
+        except Exception:
+            return False
+

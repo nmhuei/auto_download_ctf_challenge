@@ -100,7 +100,16 @@ class PullService:
         return {"ok": False, "output_dir": config.output_dir,
                 "summary_file": None, "total_files": 0,
                 "challenges_processed": 0,
-                "elapsed_seconds": time.time() - start_time}
+                "elapsed_seconds": time.time() - start_time,
+                "bqa_error_code": (
+                    "CTF-PULL-D14" if net.code != "unknown-error" else "CTF-PULL-D02"
+                )}
+
+    @staticmethod
+    def _platform_recon_evidence(platform: Any) -> Dict[str, Any]:
+        """Return only the detector's structural evidence for a BQA incident."""
+        evidence = getattr(platform, "bqa_recon_evidence", None)
+        return dict(evidence) if isinstance(evidence, dict) else {}
 
     @staticmethod
     def _render_auth_warning() -> None:
@@ -141,6 +150,19 @@ class PullService:
             cause=cause,
             hints=hints,
         ))
+
+    @staticmethod
+    def _download_failure_code(results: List[Dict[str, Any]]) -> str:
+        """Classify failed file results without retaining URLs or messages."""
+        failed = [item for item in results if not item.get("success")]
+        messages = " ".join(str(item.get("message", "")).lower() for item in failed)
+        if any(marker in messages for marker in (
+            "integrity", "mismatch", "checksum", "etag", "range", "resume", "thiếu (",
+        )):
+            return "CTF-PULL-D08"
+        if any(str(item.get("source", "")).startswith("description_") for item in failed):
+            return "CTF-PULL-D07"
+        return "CTF-PULL-D06"
 
     @staticmethod
     def _render_total_download_failure(failed: int, total: int) -> None:
@@ -251,9 +273,23 @@ class PullService:
             PullService._render_auth_warning()
 
         # 3. Fetch Challenges (spinner transient + ok_summary)
-        challenges = PullService._fetch_challenges_ui(platform)
+        try:
+            challenges = PullService._fetch_challenges_ui(platform)
+        except Exception as exc:
+            Logger.error(f"Không đọc được danh sách challenge: {type(exc).__name__}")
+            net = diagnose_request_exception(exc, method="GET")
+            return {
+                "ok": False, "output_dir": config.output_dir, "summary_file": None,
+                "total_files": 0, "challenges_processed": 0,
+                "elapsed_seconds": time.time() - start_time,
+                "bqa_error_code": "CTF-PULL-D14" if net.code != "unknown-error" else "CTF-PULL-D04",
+                "bqa_evidence": PullService._platform_recon_evidence(platform),
+            }
         if not challenges:
             PullService._render_no_challenges()
+            info = getattr(platform, "info", None)
+            is_unknown = (getattr(info, "platform_type", None) == "generic_html"
+                          and getattr(info, "confidence", None) == "low")
             return {
                 "ok": False,
                 "output_dir": config.output_dir,
@@ -261,6 +297,8 @@ class PullService:
                 "total_files": 0,
                 "challenges_processed": 0,
                 "elapsed_seconds": time.time() - start_time,
+                "bqa_error_code": "CTF-PULL-D02" if is_unknown else "CTF-PULL-D03",
+                "bqa_evidence": PullService._platform_recon_evidence(platform),
             }
 
         # Auto-determine output_dir under ~/Workspace/CTF/<CTF_Title> if not explicitly specified
@@ -271,6 +309,18 @@ class PullService:
             from ..storage.global_config import resolve_workspace_root
             base_ctf_dir = resolve_workspace_root()
             config.output_dir = os.path.abspath(os.path.join(base_ctf_dir, folder_name))
+
+        if config.cookie or config.token:
+            try:
+                from .auth_service import AuthService
+                AuthService.save_auth(
+                    workspace=config.output_dir,
+                    url=config.url,
+                    cookie=config.cookie,
+                    token=config.token,
+                )
+            except Exception:
+                pass
 
         git_prepare = PullService._prepare_git_workflow(config, platform)
         Logger.info(f"Output Directory: [path]{escape(config.output_dir)}[/path]", markup=True)
@@ -283,6 +333,19 @@ class PullService:
         if config.exclude_categories:
             ex_cats = [c.lower() for c in config.exclude_categories]
             challenges = [c for c in challenges if c.category.lower() not in ex_cats]
+
+        if not challenges:
+            render_diagnostic(Diagnostic(
+                "error",
+                "Filter đã loại toàn bộ challenge",
+                hints=("kiểm tra --category và --exclude",),
+            ))
+            return {
+                "ok": False, "output_dir": config.output_dir, "summary_file": None,
+                "total_files": 0, "challenges_processed": 0,
+                "elapsed_seconds": time.time() - start_time,
+                "bqa_error_code": "CTF-PULL-D05",
+            }
 
         # Display found summary — ok_summary đã in bởi _fetch_challenges_ui;
         # giữ nguyên bảng overview theo category.
@@ -301,9 +364,11 @@ class PullService:
             return {"ok": False, "output_dir": config.output_dir,
                     "summary_file": None, "total_files": 0,
                     "challenges_processed": 0,
-                    "elapsed_seconds": time.time() - start_time}
+                    "elapsed_seconds": time.time() - start_time,
+                    "bqa_error_code": "CTF-PULL-D11"}
         all_download_results: Dict[Any, List[Dict[str, Any]]] = {}
         failed_challenges = 0
+        failure_codes: List[str] = []
 
         # C19-M3: consent file lớn hỏi GỘP trên main thread TRƯỚC thread
         # pool — worker không bao giờ input() chồng prompt lên nhau.
@@ -341,10 +406,13 @@ class PullService:
                         try:
                             chall_id, results = future.result()
                             all_download_results[chall_id] = results
+                            if any(not item.get("success") for item in results):
+                                failure_codes.append(PullService._download_failure_code(results))
                         except Exception as exc:
-                            Logger.error(f"Error processing '{chall.name}': {exc}")
+                            Logger.error(f"Error processing '{chall.name}': {type(exc).__name__}")
                             all_download_results[chall.id] = []
                             failed_challenges += 1
+                            failure_codes.append("CTF-PULL-D09")
                         finally:
                             progress.advance(task_id)
 
@@ -362,6 +430,8 @@ class PullService:
 
         elapsed = time.time() - start_time
         total_files = sum(sum(1 for f in res if f.get("success")) for res in all_download_results.values())
+        failed_files = sum(sum(1 for f in res if not f.get("success")) for res in all_download_results.values())
+        pull_incomplete = bool(failed_challenges or failed_files)
 
         # 6. Sync solve attribution từ server (spec §4): server báo solved mà
         # local chưa → nâng solve + stamp synced_at. KHÔNG BAO GIỜ hạ trạng thái.
@@ -372,7 +442,12 @@ class PullService:
         except Exception:
             pass
 
-        Logger.success(f"[accent]✨ ALL DONE in {elapsed:.2f}s! ✨[/accent]", markup=True)
+        if pull_incomplete:
+            Logger.warning(
+                f"Pull hoàn tất một phần: {failed_challenges} challenge và "
+                f"{failed_files} file chưa tải được.")
+        else:
+            Logger.success(f"[accent]✨ ALL DONE in {elapsed:.2f}s! ✨[/accent]", markup=True)
         Logger.info(f"📁 Workspace: [path]{escape(config.output_dir)}[/path]", markup=True)
         Logger.info(f"📊 Summary: [info]{escape(str(summary_file))}[/info]", markup=True)
         Logger.info(f"📦 Total files downloaded: [fg.base]{total_files}[/fg.base]", markup=True)
@@ -389,7 +464,9 @@ class PullService:
         git_result = PullService._finalize_git_workflow(config)
 
         return {
-            "ok": True,
+            "ok": not pull_incomplete,
+            "bqa_error_code": (failure_codes[0] if failure_codes else "CTF-PULL-D10")
+            if pull_incomplete else None,
             "output_dir": config.output_dir,
             "summary_file": summary_file,
             "total_files": total_files,
@@ -664,7 +741,8 @@ class PullService:
                     "summary_file": None, "total_files": 0,
                     "new": 0, "updated": 0, "skipped": 0, "missing": 0,
                     "challenges_processed": 0,
-                    "elapsed_seconds": time.time() - start_time}
+                    "elapsed_seconds": time.time() - start_time,
+                    "bqa_error_code": "CTF-PULL-D03"}
 
         from ..utils.sanitize import sanitize_ctf_title
         if not config.output_dir:
@@ -674,6 +752,19 @@ class PullService:
             base_ctf_dir = resolve_workspace_root()
             config.output_dir = os.path.abspath(os.path.join(base_ctf_dir, folder_name))
         output_dir = config.output_dir
+
+        if config.cookie or config.token:
+            try:
+                from .auth_service import AuthService
+                AuthService.save_auth(
+                    workspace=config.output_dir,
+                    url=config.url,
+                    cookie=config.cookie,
+                    token=config.token,
+                )
+            except Exception:
+                pass
+
         git_prepare = PullService._prepare_git_workflow(config, platform)
         try:
             os.makedirs(output_dir, exist_ok=True)
@@ -683,7 +774,8 @@ class PullService:
                     "summary_file": None, "total_files": 0,
                     "new": 0, "updated": 0, "skipped": 0, "missing": 0,
                     "challenges_processed": 0,
-                    "elapsed_seconds": time.time() - start_time}
+                    "elapsed_seconds": time.time() - start_time,
+                    "bqa_error_code": "CTF-PULL-D11"}
 
         # generate_summary duyệt ctf_info.challenges — platform thật tự gắn;
         # platform giả/mock có thể bỏ trống nên bảo đảm danh sách khớp API.

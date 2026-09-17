@@ -12,8 +12,8 @@
 
 ## Global Constraints
 
-- R1: `python3 -m pytest test_suite.py test_sp1_submit.py test_sp2_download.py test_sp3_recon.py -q` phải **100 passed** sau mỗi task kết thúc một phase.
-- R2: Chuỗi message trong `downloaders/manager.py` mà `test_sp2_download.py` assert phải giữ nguyên văn (Phase 6: diff literal trước/sau = rỗng).
+- R1: `python3 -m pytest tests/test_suite.py tests/test_sp1_submit.py tests/test_sp2_download.py tests/test_sp3_recon.py -q` phải **100 passed** sau mỗi task kết thúc một phase.
+- R2: Chuỗi message trong `downloaders/manager.py` mà `tests/test_sp2_download.py` assert phải giữ nguyên văn (Phase 6: diff literal trước/sau = rỗng).
 - R3: Import path công khai giữ nguyên: `ctf_downloader.{core,submitter,instance_manager,dashboard,ranking}`, `platforms.detector.PlatformDetector.detect_platform/detect_platform_info`, `Challenge/CTFInfo` từ `platforms.base`.
 - R4: Cấm import ngược tầng: storage không import services; services không import cli; extractors không import downloaders.
 - R5: Không thêm dependency mới; Linux-only.
@@ -29,7 +29,7 @@
 **Files:**
 - Create: `ctf_downloader/models.py`
 - Modify: `ctf_downloader/platforms/base.py`
-- Test: `test_arch_phase1.py` (gốc repo)
+- Test: `tests/test_arch_phase1.py`
 
 **Interfaces:**
 - Produces: `from ctf_downloader.models import Challenge, CTFInfo` ; `Verdict = Literal["correct","incorrect","unknown","ratelimited"]` trong `ctf_downloader/models.py`. `platforms.base` tiếp tục export `Challenge`, `CTFInfo`.
@@ -37,7 +37,7 @@
 - [ ] **Step 1: Viết test thất bại**
 
 ```python
-# test_arch_phase1.py
+# tests/test_arch_phase1.py
 import unittest
 class TestModels(unittest.TestCase):
     def test_models_module_and_reexport(self):
@@ -48,11 +48,11 @@ class TestModels(unittest.TestCase):
         self.assertEqual(models.Verdict.__args__, ("correct","incorrect","unknown","ratelimited"))
 ```
 
-- [ ] **Step 2: Chạy xác nhận FAIL** — `python3 -m pytest test_arch_phase1.py -q` → ImportError models.
+- [ ] **Step 2: Chạy xác nhận FAIL** — `python3 -m pytest tests/test_arch_phase1.py -q` → ImportError models.
 
 - [ ] **Step 3: Implement** — Cut nguyên văn định nghĩa `@dataclass class Challenge` (base.py:5-23) và `@dataclass class CTFInfo` (base.py:24-34) sang `ctf_downloader/models.py`; thêm `Verdict = Literal[...]`. Trong `base.py` thay bằng `from ..models import Challenge, CTFInfo, Verdict  # noqa: F401` (re-export). Không đổi field nào.
 
-- [ ] **Step 4: PASS** — pytest test_arch_phase1 + full suite (R1).
+- [ ] **Step 4: PASS** — pytest tests/test_arch_phase1.py + full suite (R1).
 - [ ] **Step 5: Commit** — `git commit -m "refactor(phase1): tách Challenge/CTFInfo/Verdict sang models.py"`
 
 ---
@@ -63,7 +63,7 @@ class TestModels(unittest.TestCase):
 
 **Files:**
 - Create: `ctf_downloader/storage/__init__.py`, `ctf_downloader/storage/fileio.py`, `ctf_downloader/storage/constants.py`
-- Test: `test_arch_phase2.py`
+- Test: `tests/test_arch_phase2.py`
 
 **Interfaces:**
 - Produces:
@@ -90,14 +90,14 @@ class TestFileIO(unittest.TestCase):
 
 - [ ] **Step 2: FAIL** — pytest → ModuleNotFoundError.
 - [ ] **Step 3: Implement** — `atomic_write_*`: ghi `<name>.tmp` rồi `os.replace(tmp, path)`; `locked_update_json`: mở `open(path, "a+")`, `fcntl.flock(f, LOCK_EX)`, seek(0) đọc JSON, try parse trừ corrupt (copy nội dung cũ sang `.bak` trước khi ghi đè), gọi mutator, atomic write, trả dict. `constants.py`: copy NGUYÊN VĂN các literal đang tồn tại từ: dashboard.py:33-41 (`SOLVED_MARKERS_DONE`), workspace_builder.py:316 (`TARGET_CONNECTION_FMT` dạng `- Target Connection: \`{info}\``), summary_generator.py:47 (`SUMMARY_FILES_LINE`), ranking.py:186-189 (`LIVE_RANK_PREFIX`), workspace_builder.py:197/:336 (`FLAG_PLACEHOLDER`). Sau đó sửa 4 module trên IMPORT từ constants (thay literal inline) — hành vi không đổi.
-- [ ] **Step 4: PASS** — pytest test_arch_phase2 + full suite.
+- [ ] **Step 4: PASS** — pytest tests/test_arch_phase2.py + full suite.
 - [ ] **Step 5: Commit** — `"refactor(phase2): storage/fileio + constants chia sẻ"`
 
 ### Task 3: WorkspaceRepo
 
 **Files:**
 - Create: `ctf_downloader/storage/workspace_repo.py`
-- Test: `test_arch_phase2.py` (thêm class TestWorkspaceRepo)
+- Test: `tests/test_arch_phase2.py` (thêm class TestWorkspaceRepo)
 
 **Interfaces:**
 - Consumes: Task 2 fileio/constants.
@@ -133,7 +133,7 @@ class WorkspaceRepo:
 - Consumes: WorkspaceRepo (Task 3).
 - Produces: mỗi module giữ nguyên API công khai; bên trong thay mọi đọc/ghi trực tiếp state file bằng repo. Xoá dead path `data.get("platform_url")` (submitter.py:84).
 
-- [ ] **Step 1: Test bảo vệ hành vi hiện tại** (thêm vào test_arch_phase2.py): dashboard stats trên temp workspace = số liệu kỳ vọng; instance list container gồm bài có raw.type='dynamic_docker'; ranking patch SUMMARY idempotent; submitter resolve URL từ workspace không có ctf_info.url (fallback metadata submit_endpoint). Đây là characterization test viết TRƯỚC khi sửa.
+- [ ] **Step 1: Test bảo vệ hành vi hiện tại** (thêm vào tests/test_arch_phase2.py): dashboard stats trên temp workspace = số liệu kỳ vọng; instance list container gồm bài có raw.type='dynamic_docker'; ranking patch SUMMARY idempotent; submitter resolve URL từ workspace không có ctf_info.url (fallback metadata submit_endpoint). Đây là characterization test viết TRƯỚC khi sửa.
 - [ ] **Step 2: FAIL nếu thiếu** (bỏ qua nếu characterization đã pass — chúng là lưới) → **Step 3: Sửa từng module**, mỗi module xong chạy full suite. Thứ tự: dashboard → instance_manager → ranking → submitter.
 - [ ] **Step 4: PASS 100 test (R1). Step 5: Commit** — `"refactor(phase2): 4 module dùng WorkspaceRepo, xoá dead platform_url"`
 
@@ -147,7 +147,7 @@ class WorkspaceRepo:
 - Create: `ctf_downloader/services/__init__.py`, `services/session_factory.py`, `services/auth_service.py`
 - Modify: `ctf_downloader/cli.py` (get_auth_for_workspace delegate), `core.py`, `interactive_menu.py` (load/save_global_config re-export từ storage.global_config)
 - Create: `storage/global_config.py` (move load_global_config/save_global_config nguyên văn từ interactive_menu.py:17-32; interactive_menu re-export)
-- Test: `test_arch_phase2.py` → chuyển toàn bộ sang file mới `test_arch_phase3.py`
+- Test: `tests/test_arch_phase2.py` → chuyển toàn bộ sang file mới `tests/test_arch_phase3.py`
 
 **Interfaces:**
 - Produces:
@@ -174,7 +174,7 @@ class AuthService:
 **Files:**
 - Create: `ctf_downloader/platforms/registry.py`
 - Modify: `platforms/{base,capabilities,ctfd,gzctf,rctf,custom_rest,generic_html}.py`
-- Test: `test_arch_phase4.py`
+- Test: `tests/test_arch_phase4.py`
 
 **Interfaces:**
 - Consumes: PlatformInfo (capabilities.py hiện có).
@@ -205,7 +205,7 @@ def get_spec(key: str) -> PlatformSpec               # KeyError → UnknownPlatf
 **Files:**
 - Create: `platforms/detection.py`, `utils/urlnorm.py`, `services/platform_resolver.py`
 - Modify: `platforms/detector.py` (facade), `config.py` (validate dùng urlnorm), `instance_manager.py` (xoá `_init_platform` if/elif + hardcode `'infosecptit'` + fix gọi `detect_and_init()` không tồn tại — instance_manager.py:68)
-- Test: `test_arch_phase4.py` bổ sung
+- Test: `tests/test_arch_phase4.py` bổ sung
 
 **Interfaces:**
 - Produces:
@@ -276,7 +276,7 @@ class GDriveDownloader: ...      # tương tự dropbox/mediafire/mega/http
 ### Task 12: Dọn dẹp + DoD checklist
 
 - [ ] `grep -rn "_resolve_url\|scan_all_workspaces\|get_auth_for_workspace" ctf_downloader/ | grep -v services/ | grep -v storage/` → chỉ còn facade delegation.
-- [ ] Fixture test chứng minh thêm platform mới = 1 file: tạo `tests fixture` đăng ký platform giả chỉ bằng 1 module rồi detect được (thêm vào test_arch_phase4.py).
+- [ ] Fixture test chứng minh thêm platform mới = 1 file: tạo `tests fixture` đăng ký platform giả chỉ bằng 1 module rồi detect được (thêm vào tests/test_arch_phase4.py).
 - [ ] README cập nhật cây thư mục + hướng dẫn "Thêm platform mới".
 - [ ] Full suite + smoke offline lần cuối → **Commit** `"docs(phase7): README kiến trúc mới + DoD"`.
 

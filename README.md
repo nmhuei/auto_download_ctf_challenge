@@ -37,6 +37,14 @@ ctf doctor -u https://ctf.example.com
 
 Credentials được lưu trong **auth map** tại `~/.config/ctf_toolkit/config.json`, map theo URL/workspace — các lệnh sau đó không cần truyền lại cookie (chỉ cần `-w <workspace>`).
 
+### BQA: tự phục hồi lỗi CLI
+
+Khi một lệnh `ctf` thất bại, tool có thể tự gọi **BQA** (phiên `agy` bền vững theo source checkout) để chẩn đoán và sửa trực tiếp lỗi của CLI, thêm regression test, kiểm tra bản vá, rồi chạy lại đúng lệnh đó **một lần**. BQA chạy với quyền tự động chấp thuận để không dừng chờ prompt cấp quyền. Trong terminal, BQA hiện tiến trình chẩn đoán, sửa platform và chạy test; không cần nhập thêm lựa chọn.
+
+Session BQA nằm tại `~/.config/ctf_toolkit/bqa_sessions.json`. Incident chỉ chứa lệnh đã che secret, lỗi, URL/schema response và cấu trúc cookie (tên cookie/số segment); giá trị cookie, token, password và flag không được ghi vào session, log hay prompt. Retry có cơ chế chống lặp nên một lỗi lặp lại sẽ được báo lại bình thường.
+
+BQA chỉ phục hồi độ tin cậy của CLI, detection và adapter platform. Nó không dùng AI để giải challenge. Cơ chế này cần source checkout hiện hành và executable `agy` đã đăng nhập/có sẵn trên máy.
+
 ## 3. Cách sử dụng cơ bản
 
 | Lệnh | Mô tả | Ví dụ |
@@ -127,7 +135,8 @@ Chạy `ctf <lệnh> --help` để xem đầy đủ tuỳ chọn của từng l�
 | Lệnh | Long options |
 | --- | --- |
 | `ctf pull` | `--allow-private-redirects` · `--category` · `--cookie` · `--exclude` · `--force` · `--git-base` · `--git-remote` · `--interactive` · `--no-git` · `--no-git-push` · `--no-template` · `--no-third-party` · `--output` · `--refresh-meta` · `--threads` · `--timeout` · `--token` · `--update` · `--url` · `--verify-downloads` |
-| `ctf status` | `--category` · `--container` · `--label` · `--search` · `--solved` · `--unsolved` · `--workspace` |
+| `ctf status` | `--category` · `--container` · `--label` · `--search` · `--solved` · `--solver` · `--unsolved` · `--watch` · `--workspace` |
+| `ctf solve` | `--active` · `--attach` · `--bg` · `--cancel` · `--detach` · `--distill` · `--foreground` · `--ids` · `--logs` · `--new-session` · `--reset-sessions` · `--stale-timeout` · `--status` · `--stop` · `--timeout` · `--workers` · `--workspace` |
 | `ctf note` | `--remove` · `--workspace` |
 | `ctf tag` | `--remove` · `--workspace` |
 | `ctf workspaces` | `--dir` |
@@ -152,6 +161,7 @@ Chạy `ctf <lệnh> --help` để xem đầy đủ tuỳ chọn của từng l�
 | `ctf git finish` | `--base` · `--keep-remote` · `--no-push` · `--remote` · `--workspace` |
 | `ctf config` | — |
 | `ctf bridge` | — |
+| `ctf ask` | `--dry-run` · `--effort` · `--model` · `--output` · `--preflight-only` · `--verify-only` · `--workspace` |
 <!-- END GENERATED CLI OPTIONS -->
 
 ## 4. Cây workspace output
@@ -172,3 +182,15 @@ my_ctf/
 ```
 
 Docs thiết kế chi tiết: [`docs/superpowers/specs`](docs/superpowers/specs).
+
+### BQA pull recovery prompts
+
+`ctf pull` classifies recoverable failures as `CTF-PULL-D01` through
+`CTF-PULL-D15`; an otherwise unhandled crash is `CTF-PULL-D99`. Its prompt
+policy and one template per code live in `ctf_downloader/bqa_prompts/`.
+
+In an interactive terminal the CLI displays the code and asks `SuperBQA? [Y/n]`. BQA runs after Enter or `y`; it repairs the checkout, verifies the change,
+and retries once. Non-interactive invocations never start BQA. Credential
+values are not put in prompts, logs, or BQA session records. For a private
+platform probe, the original URL and cookie are supplied only in the BQA child
+process environment.

@@ -31,9 +31,9 @@ from ..utils.urlnorm import parse_normalized
 # --------------------------------------------------------------------------- #
 # Chính sách thứ tự ưu tiên (giữ nguyên hành vi pipeline cũ) — dữ liệu từ registry
 # --------------------------------------------------------------------------- #
-_MARKER_PRIORITY = ("rctf", "ctfd", "gzctf", "asisctf")
+_MARKER_PRIORITY = ("rctf", "ctfd", "gzctf", "asisctf", "tfcctf", "noctf")
 _COOKIE_PRIORITY = ("gzctf", "ctfd", "asisctf")
-_PROBE_PRIORITY = ("gzctf", "ctfd", "rctf", "asisctf")
+_PROBE_PRIORITY = ("gzctf", "ctfd", "rctf", "asisctf", "tfcctf", "noctf")
 
 # Thông điệp signal tầng 1 theo platform key (giữ nguyên văn bản cũ để
 # tương thích với các test/log hiện có)
@@ -42,6 +42,8 @@ _MARKER_SIGNALS = {
     "ctfd": "HTML marker: csrfNonce' / window.init / Powered by CTFd / themes/core",
     "gzctf": "HTML marker: <meta keywords> GZCTF hoặc chuỗi GZCTF/GZ::CTF",
     "asisctf": "HTML marker: ASIS CTF / alpineInstance / challenges/list",
+    "tfcctf": "HTML marker: tfcctf / thefewchosen -> TFC CTF",
+    "noctf": "HTML marker: noCTF (<title>noCTF</title> / k17ctf) -> noCTF",
 }
 
 # Thông điệp signal tầng 2
@@ -61,15 +63,41 @@ def _parse_cookie_hint_names(cookie_hint: str) -> Optional[set]:
     được cặp name=value nào -> caller fallback hành vi cũ (substring nguyên
     blob). Task 6/7 deferred: khớp substring cả blob từng false-match khi
     tên cookie xuất hiện giữa giá trị của cookie khác."""
+    from ..utils.sanitize import sanitize_cookie_input
+    cleaned = sanitize_cookie_input(cookie_hint) or ""
     names: set = set()
-    for chunk in re.split(r"[;\r\n]+", cookie_hint or ""):
+    for chunk in re.split(r"[;\r\n]+", cleaned):
         chunk = chunk.strip()
+        if re.match(r"^[Cc][Oo][Oo][Kk][Ii][Ee]\s*:", chunk):
+            chunk = re.sub(r"^[Cc][Oo][Oo][Kk][Ii][Ee]\s*:\s*", "", chunk).strip()
         if "=" not in chunk:
             continue          # token trần không phải cặp name=value
         name = chunk.split("=", 1)[0].strip().strip("'\"").strip()
+        if re.match(r"^[Cc][Oo][Oo][Kk][Ii][Ee]\s*:", name):
+            name = re.sub(r"^[Cc][Oo][Oo][Kk][Ii][Ee]\s*:\s*", "", name).strip()
         if name:
             names.add(name.lower())
     return names or None
+
+
+def _response_schema(value, depth: int = 0):
+    """Describe JSON structure only; never retain response values for BQA."""
+    if depth >= 2:
+        return {"type": type(value).__name__}
+    if isinstance(value, dict):
+        keys = sorted(str(key) for key in value)[:30]
+        return {
+            "type": "object",
+            "keys": keys,
+            "properties": {str(key): _response_schema(value[key], depth + 1)
+                           for key in keys if key in value},
+        }
+    if isinstance(value, list):
+        return {"type": "array", "length": len(value),
+                "item": _response_schema(value[0], depth + 1) if value else None}
+    if value is None:
+        return {"type": "null"}
+    return {"type": type(value).__name__}
 
 
 def _match_html_markers(spec, html: str, low: str) -> bool:
@@ -111,8 +139,11 @@ def detect_platform_info(base_url: str, session,
 
     # ---------------- Tầng 1: HTML markers (registry) ---------------- #
     html = ""
+    recon_paths = ["/"]
+    recon_schema = None
     resp = safe_get(session, clean_base_url)
-    if resp is not None and getattr(resp, "status_code", 0) == 200:
+    root_status = getattr(resp, "status_code", None) if resp is not None else None
+    if resp is not None and root_status == 200:
         html = getattr(resp, "text", "") or ""
 
     if html:
@@ -185,16 +216,22 @@ def detect_platform_info(base_url: str, session,
     # ------------- Tầng 4: Fallback hành vi cũ ------------- #
     if confidence != "high":
         # Hành vi cũ: Custom REST / Next.js (/api/challenges, /api/auth/me)
+        recon_paths.append("/api/challenges")
         data, status = safe_get_json(session, f"{origin}/api/challenges",
                                      statuses=(200, 401, 403))
+        if data is not None:
+            recon_schema = _response_schema(data)
         payload = data.get("data") if isinstance(data, dict) else None
         if isinstance(data, dict) and data.get("success") and isinstance(payload, dict) \
                 and "challenges" in payload:
             ptype, confidence = "custom_rest", "high"
             info.add_signal(f"GET /api/challenges -> shape Custom REST (HTTP {status})")
         else:
+            recon_paths.append("/api/auth/me")
             data, status = safe_get_json(session, f"{origin}/api/auth/me",
                                          statuses=(200,))
+            if data is not None:
+                recon_schema = _response_schema(data)
             user_data = data.get("data") if isinstance(data, dict) else None
             if isinstance(data, dict) and data.get("success") \
                     and isinstance(user_data, dict) and user_data.get("user"):
@@ -223,6 +260,12 @@ def detect_platform_info(base_url: str, session,
 
     # setattr mềm: các class platform không cần khai báo sẵn thuộc tính info
     platform.info = info
+    platform.bqa_recon_evidence = {
+        "detector_signals": list(info.signals),
+        "http_status": root_status if isinstance(root_status, int) else None,
+        "api_paths": recon_paths,
+        "response_schema": recon_schema or {"type": "unavailable"},
+    }
 
     if not quiet:
         # AMBER REFIT (synthesis uiv2 #3): màu semantic chỉ qua token theme

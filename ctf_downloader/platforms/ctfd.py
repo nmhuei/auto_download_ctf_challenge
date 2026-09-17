@@ -317,8 +317,12 @@ class CTFdPlatform(BasePlatform):
                 solves_count = item.get("solves", None)
 
                 # Fetch detailed challenge info (/api/v1/challenges/<id>)
-                detail_resp = self.session.get(f"{self.base_url}/api/v1/challenges/{chall_id}", timeout=15)
-                
+                detail_resp = None
+                try:
+                    detail_resp = self.session.get(f"{self.base_url}/api/v1/challenges/{chall_id}", timeout=self._timeout(15))
+                except Exception as exc:
+                    Logger.warning(f"Không lấy được chi tiết cho challenge {chall_id}: {exc}")
+
                 description = ""
                 files_list = []
                 tags_list = [t.get("value", t) if isinstance(t, dict) else str(t) for t in item.get("tags", [])]
@@ -326,7 +330,7 @@ class CTFdPlatform(BasePlatform):
                 connection_info = item.get("connection_info")
                 detail_data = {}
 
-                if detail_resp.status_code == 200:
+                if detail_resp is not None and detail_resp.status_code == 200:
                     try:
                         detail_json = detail_resp.json()
                         if detail_json.get("success"):
@@ -540,13 +544,51 @@ class CTFdPlatform(BasePlatform):
             raw_entry = f"{inner.get('host')}:{inner.get('port')}"
         return {
             "entry": self._clean_user_access(raw_entry),
-            "time_left": (
-                inner.get("remaining_time")
-                if inner.get("remaining_time") is not None
-                else inner.get("time_left")
+            "time_left": next(
+                (inner.get(key) for key in ("remaining_time", "time_left", "remain")
+                 if inner.get(key) is not None),
+                None,
             ),
             "raw": inner,
         }
+
+    @staticmethod
+    def _json_object(resp: Any) -> Optional[Dict[str, Any]]:
+        try:
+            data = resp.json()
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _validated_start_payload(self, resp: Any, *, require_success: bool) -> Optional[Dict[str, Any]]:
+        data = self._json_object(resp)
+        if data is None or (require_success and data.get("success") is not True):
+            return None
+        info = self._normalize_instance_payload(data)
+        if info.get("entry") is None and info.get("time_left") is None:
+            data_inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+            has_ack_message = bool(str(data.get("message") or data_inner.get("message") or "").strip())
+            if data.get("success") is True and has_ack_message:
+                info["status"] = "pending"
+                return info
+            return None
+        return info
+
+    @staticmethod
+    def _retry_after_suffix(resp: Any) -> str:
+        raw_headers = getattr(resp, "headers", {}) or {}
+        try:
+            value = raw_headers.get("Retry-After")
+        except Exception:
+            value = None
+        if isinstance(value, (str, int, float)) and str(value).strip():
+            return f" Retry-After={str(value).strip()}"
+        return ""
+
+    def _mutation_error(self, action: str, resp: Any) -> str:
+        status = getattr(resp, "status_code", "?")
+        return (f"{action} container thất bại (HTTP {status})"
+                f"{self._retry_after_suffix(resp)}")
 
     def start_instance(self, challenge_id: Any) -> Tuple[bool, Dict[str, Any]]:
         """
@@ -555,47 +597,33 @@ class CTFdPlatform(BasePlatform):
         if not self.nonce:
             self._extract_nonce_and_config()
 
-        # 1. Try CTFd-Whale API v1 endpoint (/api/v1/plugins/ctfd-whale/container?challenge_id=...)
-        whale_v1_url = f"{self.base_url}/api/v1/plugins/ctfd-whale/container?challenge_id={challenge_id}"
-        try:
-            resp = self.session.post(whale_v1_url, json={}, timeout=15)
-            if resp.status_code == 200:
-                data = resp.json() or {}
-                if data.get("success"):
-                    return True, self._normalize_instance_payload(data)
-                else:
-                    return False, {"message": data.get("message", "Khởi động container thất bại.")}
-            elif resp.status_code == 500:
-                return False, {"message": "Lỗi server (500): container runner / Docker Swarm phía server không truy cập được hoặc admin CTF chưa cấu hình."}
-        except CloudflareChallengeError as e:
-            return False, {"message": f"Cloudflare đang chặn start instance: {e}"}
-        except Exception as e:
-            Logger.warning(f"Lỗi khi gọi {whale_v1_url}: {e}")
+        endpoints = (
+            (f"{self.base_url}/api/v1/plugins/ctfd-whale/container", True,
+             {"params": {"challenge_id": challenge_id}}),
+            (f"{self.base_url}/plugins/ctfd-whale/container", True,
+             {"params": {"challenge_id": challenge_id}}),
+            (f"{self.base_url}/api/v1/containers", False,
+             {"json": {"challenge_id": challenge_id}}),
+        )
+        for url, require_success, kwargs in endpoints:
+            try:
+                resp = self.session.post(url, timeout=self._timeout(15), **kwargs)
+            except CloudflareChallengeError as e:
+                return False, {"message": f"Cloudflare đang chặn start instance: {e}"}
+            except Exception as e:
+                Logger.warning(f"Lỗi khi gọi {url}: {e}")
+                return False, {"message": f"Lỗi mạng khi start instance: {e}"}
 
-        # 2. Try legacy /plugins/ctfd-whale/container
-        whale_url = f"{self.base_url}/plugins/ctfd-whale/container"
-        try:
-            resp = self.session.post(whale_url, json={"challenge_id": challenge_id}, timeout=15)
-            if resp.status_code == 200:
-                data = resp.json() or {}
-                if data.get("success"):
-                    return True, self._normalize_instance_payload(data)
-        except CloudflareChallengeError as e:
-            return False, {"message": f"Cloudflare đang chặn start instance: {e}"}
-        except Exception:
-            pass
-
-        # 3. Try /api/v1/containers
-        api_url = f"{self.base_url}/api/v1/containers"
-        try:
-            resp = self.session.post(api_url, json={"challenge_id": challenge_id}, timeout=15)
-            if resp.status_code in [200, 201]:
-                data = resp.json() or {}
-                return True, self._normalize_instance_payload(data)
-        except CloudflareChallengeError as e:
-            return False, {"message": f"Cloudflare đang chặn start instance: {e}"}
-        except Exception:
-            pass
+            status = getattr(resp, "status_code", None)
+            if status in (404, 405):
+                continue
+            if status in (200, 201):
+                info = self._validated_start_payload(
+                    resp, require_success=require_success)
+                if info is not None:
+                    return True, info
+                return False, {"message": "Phản hồi start instance không hợp lệ."}
+            return False, {"message": self._mutation_error("Khởi động", resp)}
 
         return False, {"message": "Không tìm thấy plugin container hay dịch vụ instance nào cho challenge này."}
 
@@ -606,26 +634,29 @@ class CTFdPlatform(BasePlatform):
         if not self.nonce:
             self._extract_nonce_and_config()
 
-        # Try API v1 first
-        whale_v1_url = f"{self.base_url}/api/v1/plugins/ctfd-whale/container?challenge_id={challenge_id}"
-        try:
-            resp = self.session.delete(whale_v1_url, json={}, timeout=15)
-            if resp.status_code in (200, 204):
+        endpoints = (
+            f"{self.base_url}/api/v1/plugins/ctfd-whale/container",
+            f"{self.base_url}/plugins/ctfd-whale/container",
+        )
+        for url in endpoints:
+            try:
+                resp = self.session.delete(
+                    url, params={"challenge_id": challenge_id}, timeout=15)
+            except CloudflareChallengeError as e:
+                return False, f"Cloudflare đang chặn stop instance: {e}"
+            except Exception as e:
+                return False, f"Lỗi mạng khi stop instance: {e}"
+            status = getattr(resp, "status_code", None)
+            if status in (404, 405):
+                continue
+            if status == 204:
                 return True, "Đã dừng container."
-        except CloudflareChallengeError as e:
-            return False, f"Cloudflare đang chặn stop instance: {e}"
-        except Exception:
-            pass
-
-        whale_url = f"{self.base_url}/plugins/ctfd-whale/container"
-        try:
-            resp = self.session.delete(whale_url, json={"challenge_id": challenge_id}, timeout=15)
-            if resp.status_code in (200, 204):
-                return True, "Đã dừng container."
-        except CloudflareChallengeError as e:
-            return False, f"Cloudflare đang chặn stop instance: {e}"
-        except Exception:
-            pass
+            if status == 200 and self._json_object(resp) is not None:
+                data = self._json_object(resp) or {}
+                if data.get("success") is True:
+                    return True, "Đã dừng container."
+                return False, "Phản hồi stop instance không hợp lệ."
+            return False, self._mutation_error("Dừng", resp)
         return False, "Dừng container trên CTFd thất bại."
 
     def extend_instance(self, challenge_id: Any) -> Tuple[bool, str]:
@@ -635,26 +666,29 @@ class CTFdPlatform(BasePlatform):
         if not self.nonce:
             self._extract_nonce_and_config()
 
-        # Try API v1 first
-        whale_v1_url = f"{self.base_url}/api/v1/plugins/ctfd-whale/container?challenge_id={challenge_id}"
-        try:
-            resp = self.session.patch(whale_v1_url, json={}, timeout=15)
-            if resp.status_code in (200, 204):
+        endpoints = (
+            f"{self.base_url}/api/v1/plugins/ctfd-whale/container",
+            f"{self.base_url}/plugins/ctfd-whale/container",
+        )
+        for url in endpoints:
+            try:
+                resp = self.session.patch(
+                    url, params={"challenge_id": challenge_id}, timeout=15)
+            except CloudflareChallengeError as e:
+                return False, f"Cloudflare đang chặn extend instance: {e}"
+            except Exception as e:
+                return False, f"Lỗi mạng khi extend instance: {e}"
+            status = getattr(resp, "status_code", None)
+            if status in (404, 405):
+                continue
+            if status == 204:
                 return True, "Đã gia hạn thời gian sống của container."
-        except CloudflareChallengeError as e:
-            return False, f"Cloudflare đang chặn extend instance: {e}"
-        except Exception:
-            pass
-
-        whale_url = f"{self.base_url}/plugins/ctfd-whale/container"
-        try:
-            resp = self.session.patch(whale_url, json={"challenge_id": challenge_id}, timeout=15)
-            if resp.status_code in (200, 204):
-                return True, "Đã gia hạn thời gian sống của container."
-        except CloudflareChallengeError as e:
-            return False, f"Cloudflare đang chặn extend instance: {e}"
-        except Exception:
-            pass
+            if status == 200:
+                data = self._json_object(resp)
+                if data is not None and data.get("success") is True:
+                    return True, "Đã gia hạn thời gian sống của container."
+                return False, "Phản hồi extend instance không hợp lệ."
+            return False, self._mutation_error("Gia hạn", resp)
         return False, "Gia hạn container trên CTFd thất bại."
 
     def get_instance_status(self, challenge_id: Any) -> Dict[str, Any]:
@@ -668,38 +702,41 @@ class CTFdPlatform(BasePlatform):
         saw_supported_response = False
         auth_status = None
 
-        whale_v1_url = f"{self.base_url}/api/v1/plugins/ctfd-whale/container?challenge_id={challenge_id}"
-        try:
-            resp = self.session.get(whale_v1_url, timeout=10)
-            if resp.status_code in (401, 403):
-                auth_status = resp.status_code
-            if resp.status_code == 200:
+        endpoints = (
+            f"{self.base_url}/api/v1/plugins/ctfd-whale/container",
+            f"{self.base_url}/plugins/ctfd-whale/container",
+        )
+        for url in endpoints:
+            try:
+                resp = self.session.get(
+                    url, params={"challenge_id": challenge_id}, timeout=10)
+            except Exception:
+                return {
+                    "status": "unknown", "entry": None, "time_left": None,
+                    "reason": "unreachable_or_unsupported",
+                }
+            status = getattr(resp, "status_code", None)
+            if status in (401, 403):
+                auth_status = status
+            if status in (404, 405):
+                continue
+            if status == 200:
                 saw_supported_response = True
-                data = resp.json() or {}
-                if data.get("success"):
+                data = self._json_object(resp)
+                if isinstance(data, dict) and data.get("success") is True:
                     info = self._normalize_instance_payload(data)
                     if info.get("entry") or info.get("time_left") is not None:
                         return {"status": "running", **info}
                     return {"status": "stopped", "entry": None, "time_left": None}
-        except Exception:
-            pass
-
-        whale_url = f"{self.base_url}/plugins/ctfd-whale/container"
-        try:
-            resp = self.session.get(
-                whale_url, params={"challenge_id": challenge_id}, timeout=10)
-            if resp.status_code in (401, 403):
-                auth_status = resp.status_code
-            if resp.status_code == 200:
-                saw_supported_response = True
-                data = resp.json() or {}
-                if data.get("success"):
-                    info = self._normalize_instance_payload(data)
-                    if info.get("entry") or info.get("time_left") is not None:
-                        return {"status": "running", **info}
-                    return {"status": "stopped", "entry": None, "time_left": None}
-        except Exception:
-            pass
+                return {
+                    "status": "unknown", "entry": None, "time_left": None,
+                    "reason": "ambiguous_response",
+                }
+            return {
+                "status": "unknown", "entry": None, "time_left": None,
+                "http_status": status, "reason": "auth_failed"
+                if status in (401, 403) else "http_error",
+            }
 
         result = {"status": "unknown", "entry": None, "time_left": None}
         if auth_status:

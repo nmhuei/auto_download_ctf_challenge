@@ -67,9 +67,19 @@ class DownloaderConfig:
                 "verify_downloads phải là một trong: fast, normal, strict"
             )
         
-        # Expand user path if provided
+        # Sanitize cookie if provided
+        if self.cookie:
+            from .utils.sanitize import sanitize_cookie_input
+            self.cookie = sanitize_cookie_input(self.cookie)
+
+        # Expand user path if provided; anchor relative paths strictly in resolve_workspace_root()
         if self.output_dir:
-            self.output_dir = os.path.abspath(os.path.expanduser(self.output_dir))
+            expanded = os.path.expanduser(self.output_dir)
+            if not os.path.isabs(expanded):
+                from .storage.global_config import resolve_workspace_root
+                self.output_dir = os.path.abspath(os.path.join(resolve_workspace_root(), expanded))
+            else:
+                self.output_dir = os.path.abspath(expanded)
 
 
 

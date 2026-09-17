@@ -5,11 +5,44 @@ from ..platforms.base import Challenge
 from ..extractors.link_extractor import ExtractedLink, ConnectionInfo
 from ..extractors.text_parser import TextParser
 from ..storage.constants import FLAG_PLACEHOLDER, TARGET_CONNECTION_FMT, DEFAULT_CATEGORY
-from ..storage.fileio import locked_write_text
+from ..storage.fileio import atomic_write_text, locked_path, locked_write_text
 from ..utils.sanitize import sanitize_folder_name
 from ..utils.logger import Logger
 
 class WorkspaceBuilder:
+    _SOLVER_RULES_START = "<!-- CTF-SOLVER-RULES:START -->"
+    _SOLVER_RULES_END = "<!-- CTF-SOLVER-RULES:END -->"
+
+    @classmethod
+    def _merge_solver_note_rules(cls, existing: str) -> str:
+        """Refresh only the managed solve rules; preserve every user note.
+
+        ``NOTE.md`` is a user-facing workspace file.  Pull/update may rebuild
+        platform-derived README content, but it must never delete local rules
+        or notes.  A marker block lets newer clients update our small managed
+        section without touching anything around it.
+        """
+        rules = """<!-- CTF-SOLVER-RULES:START -->
+## CTF solver workflow
+
+- Read `metadata.json` first, then `challenge/NOTE.md`.
+- If source provides a service, build its local server or harness in `script/`. If no source exists, do not invent a local server.
+- Put every probe, temporary parser, test harness, debug artifact and technical log in `script/`.
+- Document analysis and findings in `script/analysis.md`.
+- Keep the final reusable solver at `solver/solve.py`.
+- Solve and verify locally first; use an instance only after local verification.
+- After successful local verification, write `script/worker-report.json` with `{"local_verification":"passed","summary":"what was verified"}`.
+<!-- CTF-SOLVER-RULES:END -->
+"""
+        start = existing.find(cls._SOLVER_RULES_START)
+        if start >= 0:
+            end = existing.find(cls._SOLVER_RULES_END, start)
+            if end >= 0:
+                end += len(cls._SOLVER_RULES_END)
+                return (existing[:start].rstrip() + "\n\n" + rules + existing[end:].lstrip())
+        if not existing.strip():
+            return "# Workspace rules\n\n" + rules
+        return existing.rstrip() + "\n\n" + rules
     @staticmethod
     def _safe_category(challenge: Any) -> str:
         """
@@ -202,17 +235,19 @@ class WorkspaceBuilder:
             challenge, extracted_links, connections, download_results
         ), refresh=True)
 
-        # 2. Generate challenge/NOTE.md (Workspace Guidelines)
-        # C19-L7: boilerplate tĩnh — ghi atomic, không cần exists-guard.
+        # 2. Generate challenge/NOTE.md (Workspace Guidelines).  Unlike the
+        # platform-derived README, NOTE is user-owned: merge just our marked
+        # rules and preserve all local notes across every pull/update.
         challenge_note_path = os.path.join(challenge_sub_dir, "NOTE.md")
-        note_content = """# 📌 Quy Tắc Tổ Chức Thư Mục (Workspace Guidelines)
-
-- **`script/`**: Thư mục workspace nháp. Hãy viết toàn bộ script test, payload thử nghiệm, fuzzing, giải mã linh tinh tại đây để tránh làm rác thư mục gốc.
-- **`solver/`**: Khi script giải bài hoàn thiện và lấy được flag thành công, hãy chuyển/lưu script chính thức vào thư mục `solver/` (ví dụ `solver/solve.py`).
-- **`writeup/`**: Thư mục viết báo cáo, phân tích kỹ thuật và ghi lại Flag sau khi giải xong bài.
-"""
         if os.path.isdir(challenge_sub_dir):
-            if not locked_write_text(challenge_note_path, note_content):
+            try:
+                with locked_path(challenge_note_path) as locked_note:
+                    try:
+                        existing_note = locked_note.read_text(encoding="utf-8")
+                    except FileNotFoundError:
+                        existing_note = ""
+                    atomic_write_text(locked_note, WorkspaceBuilder._merge_solver_note_rules(existing_note))
+            except OSError:
                 Logger.warning(
                     f"Không ghi được NOTE.md tại {challenge_note_path} — "
                     f"thư mục đã bị xoá giữa lúc dựng workspace."
@@ -399,21 +434,29 @@ class WorkspaceBuilder:
             
             return f'''#!/usr/bin/env python3
 # Solution for: {challenge.name} ({challenge.category})
+import argparse
 from pwn import *
 
-HOST = {host_str}
-PORT = {port_str}
+DEFAULT_HOST = {host_str}
+DEFAULT_PORT = {port_str}
 
 context.log_level = 'debug'
 # context.arch = 'amd64'
 # context.terminal = ['tmux', 'splitw', '-h']
 
-def solve():
-    if args.REMOTE:
-        r = remote(HOST, PORT)
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--remote', metavar='HOST:PORT', help='Connect to a remote service')
+    parser.add_argument('--url', help='Optional URL adapter for HTTP-based variants')
+    return parser.parse_args()
+
+def solve(options):
+    if options.remote:
+        host, port = options.remote.rsplit(':', 1)
+        r = remote(host, int(port))
     else:
-        # r = process('./vuln')
-        r = remote(HOST, PORT)
+        # Local-first: replace with the local binary or harness command.
+        r = process('./vuln')
 
     # TODO: Exploit logic here
     # r.sendlineafter(b'> ', b'payload')
@@ -421,54 +464,76 @@ def solve():
     r.interactive()
 
 if __name__ == '__main__':
-    solve()
+    solve(parse_args())
 '''
 
         elif "web" in cat_lower or http_conn:
             target_url = http_conn.raw_command if http_conn else "http://target.ctf"
             return f'''#!/usr/bin/env python3
 # Solution for: {challenge.name} ({challenge.category})
+import argparse
 import requests
 import re
 
-TARGET_URL = "{target_url}"
-session = requests.Session()
+LOCAL_URL = "http://127.0.0.1:8000"
 
-def solve():
-    print(f"[*] Attacking: {{TARGET_URL}}")
-    resp = session.get(TARGET_URL)
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--url', help='Remote URL; omitted means the local harness')
+    parser.add_argument('--remote', metavar='HOST:PORT', help='Optional TCP adapter')
+    return parser.parse_args()
+
+def solve(options):
+    target_url = options.url or LOCAL_URL
+    session = requests.Session()
+    print(f"[*] Testing: {{target_url}}")
+    resp = session.get(target_url)
     print(f"[*] Status: {{resp.status_code}}")
 
     # TODO: Exploit logic here
 
 if __name__ == '__main__':
-    solve()
+    solve(parse_args())
 '''
 
         elif "crypto" in cat_lower:
             return f'''#!/usr/bin/env python3
 # Solution for: {challenge.name} ({challenge.category})
+import argparse
 from Crypto.Util.number import *
 import hashlib
 
-def solve():
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--url', help='Optional remote URL adapter')
+    parser.add_argument('--remote', metavar='HOST:PORT', help='Optional remote TCP adapter')
+    return parser.parse_args()
+
+def solve(options):
     # TODO: Crypto math / decryption logic here
     pass
 
 if __name__ == '__main__':
-    solve()
+    solve(parse_args())
 '''
 
         else:
             return f'''#!/usr/bin/env python3
 # Solution for: {challenge.name} ({challenge.category})
+import argparse
 
-def solve():
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--url', help='Optional remote URL adapter')
+    parser.add_argument('--remote', metavar='HOST:PORT', help='Optional remote TCP adapter')
+    return parser.parse_args()
+
+def solve(options):
     # TODO: Solution script
     print("[*] Solving {challenge.name}...")
 
 if __name__ == '__main__':
-    solve()
+    solve(parse_args())
 '''
 
     @staticmethod
@@ -517,4 +582,3 @@ python3 ../solver/solve.py
 - Status: `- [ ] Solved`
 - Flag: `{FLAG_PLACEHOLDER}`
 """
-

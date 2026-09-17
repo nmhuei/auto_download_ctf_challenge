@@ -340,8 +340,8 @@ class WorkspaceRepo:
             root = Path(meta_path).parent
             for rp in (root / "writeup" / "README.md", root / "README.md"):
                 try:
-                    readme_texts.append(rp.read_text(encoding="utf-8"))
-                except OSError:
+                    readme_texts.append(rp.read_text(encoding="utf-8", errors="replace"))
+                except (OSError, UnicodeError):
                     continue
 
         # 2. Marker `- [x] Solved` trong README/writeup

@@ -200,3 +200,49 @@ def extract_filename_from_headers(headers: dict, fallback_url: str = "") -> str:
     if fallback_url:
         return extract_filename_from_url(fallback_url)
     return "downloaded_file"
+
+
+def sanitize_cookie_input(raw: object) -> Optional[str]:
+    """Sanitize raw cookie input from CLI, interactive prompt, headers, or file.
+
+    Handles:
+    - Leading 'Cookie:' or 'cookie:' header name prefixes (case-insensitive, whitespace-tolerant).
+    - Multiple pasted header lines from DevTools/Burp (extracts the Cookie line).
+    - Surrounding single or double quotes.
+    - Flags like -H "Cookie: ...", --header "Cookie: ...", -b "...", --cookie "...".
+    - Stripping trailing/leading whitespace and carriage returns.
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return text
+
+    # If multiple lines were pasted (e.g. from raw HTTP request headers in Burp/DevTools)
+    if "\n" in text or "\r" in text:
+        lines = [line.strip() for line in re.split(r"[\r\n]+", text) if line.strip()]
+        for line in lines:
+            if re.match(r"^[Cc][Oo][Oo][Kk][Ii][Ee]\s*:", line):
+                text = line
+                break
+
+    # Strip surrounding quotes if wrapped
+    text = text.strip("'\"").strip()
+
+    # Strip command line option prefixes if user pasted `-H "Cookie: ..."` or `--header "..."`
+    if text.lower().startswith("-h ") or text.lower().startswith("--header "):
+        parts = text.split(" ", 1)
+        if len(parts) > 1:
+            text = parts[1].strip().strip("'\"").strip()
+
+    # Strip curl -b or --cookie option if pasted
+    if text.lower().startswith("-b ") or text.lower().startswith("--cookie "):
+        parts = text.split(" ", 1)
+        if len(parts) > 1:
+            text = parts[1].strip().strip("'\"").strip()
+
+    # Strip 'Cookie:' or 'cookie:' prefix (case-insensitive, whitespace before/after colon)
+    text = re.sub(r"^[Cc][Oo][Oo][Kk][Ii][Ee]\s*:\s*", "", text).strip().strip("'\"").strip()
+
+    return text
+

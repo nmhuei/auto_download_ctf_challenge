@@ -104,7 +104,7 @@ Heuristic chỉ áp khi `writeup_auto=true`.
 
 - Unit: normalize/migrate status; update_status mirror + lock (multi-process); assessor với 4 mẫu (template nguyên vẹn→SKELETON, điền đủ→COMPLETE, thiếu flag→DRAFT, viết tay không template); attribution parser từng platform (mock JSON shape thật đã verify).
 - Integration: submit correct → status chain đúng; dashboard render icon snapshot test.
-- Gate: full suite cũ xanh không sửa assertion; test mới `test_status_model.py`.
+- Gate: full suite cũ xanh không sửa assertion; test mới `tests/test_status_model.py`.
 
 ## 9. Known deviations & follow-ups
 

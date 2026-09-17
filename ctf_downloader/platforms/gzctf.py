@@ -462,7 +462,7 @@ class GZCTFPlatform(BasePlatform):
         # 1. Check Profile
         profile_ok = False
         try:
-            resp = self.session.get(f"{self.origin}/api/account/profile", timeout=15)
+            resp = self.session.get(f"{self.origin}/api/account/profile", timeout=self._timeout(15))
             if resp.status_code == 200:
                 user_data = resp.json()
                 self.ctf_info.user_name = user_data.get("userName") or user_data.get("realName")
@@ -471,26 +471,26 @@ class GZCTFPlatform(BasePlatform):
         except Exception:
             pass
 
+        if not profile_ok:
+            Logger.error("Xác thực thất bại trên nền tảng GZCTF. Hãy kiểm tra lại cookie GZCTF_Token.")
+            return False
+
         # 2. Check Game Info (chỉ khi biết chắc game_id từ URL)
         if self.game_id is not None:
             try:
-                resp = self.session.get(f"{self.origin}/api/game/{self.game_id}", timeout=15)
+                resp = self.session.get(f"{self.origin}/api/game/{self.game_id}", timeout=self._timeout(15))
                 if resp.status_code == 200:
                     game_data = resp.json()
                     self.ctf_info.title = game_data.get("title", f"Game {self.game_id}")
                     self.ctf_info.team_name = game_data.get("teamName")
                     if self.ctf_info.team_name:
                         Logger.info(f"[fg.faint]Team:[/fg.faint] [fg.base]{escape(str(self.ctf_info.team_name))}[/fg.base] | [fg.faint]Competition:[/fg.faint] [fg.base]{escape(str(self.ctf_info.title))}[/fg.base]", markup=True)
-                    return True
             except Exception as e:
                 Logger.warning(f"Không lấy được thông tin game {self.game_id}: {e}")
-
-        if profile_ok:
+        else:
             Logger.warning("Không xác định được game_id từ URL (vd: https://host/games/<id>/challenges). Một số tính năng sẽ bị giới hạn.")
-            return True
 
-        Logger.error("Xác thực thất bại trên nền tảng GZCTF. Hãy kiểm tra lại cookie GZCTF_Token.")
-        return False
+        return True
 
     def register(self, *, username: str, email: str, password: str,
                  verify_email_hook=None) -> Dict[str, Any]:
@@ -531,7 +531,20 @@ class GZCTFPlatform(BasePlatform):
                 return []
 
             data = resp.json()
-            raw_categories = data.get("challenges", {})
+            if isinstance(data, dict):
+                raw_categories = data.get("challenges", {})
+            elif isinstance(data, list):
+                raw_categories = {}
+                for cat_item in data:
+                    if isinstance(cat_item, dict):
+                        cat_name = cat_item.get("category") or cat_item.get("name", "Misc")
+                        raw_categories[cat_name] = cat_item.get("challenges", [])
+            else:
+                raw_categories = {}
+
+            if not isinstance(raw_categories, dict):
+                raw_categories = {}
+
             if not raw_categories:
                 Logger.warning("Chi tiết game không trả về challenge nào.")
                 return []
@@ -578,15 +591,19 @@ class GZCTFPlatform(BasePlatform):
 
                     # Fetch individual challenge details: /api/game/{game_id}/challenges/{challenge_id}
                     single_url = f"{self.origin}/api/game/{self.game_id}/challenges/{chall_id}"
-                    chall_resp = self.session.get(single_url, timeout=15)
-                    
+                    chall_resp = None
+                    try:
+                        chall_resp = self.session.get(single_url, timeout=self._timeout(15))
+                    except Exception as exc:
+                        Logger.warning(f"Không lấy được chi tiết cho challenge {chall_id}: {exc}")
+
                     description = ""
                     hints_list = []
                     files_list = []
                     chall_type = item.get("type", "Standard")
                     single_data: Dict[str, Any] = {}
 
-                    if chall_resp.status_code == 200:
+                    if chall_resp is not None and chall_resp.status_code == 200:
                         try:
                             single_data = chall_resp.json() or {}
                             description = single_data.get("content") or ""
@@ -751,6 +768,84 @@ class GZCTFPlatform(BasePlatform):
             self.last_verdict = "unknown"
             return False, f"Ngoại lệ khi submit flag: {str(e)}"
 
+    @staticmethod
+    def _json_object(resp: Any) -> Optional[Dict[str, Any]]:
+        try:
+            data = resp.json()
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _normalize_instance_payload(data: Any) -> Dict[str, Any]:
+        """Normalize GZCTF instance fields across API response variants."""
+        payload = data if isinstance(data, dict) else {}
+        nested = payload.get("data")
+        inner = nested if isinstance(nested, dict) else payload
+        context = inner.get("context")
+        if not isinstance(context, dict):
+            context = payload.get("context")
+        if not isinstance(context, dict):
+            context = {}
+
+        sources = (inner, context, payload)
+
+        def first(*names):
+            for source in sources:
+                value = _gz_get(source, *names)
+                if value is not None:
+                    return value
+            return None
+
+        entry = first("entry", "instanceEntry", "instance_entry", "user_access", "domain")
+        close_time = first("close_time", "closeTime", "expectStopAt", "expect_stop_at")
+        expect_stop_at = first("expectStopAt", "expect_stop_at")
+        explicit_time_left = first("time_left", "remaining_time", "remainingTime")
+        time_left = None
+        if explicit_time_left is not None:
+            try:
+                time_left = max(0.0, float(explicit_time_left))
+            except (TypeError, ValueError):
+                time_left = None
+        if time_left is None and close_time is not None:
+            deadline_ms = epoch_ms(close_time)
+            if deadline_ms is not None:
+                time_left = max(0.0, (deadline_ms - time.time() * 1000) / 1000.0)
+
+        return {
+            "entry": str(entry).strip() if entry is not None and str(entry).strip() else None,
+            "time_left": time_left,
+            "close_time": close_time,
+            "expectStopAt": expect_stop_at,
+            "raw": inner,
+        }
+
+    @staticmethod
+    def _valid_instance_action(data: Any, info: Dict[str, Any]) -> bool:
+        if not isinstance(data, dict):
+            return False
+        if data.get("success") is False:
+            return False
+        return (
+            data.get("success") is True
+            or info.get("entry") is not None
+            or info.get("time_left") is not None
+            or info.get("close_time") is not None
+        )
+
+    @staticmethod
+    def _http_instance_error(action: str, resp: Any) -> str:
+        status = getattr(resp, "status_code", "?")
+        headers = getattr(resp, "headers", {}) or {}
+        try:
+            retry_after = headers.get("Retry-After")
+        except Exception:
+            retry_after = None
+        suffix = (f" Retry-After={str(retry_after).strip()}"
+                  if isinstance(retry_after, (str, int, float)) and str(retry_after).strip()
+                  else "")
+        return f"{action} container thất bại (HTTP {status}){suffix}"
+
     def start_instance(self, challenge_id: Any) -> Tuple[bool, Dict[str, Any]]:
         """
         Starts or retrieves container instance for challenge on GZCTF.
@@ -761,20 +856,19 @@ class GZCTFPlatform(BasePlatform):
         try:
             resp = self.session.post(url, timeout=15)
             if resp.status_code == 200:
-                data = resp.json() or {}
-                entry = data.get("entry")
-                # If entry is None, fetch from challenges details
-                if not entry:
+                data = self._json_object(resp)
+                info = self._normalize_instance_payload(data)
+                if not self._valid_instance_action(data, info):
+                    return False, {"message": "Phản hồi start instance GZCTF không hợp lệ."}
+                if not info.get("entry"):
+                    # A successful acknowledgement without an entry is only
+                    # usable when the official status endpoint confirms it.
                     status_info = self.get_instance_status(challenge_id)
-                    entry = status_info.get("entry")
-                    data["entry"] = entry
-                return True, data
-            else:
-                # Check if it is already running
-                status_info = self.get_instance_status(challenge_id)
-                if status_info.get("entry"):
-                    return True, status_info
-                return False, {"message": f"HTTP {resp.status_code}: {resp.text}"}
+                    if status_info.get("status") != "running" or not status_info.get("entry"):
+                        return False, {"message": "GZCTF chưa trả về entry instance hợp lệ."}
+                    info.update(status_info)
+                return True, info
+            return False, {"message": self._http_instance_error("Khởi động", resp)}
         except Exception as e:
             return False, {"message": str(e)}
 
@@ -803,8 +897,12 @@ class GZCTFPlatform(BasePlatform):
         try:
             resp = self.session.post(url, timeout=15)
             if resp.status_code == 200:
-                return True, "Đã gia hạn thời gian sống của container."
-            return False, f"Gia hạn container thất bại (HTTP {resp.status_code}): {resp.text}"
+                data = self._json_object(resp)
+                info = self._normalize_instance_payload(data)
+                if self._valid_instance_action(data, info):
+                    return True, "Đã gia hạn thời gian sống của container."
+                return False, "Phản hồi extend instance GZCTF không hợp lệ."
+            return False, self._http_instance_error("Gia hạn", resp)
         except Exception as e:
             return False, str(e)
 
@@ -819,26 +917,32 @@ class GZCTFPlatform(BasePlatform):
         try:
             resp = self.session.get(url, timeout=10)
             if resp.status_code == 200:
-                data = resp.json() or {}
-                ctx = data.get("context") or {}
-                entry = ctx.get("instanceEntry")
-                close_time = ctx.get("closeTime")
+                data = self._json_object(resp)
+                if data is None:
+                    return {"status": "unknown", "entry": None,
+                            "close_time": None, "time_left": None,
+                            "reason": "ambiguous_response"}
+                info = self._normalize_instance_payload(data)
                 return {
-                    "status": "running" if entry else "stopped",
-                    "entry": entry,
-                    "close_time": close_time,
+                    "status": "running" if info.get("entry") else "stopped",
+                    "entry": info.get("entry"),
+                    "close_time": info.get("close_time"),
+                    "expectStopAt": info.get("expectStopAt"),
+                    "time_left": info.get("time_left"),
                     "type": data.get("type")
                 }
             return {
                 "status": "unknown",
                 "entry": None,
                 "close_time": None,
+                "time_left": None,
                 "http_status": resp.status_code,
                 "reason": "auth_failed" if resp.status_code in (401, 403)
                           else "http_error",
             }
         except Exception as exc:
             return {"status": "unknown", "entry": None, "close_time": None,
+                    "time_left": None,
                     "reason": f"transport:{type(exc).__name__}"}
 
     # ------------------------------------------------------------------

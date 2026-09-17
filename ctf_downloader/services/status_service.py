@@ -206,8 +206,8 @@ class StatusService:
             if not path.is_file():
                 continue
             try:
-                text = path.read_text(encoding="utf-8")
-            except OSError:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except (OSError, UnicodeError):
                 continue
             if text.strip():
                 return text

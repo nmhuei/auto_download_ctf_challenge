@@ -7,8 +7,10 @@ delegate về đây. Method mới so với bản cũ:
     cho cli.handle_instance / instance.py / interactive_menu)
 """
 import datetime
+import ipaddress
 import os
 import re
+import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..services.platform_resolver import PlatformResolver
@@ -22,6 +24,66 @@ from rich.markup import escape
 _DOCTOR_HINTS = (
     "chạy 'ctf doctor -u <url>' để kiểm tra cookie/token và kết nối nền tảng",
 )
+
+
+_HOSTNAME_RE = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$"
+)
+
+
+def parse_host_port(value: Any) -> Optional[Tuple[str, int]]:
+    """Parse an instance endpoint into ``(host, port)`` safely.
+
+    Accepted forms are ``host:port``, ``[IPv6]:port`` and URLs with a
+    non-empty port.  Bare IPv6 is intentionally rejected because its final
+    colon is ambiguous without brackets.  Invalid ports, credentials and
+    path-like bare values return ``None`` rather than raising.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+
+    host: Optional[str]
+    raw_port: Optional[str]
+    if "://" in text:
+        try:
+            parsed = urllib.parse.urlsplit(text)
+            if not parsed.scheme or not parsed.netloc:
+                return None
+            if parsed.username is not None or parsed.password is not None:
+                return None
+            host = parsed.hostname
+            raw_port = str(parsed.port) if parsed.port is not None else None
+        except ValueError:
+            return None
+    elif text.startswith("["):
+        closing = text.find("]")
+        if closing <= 1 or closing + 1 >= len(text) or text[closing + 1] != ":":
+            return None
+        host = text[1:closing]
+        raw_port = text[closing + 2:]
+    else:
+        if text.count(":") != 1:
+            return None
+        host, raw_port = text.rsplit(":", 1)
+
+    if not host or not raw_port or not raw_port.isdigit():
+        return None
+    try:
+        port = int(raw_port)
+    except (TypeError, ValueError):
+        return None
+    if not 1 <= port <= 65535:
+        return None
+
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        if not _HOSTNAME_RE.fullmatch(host) or ".." in host:
+            return None
+    return host, port
 
 
 def diag_detect_failure(exc: Exception) -> Diagnostic:
@@ -114,10 +176,16 @@ class InstanceService:
 
         Logger.info(f'Đang khởi động container instance cho [bold][info]{escape(str(name))}[/info][/bold] (ID: {challenge_id})...', markup=True)
         success, info = self.platform.start_instance(challenge_id)
+        if not isinstance(info, dict):
+            info = {"message": str(info or "Lỗi không xác định")}
 
         if success:
             entry = info.get('entry')
-            time_left = info.get('time_left') or info.get('close_time') or info.get('remain')
+            time_left = next(
+                (info.get(key) for key in ('time_left', 'close_time', 'remain')
+                 if info.get(key) is not None),
+                None,
+            )
 
             # If entry not returned immediately, poll status once
             if not entry:
@@ -131,8 +199,9 @@ class InstanceService:
             Logger.success(f'Container instance của [bold][info]{escape(str(name))}[/info][/bold] đã hoạt động!', markup=True)
             if entry:
                 Logger.info(f'Điểm kết nối (entry): [info]{escape(str(entry))}[/info]', markup=True)
-                if ':' in str(entry) and not str(entry).startswith('http'):
-                    h, p = str(entry).split(':')
+                parsed_entry = parse_host_port(entry)
+                if parsed_entry and not str(entry).startswith(('http://', 'https://')):
+                    h, p = parsed_entry
                     Logger.info(f'Lệnh netcat: [literal]{escape(f"nc {h} {p}")}[/literal]', markup=True)
             if time_left:
                 Logger.info(f'Thời gian còn lại: [fg.base]{escape(str(time_left))}[/fg.base]', markup=True)
@@ -286,8 +355,8 @@ class InstanceService:
                         inst['last_entry'] = entry
                         inst['remaining_time'] = time_left
                     elif status == 'stopped':
-                        inst['active_instance'] = None
-                        inst['remaining_time'] = 0
+                        inst.pop('active_instance', None)
+                        inst.pop('remaining_time', None)
                     m['instance_info'] = inst
                     return m
 
@@ -380,6 +449,9 @@ class InstanceService:
                     if entry:
                         inst['active_instance'] = entry
                         inst['remaining_time'] = time_left
+                    elif status == 'stopped':
+                        inst.pop('active_instance', None)
+                        inst.pop('remaining_time', None)
                     break
             return data
 

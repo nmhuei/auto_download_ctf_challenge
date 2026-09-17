@@ -120,7 +120,7 @@ connection info, typed submit results/XSRF, and scoreboard parsing.
 - Bash and zsh completions include the new verification/redirect flags.
 - `scripts/generate_cli_option_index.py` derives a canonical long-option index
   from `build_unified_parser()` and embeds it into README + man page.
-- `test_cli_surface_consistency.py` fails if argparse, completions, or the
+- `tests/test_cli_surface_consistency.py` fails if argparse, completions, or the
   generated README/man option index drift.
 - Long atomic literals such as workspace paths are no longer character-wrapped
   by Rich after the renderer has already performed manual word wrapping, so

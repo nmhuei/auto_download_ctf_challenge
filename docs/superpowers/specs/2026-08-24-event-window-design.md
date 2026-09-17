@@ -98,7 +98,7 @@ EventWindow cũng mirror vào `challenges.json.ctf_info.event_window` cho SUMMAR
 
 - Unit: ctftime_resolver (mock HTTP: match title, multi-candidate, UA header assert), fetch_event_times từng platform (epoch ms vs s, epoch-0=null, meta-tag fallback), PollScheduler (jitter bounds, backoff cap), WindowGuard (clock skew, grace, pause-before-start).
 - Integration: watch_service vòng lặp mock platform — tick đúng thứ tự, checkpoint per-type, Ctrl-C mô phỏng raise KeyboardInterrupt giữa tick → state flush.
-- Gate: full suite hiện tại phải vẫn xanh; test mới trong `test_event_window.py`.
+- Gate: full suite hiện tại phải vẫn xanh; test mới trong `tests/test_event_window.py`.
 
 ## 8. Phi mục tiêu
 

@@ -1,11 +1,14 @@
 """Unified CLI: định nghĩa argparse + dispatch. Logic command nằm ở cli_commands
 (lớp mỏng gọi services); script legacy nằm ở cli_legacy."""
 import argparse
+import functools
 import os
 import sys
+from pathlib import Path
 
 from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test cũ
     get_auth_for_workspace,
+    handle_ask,
     handle_bridge,
     handle_config,
     handle_doctor,
@@ -19,6 +22,7 @@ from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test c
     handle_rank,
     handle_register,
     handle_serve,
+    handle_solve,
     handle_sniper,
     handle_status,
     handle_storage,
@@ -29,6 +33,10 @@ from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test c
     handle_workspaces,
 )
 from .interactive_menu import launch_interactive_menu
+from .bqa_recovery import (
+    BqaRecovery, PullCommandFailure, RecoveryIncident, request_bqa_help,
+    request_fresh_cookie, retry_command, verify_bqa_changes,
+)
 
 
 class _PhosphorHelpParser(argparse.ArgumentParser):
@@ -60,6 +68,7 @@ class _PhosphorHelpParser(argparse.ArgumentParser):
         COMMANDS = [
             ('pull', 'Tải đề + attachment từ platform, dựng workspace'),
             ('status', 'Bảng tổng quan workspace hiện tại'),
+            ('solve', 'Kích hoạt SuperBQA phân tích tự động (tối đa 3 luồng)'),
             ('workspaces', 'Quét mọi workspace CTF trên máy'),
             ('sync', 'Đồng bộ metadata động workspace ↔ platform'),
             ('instance', 'Quản lý container động của challenge'),
@@ -78,6 +87,7 @@ class _PhosphorHelpParser(argparse.ArgumentParser):
             ('serve', 'Dashboard web read-only cho workspace'),
             ('open', 'Mở thư mục challenge trong file manager'),
             ('config', 'Xem/đặt cấu hình toàn cục (auto-sync…)'),
+            ('ask', 'Chuyển tiếp bài toán hình thức sang chuyên gia Codex Astra'),
             ('menu', 'Console interactive đầy đủ'),
         ]
 
@@ -161,6 +171,7 @@ def build_unified_parser():
 
     # 2. STATUS / TREE / LS / DASHBOARD
     status_parser = subparsers.add_parser('status', aliases=['tree', 'ls', 'dashboard'], help='Display challenge structure, points, and solve progress')
+    status_parser.add_argument('target', nargs='?', help='Solver display ID khi dùng --solver')
     status_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
     status_parser.add_argument('-u', '--unsolved', action='store_true', help='Show only unsolved challenges')
     status_parser.add_argument('-s', '--solved', action='store_true', help='Show only solved challenges')
@@ -170,6 +181,40 @@ def build_unified_parser():
                                help='Chỉ hiện challenge mang TẤT CẢ label này (lặp lại --label để AND, vd: --label hard --label todo)')
     status_parser.add_argument('--search', default=None,
                                help='Tìm từ khoá trong tên + note của challenge')
+    status_parser.add_argument('--solver', action='store_true',
+                               help='Hiện tiến độ SuperBQA worker của challenge')
+    status_parser.add_argument('--watch', action='store_true',
+                               help='Tự refresh khi dùng --solver')
+
+    solve_parser = subparsers.add_parser('solve', aliases=['solver', 'bqa', 'eating'],
+                                         help='BQA EATING: Analyze and auto-solve CTF challenges in parallel')
+    solve_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
+    solve_parser.add_argument('--ids', help='Challenge display IDs, e.g. 1,2,3')
+    solve_parser.add_argument('--workers', type=int, choices=(1, 2, 3), default=3,
+                             help='Parallel worker count (1-3, default: 3)')
+    solve_parser.add_argument('--timeout', type=int, default=3600,
+                             help='Per-worker timeout in seconds (default: 3600)')
+    solve_parser.add_argument('--stale-timeout', type=float, default=300,
+                             help='Terminate worker without output/heartbeat after seconds (default: 300)')
+    solve_parser.add_argument('--detach', '--bg', action='store_true',
+                             help='Run in background daemon mode')
+    solve_parser.add_argument('--foreground', '-f', action='store_true',
+                             help='Run in foreground with live table (default)')
+    solve_parser.add_argument('--status', nargs='?', const='all',
+                             help='View SuperBQA status (e.g. --status or --status 2)')
+    solve_parser.add_argument('--active', action='store_true',
+                             help='List challenges currently running with BQA workers')
+    solve_parser.add_argument('--stop', '--cancel', nargs='?', const='all',
+                             help='Stop SuperBQA workers (e.g. --stop or --stop 2)')
+    solve_parser.add_argument('--attach', action='store_true',
+                             help='Attach to live SuperBQA monitor')
+    solve_parser.add_argument('--logs', help='View latest log for challenge (e.g. --logs 2)')
+    solve_parser.add_argument('--new-session', action='store_true',
+                             help='Start clean session without reusing category context')
+    solve_parser.add_argument('--reset-sessions', action='store_true',
+                             help='Clear saved category sessions for this workspace')
+    solve_parser.add_argument('--distill', nargs='?', const='all',
+                             help='Distill solution workflow into category Playbook (e.g. --distill crypto)')
 
     # 2b. NOTE / TAG — memory của người chơi ("đã thử SSTI, bị chặn")
     note_parser = subparsers.add_parser('note', aliases=['ghi-chu'],
@@ -411,6 +456,24 @@ def build_unified_parser():
     bridge_parser.add_argument('bridge_action', nargs='?', choices=['status', 'start', 'stop', 'token'],
                                default='status', help='Thao tác: status (mặc định), start, stop, token')
 
+    # 20. ASK — chuyển tiếp bài toán hình thức hóa sang chuyên gia Codex Astra (ctf-ask skill)
+    ask_parser = subparsers.add_parser('ask', aliases=['expert', 'astra'],
+                                       help='Chuyển tiếp bài toán hình thức hóa sang chuyên gia Codex Astra độc lập')
+    ask_parser.add_argument('-w', '--workspace', default=None,
+                            help='Thư mục formal workspace chứa TASK.md và instance.json (mặc định: ./math_workspace hoặc cwd)')
+    ask_parser.add_argument('-o', '--output', default=None,
+                            help='Đường dẫn file handoff.json đầu ra (mặc định: ../handoff.json bên ngoài workspace)')
+    ask_parser.add_argument('--model', default=None,
+                            help='Model Codex (mặc định: gpt-6-astra hoặc biến CTF_ASK_MODEL)')
+    ask_parser.add_argument('--effort', choices=['low', 'medium', 'high', 'xhigh', 'max'], default=None,
+                            help='Mức suy luận reasoning effort (mặc định: high)')
+    ask_parser.add_argument('--preflight-only', action='store_true',
+                            help='Chỉ chạy kiểm tra tiền kiểm (preflight linter) tránh domain leakage')
+    ask_parser.add_argument('--verify-only', default=None, metavar='SOLUTION_JSON',
+                            help='Chỉ chạy xác minh độc lập candidate từ solution JSON đối chiếu với instance.json')
+    ask_parser.add_argument('--dry-run', action='store_true',
+                            help='Chạy preflight và in câu lệnh Codex mà không thực thi')
+
     return parser
 
 
@@ -475,6 +538,93 @@ def _run_framed(handler, args, label, ctx_attr='workspace'):
     _print_footer_bar()
 
 
+def _exit_code(exc: SystemExit) -> int:
+    value = exc.code
+    if value is None:
+        return 0
+    if isinstance(value, int):
+        return value
+    return 1
+
+
+def _skip_bqa_recovery(argv) -> bool:
+    if os.environ.get("CTF_BQA_RETRY") == "1":
+        return True
+    if any(value in {"-h", "--help", "-v", "--version"} for value in argv):
+        return True
+    subcommand = next((arg for arg in argv if not arg.startswith("-")), None)
+    if subcommand is not None and subcommand not in {"pull", "download", "clone"}:
+        return True
+    return False
+
+
+def run_with_bqa_recovery(argv, dispatch, recovery) -> int:
+    """Execute one CLI dispatch and allow one sanitized BQA recovery attempt."""
+    try:
+        dispatch()
+        return 0
+    except KeyboardInterrupt:
+        return 130
+    except SystemExit as exc:
+        exit_code = _exit_code(exc)
+        failure = None
+    except Exception as exc:
+        exit_code = 1
+        failure = exc
+
+    if exit_code in (0, 2) or _skip_bqa_recovery(argv):
+        return exit_code
+    return_code = recovery(RecoveryIncident.from_failure(argv, exit_code, failure))
+    return exit_code if return_code is None else int(return_code)
+
+
+def _recover_cli_incident(incident: RecoveryIncident):
+    """Run BQA in this checkout, verify its patch, then retry once."""
+    # Existing unit tests intentionally exercise many failure paths. They must
+    # never create a real agent session or mutate the checkout.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None
+    source_root = Path(__file__).resolve().parent.parent
+    if incident.error_code == "CTF-PULL-D03":
+        refreshed_argv = request_fresh_cookie(incident)
+        if refreshed_argv is not None:
+            print("[BQA] Đang thử lại với cookie mới", flush=True)
+            refreshed_code = retry_command(refreshed_argv, source_root)
+            if refreshed_code == 0:
+                return 0
+            print("[CTF-PULL-D03] Cookie mới vẫn không tải được challenge.", flush=True)
+            incident = RecoveryIncident.from_failure(
+                refreshed_argv,
+                refreshed_code,
+                PullCommandFailure("CTF-PULL-D03", incident.evidence),
+            )
+    if not request_bqa_help(incident):
+        return None
+    result = BqaRecovery(source_root).repair(incident)
+    if result.returncode != 0 or not result.conversation_id:
+        print(f"[CTF-PULL-D15] BQA không thể recovery: {result.reason}", flush=True)
+        return None
+    if not verify_bqa_changes(source_root, result.changed_test_paths):
+        print("[CTF-PULL-D15] Verification thất bại; không retry lệnh gốc.", flush=True)
+        return None
+    print("[BQA] BQA is retrying your command", flush=True)
+    retry_code = retry_command(incident.retry_argv, source_root)
+    if retry_code:
+        print("[CTF-PULL-D15] BQA đã sửa nhưng retry vẫn thất bại.", flush=True)
+    return retry_code
+
+
+def _bqa_boundary(dispatch):
+    """Preserve ``main`` as the command dispatch while adding a top-level guard."""
+    @functools.wraps(dispatch)
+    def wrapped():
+        result = run_with_bqa_recovery(sys.argv[1:], dispatch, _recover_cli_incident)
+        if result:
+            raise SystemExit(result)
+    return wrapped
+
+
+@_bqa_boundary
 def main():
     if len(sys.argv) == 1:
         launch_interactive_menu()
@@ -499,6 +649,8 @@ def main():
             _run_framed(handle_pull, args, 'pull', ctx_attr='url')
     elif cmd in ['status', 'tree', 'ls', 'dashboard']:
         _run_framed(handle_status, args, 'status')
+    elif cmd in ['solve', 'solver']:
+        handle_solve(args)
     elif cmd in ['workspaces', 'scan']:
         _run_framed(handle_workspaces, args, 'workspaces', ctx_attr='dir')
     elif cmd in ['instance', 'container', 'spawn']:
@@ -548,6 +700,8 @@ def main():
             handle_config(args)
     elif cmd in ['bridge', 'ext']:
         handle_bridge(args)
+    elif cmd in ['ask', 'expert', 'astra']:
+        handle_ask(args)
     elif cmd in ['menu', 'ui', 'console']:
         launch_interactive_menu(workspace_path=args.workspace, cookie=args.cookie, token=args.token)
     else:

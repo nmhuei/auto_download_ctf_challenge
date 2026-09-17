@@ -38,6 +38,67 @@ class GitWorkflowService:
     BRANCH_PREFIX = "ctf/"
     META_REL = Path(".ctf") / "git.json"
 
+    DEFAULT_GITIGNORE = (
+        "# Virtual environments & dependencies\n"
+        "**/.venv/\n"
+        "**/venv/\n"
+        "**/env/\n"
+        "**/gdown_venv/\n"
+        "**/forensic_venv/\n"
+        "**/.venv311/\n"
+        "**/node_modules/\n"
+        "**/__pycache__/\n"
+        "*.py[cod]\n"
+        "*$py.class\n\n"
+        "# Standalone virtualenvs\n"
+        "**/pyvenv.cfg\n\n"
+        "# OS and Editor artifacts\n"
+        ".DS_Store\n"
+        "Thumbs.db\n"
+        "*.swp\n"
+        "*.swo\n"
+        "*~\n"
+        ".idea/\n"
+        ".vscode/\n\n"
+        "# Build artifacts & compiled binaries\n"
+        "*.o\n"
+        "*.a\n"
+        "*.so\n"
+        "*.dylib\n"
+        "*.dll\n"
+        "**/build/\n"
+        "**/qemu/build/\n\n"
+        "# Heavy disk images, memory dumps, VM disks & raw dumps (>50MB)\n"
+        "*.raw\n"
+        "*.raw.xz\n"
+        "*.vhdx\n"
+        "*.vmdk\n"
+        "*.qcow2\n"
+        "*.img\n"
+        "*.iso\n"
+        "core\n"
+        "core.*\n\n"
+        "# LLM model weights & giant binaries (>50MB)\n"
+        "*.gguf\n"
+        "*.bin\n"
+        "*.dec\n"
+        "*.tmp\n\n"
+        "# Migration and temporary backups\n"
+        ".migration_backup_*\n\n"
+        "# Oversized challenge archives (>100MB cannot be pushed to GitHub)\n"
+        "**/chall.zip\n"
+        "**/leftovers.tar.gz\n"
+        "**/leftover-leftovers.tar.gz\n"
+        "**/rev_nevm.tar.gz\n"
+        "**/forensics_baked-in.7z.tmp\n"
+    )
+
+    @classmethod
+    def _ensure_default_gitignore(cls, repo: Path) -> None:
+        ignore_file = repo / ".gitignore"
+        if not ignore_file.exists():
+            ignore_file.write_text(cls.DEFAULT_GITIGNORE, encoding="utf-8")
+
     @staticmethod
     def _now_iso() -> str:
         return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
@@ -194,6 +255,7 @@ class GitWorkflowService:
             if current != base_branch:
                 cls._run(root, ["symbolic-ref", "HEAD", f"refs/heads/{base_branch}"])
             if preexisting and import_existing:
+                cls._ensure_default_gitignore(root)
                 cls._run(root, ["add", "-A"])
                 imported = cls._commit(
                     root, "chore: import existing CTF workspaces"
@@ -466,14 +528,46 @@ class GitWorkflowService:
         push: bool = True,
         remote: str | None = None,
     ) -> dict[str, Any]:
-        """Commit only this workspace and push its event branch."""
+        """Commit workspace/repo and push its branch."""
         ws = Path(workspace).expanduser().resolve()
+        repo = cls.find_repo_root(ws)
+        if repo is None:
+            raise GitWorkflowError(
+                f"Không tìm thấy Git repo chứa workspace {ws}."
+            )
+
         meta = cls._load_meta(ws)
         if not meta:
-            raise GitWorkflowError(
-                f"Workspace chưa có {cls.META_REL}; hãy pull với Git workflow trước."
-            )
-        repo = cls._runtime_repo(ws)
+            current = cls._current_branch(repo)
+            remote_name = str(remote or cls.DEFAULT_REMOTE)
+            if ws == repo:
+                cls._run(repo, ["add", "-A"])
+                committed = cls._commit(
+                    repo,
+                    message or f"ctf: checkpoint {current}",
+                )
+            else:
+                rel = cls._workspace_rel(repo, ws)
+                cls._run(repo, ["add", "--", rel.as_posix()])
+                committed = cls._commit(
+                    repo,
+                    message or f"ctf({ws.name}): checkpoint",
+                    pathspec=rel.as_posix(),
+                )
+            pushed = False
+            remote_configured = cls._remote_exists(repo, remote_name)
+            if push and remote_configured:
+                cls._run(repo, ["push", "-u", remote_name, current])
+                pushed = True
+            return {
+                "repo_root": str(repo),
+                "workspace": str(ws),
+                "branch": current,
+                "committed": committed,
+                "pushed": pushed,
+                "remote": remote_name if remote_configured else None,
+            }
+
         rel = cls._workspace_rel(repo, ws)
         branch = str(meta["branch"])
         current = cls._current_branch(repo)
@@ -512,10 +606,39 @@ class GitWorkflowService:
     @classmethod
     def status(cls, workspace: str | os.PathLike) -> dict[str, Any]:
         ws = Path(workspace).expanduser().resolve()
+        repo = cls.find_repo_root(ws)
+        if repo is None:
+            raise GitWorkflowError(
+                f"Không tìm thấy Git repo chứa workspace {ws}."
+            )
+
         meta = cls._load_meta(ws)
         if not meta:
-            raise GitWorkflowError(f"Workspace chưa có {cls.META_REL}.")
-        repo = cls._runtime_repo(ws)
+            current = cls._current_branch(repo)
+            remote_name = cls.DEFAULT_REMOTE
+            if ws == repo:
+                dirty = cls._run(
+                    repo,
+                    ["status", "--porcelain", "--untracked-files=all"],
+                ).stdout.splitlines()
+            else:
+                rel = cls._workspace_rel(repo, ws)
+                dirty = cls._run(
+                    repo,
+                    ["status", "--porcelain", "--untracked-files=all", "--", rel.as_posix()],
+                ).stdout.splitlines()
+            return {
+                "workspace": str(ws),
+                "repo_root": str(repo),
+                "branch": current,
+                "current_branch": current,
+                "base_branch": cls.DEFAULT_BASE_BRANCH,
+                "status": "active",
+                "dirty_files": len(dirty),
+                "merged_into_base": True,
+                "remote_configured": cls._remote_exists(repo, remote_name),
+            }
+
         rel = cls._workspace_rel(repo, ws)
         dirty = cls._run(
             repo,
