@@ -268,6 +268,9 @@ class WorkspaceBuilder:
             "tags": challenge.tags,
             "hints": challenge.hints,
             "connection_info": challenge.connection_info,
+            # Endpoint instance do platform trả về hoặc người dùng/script điền
+            # sau này. Luôn có mặt để metadata giữ một schema ổn định.
+            "instance": "",
             "solved_by_me": challenge.solved_by_me,
             "solves_count": challenge.solves_count,
             "submit_endpoint": challenge.submit_endpoint,

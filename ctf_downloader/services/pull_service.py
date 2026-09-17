@@ -695,7 +695,7 @@ class PullService:
     # ``instance_info`` do instance_service quản TRÊN ĐỊA (is_container/
     # active_instance/remaining_time) — platform không biết gì về trạng thái
     # container local nên refresh-meta/redownload phải giữ nguyên (C9-03).
-    _USER_OWNED_META_KEYS = ("status", "submitted_flag", "instance_info")
+    _USER_OWNED_META_KEYS = ("status", "submitted_flag", "instance_info", "instance")
 
     @staticmethod
     def run_update(config: DownloaderConfig,
@@ -1006,6 +1006,12 @@ class PullService:
 
         def _mut(meta: dict) -> dict:
             meta = dict(meta or {})
+            # Schema migration: mọi metadata có điểm để user/script lưu
+            # endpoint instance. Giá trị này local-owned nên platform refresh
+            # không được suy đoán hay ghi đè endpoint thủ công.
+            if "instance" not in meta:
+                meta["instance"] = ""
+                changed[0] = True
             dynamic = {
                 "points": chall.points,
                 "solves_count": chall.solves_count,

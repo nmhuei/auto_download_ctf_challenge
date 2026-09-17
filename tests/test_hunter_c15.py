@@ -20,6 +20,7 @@ BUG-C15-*); PASS = documentation hành vi hiện tại là đúng/thiết kế.
 Chạy: python3 tests/test_hunter_c15.py -v
 """
 import errno
+import datetime as dt
 import gc
 import hashlib
 import io
@@ -479,7 +480,7 @@ class TestCaseGParallelArchive(ArchiveBase):
                          f"slow fail: {results}")
         self.assertNotIn("error", results.get("fast", {}),
                          f"fast fail: {results}")
-        archive = dest / f"myws_{time.strftime('%Y%m%d')}.tar.gz"
+        archive = dest / f"myws_{dt.datetime.now(dt.timezone.utc):%Y%m%d}.tar.gz"
         self.assertTrue(archive.exists())
         expected = {"sub/f0.txt", "sub/f1.txt", "sub/f2.txt",
                     "sub/f3.txt", "sub/f9.txt"}

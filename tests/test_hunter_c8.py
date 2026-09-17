@@ -7,6 +7,7 @@ Quy ước: test PASS với hành vi đúng = documentation; FAIL = bug thật
 không đụng test_hunter_c7.py. Mock toàn bộ network.
 """
 import contextlib
+import datetime as dt
 import errno
 import io
 import json
@@ -269,7 +270,7 @@ class StorageArchiveCase(unittest.TestCase):
         p = Path(res["archive_path"])
         self.assertTrue(p.exists())
         self.assertEqual(p.name, "My CTF Trận cuối 2026_%s.tar.gz"
-                         % time.strftime("%Y%m%d"))
+                         % dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d"))
         with tarfile.open(p) as tf:
             names = set(tf.getnames())
         self.assertIn("solver/sol.py", names)

@@ -100,6 +100,52 @@ def diag_detect_failure(exc: Exception) -> Diagnostic:
     )
 
 
+def _instance_failure_recovery(
+    challenge_id: Any,
+    msg: str,
+    platform_name: Optional[str],
+    workspace_path: Optional[str],
+    action: str,
+):
+    """Return a repair hint only for errors likely caused by integration drift.
+
+    Quota and ordinary transient failures remain user-actionable diagnostics;
+    unsupported features and HTTP method/endpoint failures can be investigated
+    safely by BQA because they point to an adapter/platform contract mismatch.
+    """
+    text = (msg or "").lower()
+    if "không được hỗ trợ" in text or "not supported" in text:
+        from ..incidents import IncidentKind
+
+        kind = IncidentKind.UNSUPPORTED_PLATFORM_FEATURE
+        error_code = "CTF-INSTANCE-U01"
+    elif any(marker in text for marker in (
+        "http 404", "http 405", "http 501", "method not allowed", "endpoint not found",
+    )):
+        from ..incidents import IncidentKind
+
+        kind = IncidentKind.PLATFORM_SCHEMA_OR_API_DRIFT
+        error_code = "CTF-PLATFORM-D01"
+    else:
+        return None
+
+    from ..incidents import RecoveryHint, RetryPlan
+
+    platform = platform_name or "unknown"
+    argv = ("instance", action, "--id", str(challenge_id))
+    if workspace_path:
+        argv = ("instance", action, "-w", workspace_path, "--id", str(challenge_id))
+    return RecoveryHint(
+        kind=kind,
+        operation=f"instance.{action}",
+        platform=platform,
+        evidence={"challenge_id": str(challenge_id), "adapter": platform, "error": msg},
+        retry=RetryPlan(argv=argv, safe_to_retry=False),
+        repair_eligible=True,
+        error_code=error_code,
+    )
+
+
 def diag_start_instance_fail(
     challenge_id: Any,
     name: str,
@@ -108,26 +154,8 @@ def diag_start_instance_fail(
     workspace_path: Optional[str] = None,
 ) -> Diagnostic:
     """Không tạo được container instance cho challenge."""
-    is_unsupported = "không được hỗ trợ" in (msg or "").lower() or "not supported" in (msg or "").lower()
-    recovery = None
-    if is_unsupported:
-        from ..incidents import IncidentKind, RecoveryHint, RetryPlan
-        plat = platform_name or "unknown"
-        argv = ("instance", "start", "--id", str(challenge_id))
-        if workspace_path:
-            argv = ("instance", "start", "-w", workspace_path, "--id", str(challenge_id))
-        recovery = RecoveryHint(
-            kind=IncidentKind.UNSUPPORTED_PLATFORM_FEATURE,
-            operation="instance.start",
-            platform=plat,
-            evidence={"challenge_id": str(challenge_id), "adapter": plat, "error": msg},
-            retry=RetryPlan(
-                argv=argv,
-                safe_to_retry=False,
-            ),
-            repair_eligible=True,
-            error_code="CTF-INSTANCE-U01",
-        )
+    recovery = _instance_failure_recovery(
+        challenge_id, msg, platform_name, workspace_path, "start")
     return Diagnostic(
         "error",
         f"Không tạo được container instance cho {name} (ID: {challenge_id})",
@@ -150,26 +178,8 @@ def diag_stop_instance_fail(
     workspace_path: Optional[str] = None,
 ) -> Diagnostic:
     """Không dừng được container instance cho challenge."""
-    is_unsupported = "không được hỗ trợ" in (msg or "").lower() or "not supported" in (msg or "").lower()
-    recovery = None
-    if is_unsupported:
-        from ..incidents import IncidentKind, RecoveryHint, RetryPlan
-        plat = platform_name or "unknown"
-        argv = ("instance", "stop", "--id", str(challenge_id))
-        if workspace_path:
-            argv = ("instance", "stop", "-w", workspace_path, "--id", str(challenge_id))
-        recovery = RecoveryHint(
-            kind=IncidentKind.UNSUPPORTED_PLATFORM_FEATURE,
-            operation="instance.stop",
-            platform=plat,
-            evidence={"challenge_id": str(challenge_id), "adapter": plat, "error": msg},
-            retry=RetryPlan(
-                argv=argv,
-                safe_to_retry=False,
-            ),
-            repair_eligible=True,
-            error_code="CTF-INSTANCE-U01",
-        )
+    recovery = _instance_failure_recovery(
+        challenge_id, msg, platform_name, workspace_path, "stop")
     return Diagnostic(
         "error",
         f"Không dừng được container instance cho {name} (ID: {challenge_id})",
@@ -190,26 +200,8 @@ def diag_extend_instance_fail(
     workspace_path: Optional[str] = None,
 ) -> Diagnostic:
     """Không gia hạn được container instance cho challenge."""
-    is_unsupported = "không được hỗ trợ" in (msg or "").lower() or "not supported" in (msg or "").lower()
-    recovery = None
-    if is_unsupported:
-        from ..incidents import IncidentKind, RecoveryHint, RetryPlan
-        plat = platform_name or "unknown"
-        argv = ("instance", "extend", "--id", str(challenge_id))
-        if workspace_path:
-            argv = ("instance", "extend", "-w", workspace_path, "--id", str(challenge_id))
-        recovery = RecoveryHint(
-            kind=IncidentKind.UNSUPPORTED_PLATFORM_FEATURE,
-            operation="instance.extend",
-            platform=plat,
-            evidence={"challenge_id": str(challenge_id), "adapter": plat, "error": msg},
-            retry=RetryPlan(
-                argv=argv,
-                safe_to_retry=False,
-            ),
-            repair_eligible=True,
-            error_code="CTF-INSTANCE-U01",
-        )
+    recovery = _instance_failure_recovery(
+        challenge_id, msg, platform_name, workspace_path, "extend")
     return Diagnostic(
         "error",
         f"Không gia hạn được container instance cho {name} (ID: {challenge_id})",
@@ -479,6 +471,10 @@ class InstanceService:
                     inst = m.get('instance_info')
                     if not isinstance(inst, dict):
                         inst = {}
+                    previous_active = inst.get('active_instance')
+                    # ``instance`` là endpoint người dùng có thể tự điền;
+                    # chỉ lifecycle platform mới thay nó khi có entry.
+                    m.setdefault('instance', '')
 
                     inst['is_container'] = True
                     inst['status'] = status
@@ -486,10 +482,15 @@ class InstanceService:
 
                     if entry:
                         m['connection_info'] = entry
+                        m['instance'] = str(entry)
                         inst['active_instance'] = entry
                         inst['last_entry'] = entry
                         inst['remaining_time'] = time_left
                     elif status == 'stopped':
+                        # Không xóa endpoint do người dùng/script tự nhập.
+                        # Chỉ clear endpoint mà lifecycle trước đó đã quản lý.
+                        if m.get('instance') == previous_active:
+                            m['instance'] = ''
                         inst.pop('active_instance', None)
                         inst.pop('remaining_time', None)
                     m['instance_info'] = inst
@@ -574,17 +575,22 @@ class InstanceService:
             challs = data.get('challenges', []) if isinstance(data, dict) else []
             for c in challs:
                 if isinstance(c, dict) and str(c.get('id')) == str(challenge_id):
-                    if entry:
-                        c['connection_info'] = entry
                     inst = c.get('instance_info')
                     if not isinstance(inst, dict):
                         inst = {}
+                    previous_active = inst.get('active_instance')
+                    c.setdefault('instance', '')
+                    if entry:
+                        c['connection_info'] = entry
+                        c['instance'] = str(entry)
                     c['instance_info'] = inst
                     inst['status'] = status
                     if entry:
                         inst['active_instance'] = entry
                         inst['remaining_time'] = time_left
                     elif status == 'stopped':
+                        if c.get('instance') == previous_active:
+                            c['instance'] = ''
                         inst.pop('active_instance', None)
                         inst.pop('remaining_time', None)
                     break

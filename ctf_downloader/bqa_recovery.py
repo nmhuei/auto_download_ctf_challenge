@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import importlib.util
 import json
 import os
 import re
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -742,18 +744,32 @@ def verify_bqa_changes(
 ) -> bool:
     """Run deterministic local gates before allowing a repaired command retry."""
     root = Path(source_root).resolve()
+    verification_env = os.environ.copy()
+    # Color snapshot tests deliberately exercise terminal styling.  A caller
+    # may prefer plain CLI output through NO_COLOR, but that presentation
+    # preference must not make BQA reject an otherwise valid repair.
+    verification_env.pop("NO_COLOR", None)
+    # ``ctf`` is commonly installed through pipx, whose isolated interpreter
+    # intentionally does not carry development-only pytest.  Use it when
+    # available, but otherwise invoke the pytest executable visible on PATH.
+    # This keeps BQA's post-repair gate usable from an installed CLI.
+    pytest_command = (
+        [sys.executable, "-m", "pytest"]
+        if importlib.util.find_spec("pytest") is not None
+        else ([shutil.which("pytest")] if shutil.which("pytest") else [sys.executable, "-m", "pytest"])
+    )
     commands = [
         [sys.executable, "-m", "compileall", "-q", "ctf_downloader"],
-        [sys.executable, "-m", "pytest", "--collect-only", "-q"],
+        [*pytest_command, "--collect-only", "-q"],
     ]
     for path in changed_test_paths:
         normalized = str(path).replace("\\", "/")
         if not normalized.startswith("tests/") or ".." in normalized.split("/"):
             return False
-        commands.append([sys.executable, "-m", "pytest", normalized, "-q"])
+        commands.append([*pytest_command, normalized, "-q"])
     for command in commands:
         try:
-            result = run(command, cwd=str(root), check=False)
+            result = run(command, cwd=str(root), check=False, env=verification_env)
         except OSError:
             return False
         if int(getattr(result, "returncode", 1)) != 0:

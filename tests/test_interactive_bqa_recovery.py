@@ -117,6 +117,24 @@ class TestDiagnosticBuildersRecovery(unittest.TestCase):
         self.assertIsNotNone(extend_diag.recovery)
         self.assertEqual(extend_diag.recovery.operation, "instance.extend")
 
+    def test_http_method_error_routes_all_lifecycle_actions_to_schema_recovery(self):
+        builders = (
+            (isvc.diag_start_instance_fail, "instance.start"),
+            (isvc.diag_stop_instance_fail, "instance.stop"),
+            (isvc.diag_extend_instance_fail, "instance.extend"),
+        )
+        for builder, operation in builders:
+            with self.subTest(operation=operation):
+                diag = builder(
+                    72, "LeakMeAk", "HTTP 405: Method Not Allowed",
+                    platform_name="rctf", workspace_path="/tmp/test_ws",
+                )
+                self.assertIsNotNone(diag.recovery)
+                self.assertEqual(
+                    diag.recovery.kind, IncidentKind.PLATFORM_SCHEMA_OR_API_DRIFT)
+                self.assertEqual(diag.recovery.operation, operation)
+                self.assertEqual(diag.recovery.error_code, "CTF-PLATFORM-D01")
+
 
 class TestOfferBqaRecovery(unittest.TestCase):
     def setUp(self):

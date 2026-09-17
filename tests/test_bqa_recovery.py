@@ -3,6 +3,7 @@ import os
 from io import StringIO
 from types import SimpleNamespace
 
+import ctf_downloader.bqa_recovery as bqa_recovery
 from ctf_downloader.bqa_recovery import (
     BqaRecovery,
     BqaSession,
@@ -179,6 +180,36 @@ def test_failed_verification_prevents_remaining_checks(tmp_path):
 
     assert not verify_bqa_changes(tmp_path, ("tests/test_added_platform.py",), fake_run)
     assert len(calls) == 1
+
+
+def test_verification_uses_path_pytest_when_installed_cli_python_lacks_pytest(tmp_path, monkeypatch):
+    """pipx's runtime Python may omit pytest while PATH still provides it."""
+    calls = []
+
+    monkeypatch.setattr(bqa_recovery.importlib.util, "find_spec", lambda _name: None)
+    monkeypatch.setattr(bqa_recovery.shutil, "which", lambda name: "/usr/bin/pytest" if name == "pytest" else None)
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0)
+
+    assert verify_bqa_changes(tmp_path, ("tests/test_added_platform.py",), fake_run)
+    assert calls[1][0] == ["/usr/bin/pytest", "--collect-only", "-q"]
+    assert calls[2][0] == ["/usr/bin/pytest", "tests/test_added_platform.py", "-q"]
+
+
+def test_verification_does_not_inherit_no_color_into_color_snapshot_tests(tmp_path, monkeypatch):
+    """BQA's deterministic gate must not fail merely because the CLI is plain-text."""
+    received_environments = []
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    def fake_run(_command, **kwargs):
+        received_environments.append(kwargs["env"])
+        return SimpleNamespace(returncode=0)
+
+    assert verify_bqa_changes(tmp_path, (), fake_run)
+    assert received_environments
+    assert all("NO_COLOR" not in environment for environment in received_environments)
 
 
 def test_retry_uses_fresh_python_process_with_bqa_sentinel(tmp_path):
@@ -458,5 +489,3 @@ def test_bqa_session_store_flock_concurrency(tmp_path):
     assert len(payload) == 20
     for idx in range(20):
         assert f"/path/to/root_{idx}" in payload
-
-

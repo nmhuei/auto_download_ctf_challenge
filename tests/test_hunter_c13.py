@@ -380,7 +380,9 @@ class TestMenuIndexGuard:
         """'99' / '-1' / '00' / '-0' phải bị từ chối SẠCH: không đổi
         workspace, không ghi config, không crash."""
         for bad in ("99", "-1", "00", "-0", "999999"):
-            im, app, con, saved = make_menu(monkeypatch, [bad], tmp_path)
+            # Invalid input intentionally shows the normal acknowledgement
+            # prompt before returning; model that second Enter explicitly.
+            im, app, con, saved = make_menu(monkeypatch, [bad, ""], tmp_path)
             app._menu_switch_workspace()
             assert app.workspace_path == "/baseline/ws", f"'{bad}' đổi ws!"
             assert saved == {}, f"'{bad}' ghi config!"
@@ -401,7 +403,7 @@ class TestMenuIndexGuard:
     def test_switch_superscript_digit_rejected_clean(self, monkeypatch, tmp_path, ws_env):
         """Đối chứng: '²' (isdigit True, int() nổ) trong switch_workspace
         nằm trong try → bắt sạch thành 'Lựa chọn không hợp lệ'."""
-        im, app, con, saved = make_menu(monkeypatch, ["²"], tmp_path)
+        im, app, con, saved = make_menu(monkeypatch, ["²", ""], tmp_path)
         app._menu_switch_workspace()          # không được raise
         assert app.workspace_path == "/baseline/ws"
 
@@ -434,7 +436,9 @@ class TestMenuIndexGuard:
         app.cookie = app.token = None
         app.config = {}
         app._menu_container_manager()
-        assert calls == [("extend", 7)]
+        # Interactive entry points normalize IDs to strings, matching direct
+        # user-entered challenge IDs and the InstanceManager API.
+        assert calls == [("extend", "7")]
 
     def test_bug_superscript_digit_crashes_whole_menu(self, monkeypatch, tmp_path):
         # BUG-DEMO (chủ ý FAIL): '²'.isdigit()==True nhưng int('²') nổ
@@ -452,6 +456,9 @@ class TestMenuIndexGuard:
                          "solves_count": 1},
                         {"id": 8, "name": "Bbb", "category": "Pwn",
                          "solves_count": 2}]
+
+            def find_challenge(self, **_kwargs):
+                return None
 
         con = FakeMenuCon(["²"])               # một console, một prompt
         monkeypatch.setattr(im, "_menu_console", lambda: con)

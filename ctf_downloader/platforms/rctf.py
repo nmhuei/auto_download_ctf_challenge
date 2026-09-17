@@ -611,24 +611,51 @@ class RCTFPlatform(BasePlatform):
             "raw": data,
         }
 
+    def _parse_instancer_200(self, resp: Any) -> Tuple[bool, Dict[str, Any]]:
+        """Parse a successful (HTTP 200) instancer API response.
+
+        Shared between PUT and POST paths to avoid duplication.
+        Returns (success, info_dict).
+        """
+        payload = self._json_object(resp) or {}
+        kind = str(payload.get("kind") or "")
+        if kind.startswith("bad") or kind == "error":
+            msg = payload.get("message") or f"Instancer error: {kind}"
+            return False, {"message": msg}
+        data = payload.get("data")
+        if not isinstance(data, dict) and not kind.startswith("good"):
+            return False, {"message": "Phản hồi start instance rCTF không hợp lệ."}
+        norm = self._normalize_rctf_instance_data(data or {})
+        if (norm.get("entry") is None and norm.get("time_left") is None
+                and norm.get("status") == "unknown"):
+            if not kind.startswith("good"):
+                return False, {"message": "Instancer không cung cấp thông tin container."}
+        return True, norm
+
     def start_instance(self, challenge_id: Any) -> Tuple[bool, Dict[str, Any]]:
         url = self._instancer_url(challenge_id)
         try:
             resp = self.session.put(url, json={}, timeout=self._timeout(15))
             if resp.status_code == 200:
-                payload = self._json_object(resp) or {}
-                kind = str(payload.get("kind") or "")
-                if kind.startswith("bad") or kind == "error":
-                    msg = payload.get("message") or f"Instancer error: {kind}"
+                return self._parse_instancer_200(resp)
+            elif resp.status_code == 405:
+                # API drift (CTF-PLATFORM-D01): some rCTF deployments have
+                # migrated from PUT to POST for the instancer start action.
+                # Fall back to POST transparently; do NOT retry for any other
+                # non-success status to avoid unintended side effects.
+                try:
+                    resp2 = self.session.post(url, json={}, timeout=self._timeout(15))
+                except Exception as e:
+                    return False, {"message": str(e)}
+                if resp2.status_code == 200:
+                    return self._parse_instancer_200(resp2)
+                elif resp2.status_code == 400:
+                    payload = self._json_object(resp2) or {}
+                    data_obj = payload.get("data") if isinstance(payload, dict) else {}
+                    msg = ((data_obj.get("message") if isinstance(data_obj, dict) else None)
+                           or "Lỗi instancer")
                     return False, {"message": msg}
-                data = payload.get("data")
-                if not isinstance(data, dict) and not kind.startswith("good"):
-                    return False, {"message": "Phản hồi start instance rCTF không hợp lệ."}
-                norm = self._normalize_rctf_instance_data(data or {})
-                if norm.get("entry") is None and norm.get("time_left") is None and norm.get("status") == "unknown":
-                    if not kind.startswith("good"):
-                        return False, {"message": "Instancer không cung cấp thông tin container."}
-                return True, norm
+                return False, {"message": f"HTTP {resp2.status_code}: {resp2.text[:100]}"}
             elif resp.status_code == 400:
                 payload = self._json_object(resp) or {}
                 data_obj = payload.get("data") if isinstance(payload, dict) else {}
