@@ -5,6 +5,7 @@ import glob
 from typing import Optional
 
 from rich.prompt import Confirm
+from rich.live import Live
 from rich.text import Text
 
 from .dashboard import CTFDashboard
@@ -77,6 +78,20 @@ def _main_menu_actions(width: int):
 
 
 _MENU_CON = None
+
+
+def _run_live_radar(service, con):
+    """Display the solver status as a continuously refreshed live radar."""
+    from .cli_commands import _solver_table
+
+    con.print("\n  [bold cyan]Live Radar[/bold cyan] — Press Ctrl+C to detach.\n")
+    try:
+        with Live(_solver_table(service, show_worker_count=True), console=con, refresh_per_second=4) as live:
+            while True:
+                time.sleep(0.25)
+                live.update(_solver_table(service, show_worker_count=True))
+    except KeyboardInterrupt:
+        con.print("\n  [dim]Detached from Live Radar.[/dim]")
 
 
 def _frame_timestamp():
@@ -921,7 +936,6 @@ class CTFInteractiveConsole:
     def _run_solver_for_target(self, target: dict):
         from .services.solver_service import SolverService
         from .cli_commands import _solver_table
-        from rich.live import Live
 
         try:
             service = SolverService(self.workspace_path)
@@ -953,10 +967,10 @@ class CTFInteractiveConsole:
             con.print("  [dim]Press Ctrl+C to detach.[/dim]\n")
 
             try:
-                with Live(_solver_table(service), console=con, refresh_per_second=4) as live:
+                with Live(_solver_table(service, show_worker_count=True), console=con, refresh_per_second=4) as live:
                     while True:
                         time.sleep(0.25)
-                        live.update(_solver_table(service))
+                        live.update(_solver_table(service, show_worker_count=True))
             except KeyboardInterrupt:
                 con.print("\n  [dim]Detached.[/dim]")
         except Exception as e:
@@ -965,8 +979,7 @@ class CTFInteractiveConsole:
 
     def _menu_solver(self):
         from .services.solver_service import SolverService
-        from .cli_commands import _solver_table, render_active_agy_workers
-        from rich.live import Live
+        from .cli_commands import _solver_table
 
         while True:
             _section('SuperBQA')
@@ -1001,16 +1014,10 @@ class CTFInteractiveConsole:
                 sess_strs = [f"{cat} ({info.get('conversation_id', '')[:8]}...)" for cat, info in cat_sessions.items()]
                 con.print(f"  [dim]📁 Persistent Sessions: {', '.join(sess_strs)}[/dim]")
 
-            active_jobs = [
-                j for j in jobs
-                if service.read_job(j).get("state") in ("running", "starting")
-            ]
-            opt3_label = f"Active BQA · {len(active_jobs)} running" if active_jobs else "Active BQA"
-
             con.print()
             _option('1', 'BQA EATING')
             _option('2', 'SUPERBQA EATING')
-            _option('3', opt3_label)
+            _option('3', 'Live Radar')
             _option('4', 'Worker log tail')
             _option('5', 'Stop / Cancel')
             _option('6', 'Distill category playbook')
@@ -1039,21 +1046,7 @@ class CTFInteractiveConsole:
                     continue
                 con.print()
                 con.print(f"  [bold green]✔ {res.get('message')}[/bold green]")
-                try:
-                    watch_now = _prompt('  Attach Live Radar now? [Y/n]: ').strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    return
-                if watch_now != 'n':
-                    con.print("\n  [dim]Press Ctrl+C to detach.[/dim]\n")
-                    try:
-                        with Live(_solver_table(service), console=con, refresh_per_second=4) as live:
-                            while True:
-                                time.sleep(0.25)
-                                live.update(_solver_table(service))
-                    except KeyboardInterrupt:
-                        con.print("\n  [dim]Detached.[/dim]")
-                _pause()
-                continue
+                return
             elif act_clean in ('2', 'superbqa', 'super', 'all', 'feast'):
                 solvable = [j for j in jobs if j.has_source or j.has_instance]
                 if not solvable:
@@ -1084,39 +1077,17 @@ class CTFInteractiveConsole:
                 if watch_now != 'n':
                     con.print("\n  [dim]Press Ctrl+C to detach.[/dim]\n")
                     try:
-                        with Live(_solver_table(service), console=con, refresh_per_second=4) as live:
+                        with Live(_solver_table(service, show_worker_count=True), console=con, refresh_per_second=4) as live:
                             while True:
                                 time.sleep(0.25)
-                                live.update(_solver_table(service))
+                                live.update(_solver_table(service, show_worker_count=True))
                     except KeyboardInterrupt:
                         con.print("\n  [dim]Detached.[/dim]")
                 _pause()
                 continue
-            elif act_clean in ('3', 'bqa', 'active', 'agy', 'workers', 'tasks', 'running'):
-                active_list = render_active_agy_workers(service, console_inst=con)
-                if active_list:
-                    con.print()
-                    try:
-                        follow = _prompt('  Enter display ID to tail worker log (or Enter to return): ').strip()
-                    except (EOFError, KeyboardInterrupt):
-                        return
-                    if follow:
-                        try:
-                            matched_job = service.select_ids(follow)[0]
-                            if matched_job and matched_job.log_path.is_file():
-                                con.print(f"\n  [bold cyan]Latest log for {matched_job.name} ({matched_job.log_path}):[/bold cyan]\n")
-                                lines = matched_job.log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                                tail = lines[-40:] if len(lines) > 40 else lines
-                                for line in tail:
-                                    con.print(f"    {line}")
-                                con.print()
-                            else:
-                                Logger.warning(f'No log file found for {matched_job.name if matched_job else follow}.')
-                        except Exception as e:
-                            Logger.error(f'Selection error: {e}')
-                        _pause()
-                else:
-                    _pause()
+            elif act_clean in ('3', 'radar', 'live', 'watch', 'active', 'agy', 'workers', 'tasks', 'running'):
+                _run_live_radar(service, con)
+                _pause()
                 continue
             elif act == '4':
                 try:

@@ -944,21 +944,27 @@ class SolverService:
                 while queue or active:
                     active_categories = {j.category.strip().casefold() for j in active.keys()} if reuse_session else set()
                     while len(active) < workers:
-                        candidate_idx = None
-                        for idx, job in enumerate(queue):
-                            job_cat = job.category.strip().casefold()
-                            if not reuse_session or job_cat not in active_categories:
-                                candidate_idx = idx
-                                break
-                        if candidate_idx is None:
+                        if not queue:
                             break
+                        candidate_idx = 0
                         job = queue.pop(candidate_idx)
+                        job_cat = job.category.strip().casefold()
+                        # Same-category jobs may run concurrently.  The first
+                        # worker can create/reuse the category session; later
+                        # workers fork it when available, or start fresh when
+                        # the first worker has not reported a conversation yet.
+                        fork_session = bool(reuse_session and job_cat in active_categories)
                         if reuse_session:
-                            active_categories.add(job.category.strip().casefold())
+                            active_categories.add(job_cat)
                         started = time.monotonic()
                         try:
                             try:
-                                proc = self._start_worker(job, command, reuse_session=reuse_session)
+                                proc = self._start_worker(
+                                    job,
+                                    command,
+                                    reuse_session=reuse_session,
+                                    fork_session=fork_session,
+                                )
                             except TypeError:
                                 proc = self._start_worker(job, command)
                         except OSError:
@@ -1170,4 +1176,3 @@ class SolverService:
             locked_update_json(state_path, lambda cur: {**cur, "status": "idle", "active_ids": [], "ended_at": self._now()})
 
         return {"success": True, "stopped_workers": stopped_workers, "message": f"Stopped daemon and {stopped_workers} worker(s)."}
-

@@ -673,7 +673,7 @@ def test_solver_worker_resumes_filtered_job_with_recovery_prompt(monkeypatch):
         assert "ctf ask --workspace math_workspace" in prompt_text
 
 
-def test_multi_worker_category_queue_isolation(monkeypatch):
+def test_multi_worker_category_slots_are_independent(monkeypatch):
     with tempfile.TemporaryDirectory() as temp:
         workspace = Path(temp)
         make_challenge(workspace, "Crypto", "crypto-1", 1, source=True)
@@ -705,14 +705,44 @@ def test_multi_worker_category_queue_isolation(monkeypatch):
 
         monkeypatch.setattr(service, "_start_worker", mock_start)
 
-        # Run with 2 workers: crypto-1 and web-1 should run first concurrently.
-        # crypto-2 must NOT start concurrently with crypto-1.
+        # Run with 2 workers: selected challenges occupy slots independently.
         service.run("1,2,3", workers=2)
 
-        # crypto-1 and web-1 started first, crypto-2 started after crypto-1
+        # crypto-1 and crypto-2 start together; web-1 enters after a slot frees.
         assert execution_order[0] == "crypto-1"
-        assert execution_order[1] == "web-1"
-        assert execution_order[2] == "crypto-2"
+        assert execution_order[1] == "crypto-2"
+        assert execution_order[2] == "web-1"
+
+
+def test_multi_worker_starts_same_category_jobs_concurrently(monkeypatch):
+    """Multiple selected challenges must occupy worker slots independently."""
+    with tempfile.TemporaryDirectory() as temp:
+        workspace = Path(temp)
+        make_challenge(workspace, "Crypto", "crypto-1", 1, source=True)
+        make_challenge(workspace, "Crypto", "crypto-2", 2, source=True)
+        service = SolverService(workspace)
+        started = []
+
+        class _ControlledProc:
+            def __init__(self, job_id):
+                self.pid = 91000 + job_id
+                self.returncode = 0
+                self.poll_count = 0
+
+            def poll(self):
+                self.poll_count += 1
+                return None if self.poll_count == 1 else 0
+
+        def mock_start(job, cmd, **kwargs):
+            started.append((job.name, kwargs.get("fork_session", False)))
+            return _ControlledProc(job.display_id)
+
+        monkeypatch.setattr(service, "_start_worker", mock_start)
+
+        service.run("1,2", workers=2)
+
+        assert started == [("crypto-1", False), ("crypto-2", True)]
+        assert service.max_active_workers == 2
 
 
 def test_solver_worker_forks_session_when_requested(monkeypatch, tmp_path: Path):
@@ -758,8 +788,4 @@ def test_solver_worker_forks_session_when_requested(monkeypatch, tmp_path: Path)
         assert state["reused_session"] is False
         # Verify master session was NOT corrupted or changed
         assert service.get_category_session("Crypto") == "conv-master-crypto-123"
-
-
-
-
 

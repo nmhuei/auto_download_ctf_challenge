@@ -186,7 +186,12 @@ def _get_challenge_flag(service: SolverService, job: SolverJob, state: dict) -> 
     return None
 
 
-def _solver_table(service: SolverService, *, animate: bool | None = None):
+def _solver_table(
+    service: SolverService,
+    *,
+    animate: bool | None = None,
+    show_worker_count: bool = False,
+):
     """Current solver rows.  It reads durable per-challenge state only."""
     from rich import box
     from rich.table import Table
@@ -209,6 +214,9 @@ def _solver_table(service: SolverService, *, animate: bool | None = None):
     table.add_column("PHASE", style=_MUTED_COLOR, no_wrap=True, overflow="ellipsis", ratio=1)
     if animate is None:
         animate = bool(console.is_terminal)
+    if show_worker_count:
+        # A stale state file must not inflate the radar's live worker count.
+        service.recover_stale_jobs()
     labels = {
         "queued": ("○ queued", _MUTED_COLOR),
         "starting": ("◌ starting", _WARN_COLOR),
@@ -224,10 +232,13 @@ def _solver_table(service: SolverService, *, animate: bool | None = None):
         "candidate_found": ("⚑ candidate", _WARN_COLOR),
         "analyzed": ("✦ analyzed", _INFO_COLOR),
     }
+    active_workers = 0
     for job in service.scan():
         state = service.read_job(job)
         flag = _get_challenge_flag(service, job, state)
         value = str(state.get("state") or "idle")
+        if value in ("starting", "running"):
+            active_workers += 1
         shown, style = labels.get(value, ("· idle", _MUTED_COLOR))
         outcome_val = str(state.get("outcome") or "")
         if not outcome_val and flag:
@@ -259,6 +270,8 @@ def _solver_table(service: SolverService, *, animate: bool | None = None):
             "✓" if job.has_instance else "–",
             phase_text,
         )
+    if show_worker_count:
+        table.title = f"Live Radar · {active_workers} worker{'s' if active_workers != 1 else ''} running"
     return table
 
 
@@ -322,10 +335,10 @@ def _render_solver_status(service: SolverService, *, target: str | None, watch: 
         if not watch:
             console.print(_solver_table(service))
             return
-        with Live(_solver_table(service), console=console, refresh_per_second=5) as live:
+        with Live(_solver_table(service, show_worker_count=True), console=console, refresh_per_second=5) as live:
             while True:
                 time.sleep(0.25)
-                live.update(_solver_table(service))
+                live.update(_solver_table(service, show_worker_count=True))
     except KeyboardInterrupt:
         return
 
@@ -507,10 +520,10 @@ def handle_solve(args):
     if getattr(args, 'attach', False):
         console.print("[dim]💡 Connecting to SuperBQA Radar. Press Ctrl+C to detach safely (worker continues in background).[/dim]\n")
         try:
-            with Live(_solver_table(service), console=console, refresh_per_second=4) as live:
+            with Live(_solver_table(service, show_worker_count=True), console=console, refresh_per_second=4) as live:
                 while True:
                     time.sleep(0.25)
-                    live.update(_solver_table(service))
+                    live.update(_solver_table(service, show_worker_count=True))
         except KeyboardInterrupt:
             console.print("\n[dim]💡 Detached from Radar. SuperBQA is continuing in background.[/dim]")
         return
@@ -544,11 +557,11 @@ def handle_solve(args):
 
     # 6. Default: Foreground execution with Live table
     try:
-        with Live(_solver_table(service), console=console, refresh_per_second=8) as live:
+        with Live(_solver_table(service, show_worker_count=True), console=console, refresh_per_second=8) as live:
             service.run(
                 ids,
                 workers=getattr(args, 'workers', 3),
-                on_refresh=lambda: live.update(_solver_table(service)),
+                on_refresh=lambda: live.update(_solver_table(service, show_worker_count=True)),
                 reuse_session=reuse_session,
             )
     except (SolverSelectionError, SolverAlreadyRunning) as exc:
@@ -2289,4 +2302,3 @@ def handle_ask(args):
         sys.exit(0)
     else:
         sys.exit(res.returncode)
-

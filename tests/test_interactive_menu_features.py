@@ -275,8 +275,9 @@ def test_menu_view_challenge_detail_survives_missing_and_corrupt_files(monkeypat
 def test_menu_solver_background_spawn_and_banner(monkeypatch):
     from ctf_downloader.services.solver_service import SolverService
 
-    # User inputs: option '1', id '1', then decline watch 'n'
-    con = FakeMenuConsole(inputs=["1", "1", "n"])
+    # User inputs: option '1', then the selected display ID.  BQA EATING
+    # returns immediately after handing work to the daemon.
+    con = FakeMenuConsole(inputs=["1", "1"])
     monkeypatch.setattr(im, "_menu_console", lambda: con)
     monkeypatch.setattr(im, "_pause", lambda: None)
     monkeypatch.setattr(im, "_prompt", lambda prompt: con.input(prompt))
@@ -300,14 +301,14 @@ def test_menu_solver_background_spawn_and_banner(monkeypatch):
         assert spawned[0] == "1"
         output = "\n".join(con.printed)
         assert "Daemon started for 1" in output
-        assert "Attach Live Radar now?" in output
+        assert "Attach Live Radar now?" not in output
 
 
 def test_menu_solver_bqa_eating_labels_and_help_alias(monkeypatch):
     from ctf_downloader.services.solver_service import SolverService
 
     # 1. Test selecting option 'bqa' alias instead of '1'
-    con = FakeMenuConsole(inputs=["bqa", "2", "n"])
+    con = FakeMenuConsole(inputs=["bqa", "2"])
     monkeypatch.setattr(im, "_menu_console", lambda: con)
     monkeypatch.setattr(im, "_pause", lambda: None)
     monkeypatch.setattr(im, "_prompt", lambda prompt: con.input(prompt))
@@ -335,11 +336,28 @@ def test_menu_solver_bqa_eating_labels_and_help_alias(monkeypatch):
         assert "[7] Help" in output
 
 
-def test_menu_solver_active_agy_workers_and_loop(monkeypatch):
-    # 1. Select option '3' (Active agy workers), follow prompt returns Enter (''), then option '0' to exit
-    con = FakeMenuConsole(inputs=["3", "", "0"])
+def test_menu_solver_live_radar_opens_directly(monkeypatch):
+    # Option 3 is now a direct Live Radar view; it has no active-worker
+    # listing or follow-up selection prompt.
+    con = FakeMenuConsole(inputs=["3"])
     monkeypatch.setattr(im, "_menu_console", lambda: con)
-    monkeypatch.setattr(im, "_prompt", lambda prompt: con.input(prompt))
+    monkeypatch.setattr(im, "_pause", lambda: None)
+
+    class FakeLive:
+        def __init__(self, *args, **kwargs):
+            self.updated = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def update(self, *_args, **_kwargs):
+            self.updated = True
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(im, "Live", FakeLive, raising=False)
 
     with tempfile.TemporaryDirectory() as temp:
         ws = create_dummy_workspace(temp)
@@ -348,20 +366,36 @@ def test_menu_solver_active_agy_workers_and_loop(monkeypatch):
         app.cookie = app.token = None
         app.config = {}
 
-        # Should enter option 3, display active agy workers status, and loop back cleanly on 0
+        # Should enter option 3 and detach from the live view on Ctrl+C.
         app._menu_solver()
         output = "\n".join(con.printed)
-        assert "[3] Active BQA" in output
-        assert "No active BQA workers running" in output
+        assert "[3] Live Radar" in output
+        assert "Live Radar" in output
+        assert "No active BQA workers running" not in output
 
 
 def test_menu_solver_active_agy_workers_with_running_job(monkeypatch):
     from datetime import datetime, timezone
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    con = FakeMenuConsole(inputs=["3", "", "0"])
+    con = FakeMenuConsole(inputs=["3"])
     monkeypatch.setattr(im, "_menu_console", lambda: con)
-    monkeypatch.setattr(im, "_prompt", lambda prompt: con.input(prompt))
+    monkeypatch.setattr(im, "_pause", lambda: None)
+
+    class FakeLive:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def update(self, *_args, **_kwargs):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(im, "Live", FakeLive, raising=False)
 
     from ctf_downloader.services.solver_service import SolverService
     monkeypatch.setattr(SolverService, "_pid_is_alive", lambda *args, **kwargs: True)
@@ -387,12 +421,10 @@ def test_menu_solver_active_agy_workers_with_running_job(monkeypatch):
 
         app._menu_solver()
         output = "\n".join(con.printed)
-        assert "[3] Active BQA · 1 running" in output
-        assert "active BQA worker(s) running" in output
+        assert "[3] Live Radar" in output
+        assert "No active BQA workers running" not in output
         assert "Hackel" in output
         assert "recon" in output
-
-
 
 
 

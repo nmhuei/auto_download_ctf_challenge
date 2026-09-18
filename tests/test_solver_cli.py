@@ -294,5 +294,48 @@ def test_solver_table_displays_flag_in_phase_column():
         assert "★ solved" in rendered
 
 
+def test_solver_table_can_show_live_worker_count():
+    from ctf_downloader.cli_commands import _solver_table
+    from ctf_downloader.services.solver_service import SolverService
+
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        for idx, state in ((1, "running"), (2, "starting"), (3, "completed")):
+            chal = root / "Web" / f"challenge-{idx}"
+            (chal / "challenge").mkdir(parents=True)
+            (chal / "script").mkdir()
+            (chal / "metadata.json").write_text(json.dumps({
+                "id": idx, "name": f"Challenge {idx}", "category": "Web",
+            }), encoding="utf-8")
+            (chal / "script" / "worker-state.json").write_text(json.dumps({
+                "state": state,
+            }), encoding="utf-8")
+
+        table = _solver_table(SolverService(root), animate=False, show_worker_count=True)
+
+        assert table.title == "Live Radar · 2 workers running"
+
+
+def test_live_worker_count_recovers_dead_pid_before_counting():
+    from ctf_downloader.cli_commands import _solver_table
+    from ctf_downloader.services.solver_service import SolverService
+
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        chal = root / "Web" / "stale"
+        (chal / "challenge").mkdir(parents=True)
+        (chal / "script").mkdir()
+        (chal / "metadata.json").write_text(json.dumps({
+            "id": 1, "name": "Stale", "category": "Web",
+        }), encoding="utf-8")
+        (chal / "script" / "worker-state.json").write_text(json.dumps({
+            "state": "running", "pid": 99999999,
+        }), encoding="utf-8")
+
+        service = SolverService(root)
+        table = _solver_table(service, animate=False, show_worker_count=True)
+
+        assert table.title == "Live Radar · 0 workers running"
+        assert service.read_job(service.scan()[0])["error_code"] == "E_WORKER_CRASH"
 
 
