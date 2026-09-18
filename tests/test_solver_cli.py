@@ -291,7 +291,7 @@ def test_solver_table_displays_flag_in_phase_column():
         # Chal 3 should retain generic "completed"
         assert "completed" in rendered
         # The new compact status names the flag's local provenance.
-        assert "★ local flag" in rendered
+        assert "★ flag" in rendered
 
 
 def test_solver_table_can_show_live_worker_count():
@@ -349,9 +349,9 @@ def test_solver_table_separates_platform_and_local_solve_states():
         rendered = output.export_text()
 
         assert "CTF / FLAG" in rendered
-        assert "✓ platform" in rendered
-        assert "★ local flag" in rendered
-        assert "READY · eligible for BQA" in rendered
+        assert "✓ solved" in rendered
+        assert "★ flag" in rendered
+        assert "READY" in rendered
 
 
 def test_live_worker_count_recovers_dead_pid_before_counting():

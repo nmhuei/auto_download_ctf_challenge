@@ -207,34 +207,33 @@ def _solver_table(
             active_workers += 1
         shown, style = labels.get(value, ("· idle", _MUTED_COLOR))
         outcome_val = str(state.get("outcome") or "")
+
+        # --- CTF / FLAG column: compact solve status ---
         if job.is_solved and flag:
-            shown_outcome, outcome_style = ("✓ platform + ★ local", _SOLVED_COLOR)
+            shown_outcome, outcome_style = ("✓+★", _SOLVED_COLOR)
         elif job.is_solved:
-            shown_outcome, outcome_style = ("✓ platform", _SOLVED_COLOR)
+            shown_outcome, outcome_style = ("✓ solved", _SOLVED_COLOR)
         elif flag:
-            shown_outcome, outcome_style = ("★ local flag", _SOLVED_COLOR)
+            shown_outcome, outcome_style = ("★ flag", _SOLVED_COLOR)
+        elif outcome_val:
+            shown_outcome, outcome_style = outcome_labels.get(
+                outcome_val, (outcome_val, _MUTED_COLOR)
+            )
         else:
             shown_outcome, outcome_style = ("–", _MUTED_COLOR)
-        if not (job.is_solved or flag):
-            shown_outcome, outcome_style = outcome_labels.get(
-                outcome_val, (outcome_val if outcome_val else "–", _MUTED_COLOR)
-            )
+
+        # --- PHASE column: flag value or operational detail ---
         phase = str(state.get("phase") or "-")
         msg = str(state.get("message") or "")
 
-        if eligibility.reason == "platform_solved":
-            details = "skipped · platform solved"
-            if flag:
-                details += f" · ★ {flag}"
-            phase_text = Text(details, style=_SOLVED_COLOR)
-        elif eligibility.reason == "local_flag":
-            phase_text = Text(f"skipped · local flag · ★ {flag}", style=_SOLVED_COLOR)
-        elif eligibility.reason == "ready" and value == "idle":
-            phase_text = Text("READY · eligible for BQA", style=_INFO_COLOR)
+        if flag:
+            phase_text = Text(f"★ {flag}", style=_SOLVED_COLOR)
         elif state.get("error_code"):
             phase_text = Text(str(state["error_code"]), style=_ERROR_COLOR)
+        elif eligibility.reason == "ready" and value == "idle":
+            phase_text = Text("READY", style=_INFO_COLOR)
         elif eligibility.reason == "no_input" and value == "idle":
-            phase_text = Text("BLOCKED · no source/instance", style=_MUTED_COLOR)
+            phase_text = Text("no input", style=_MUTED_COLOR)
         elif msg and phase in ("running", "starting"):
             phase_text = Text(f"{phase} · {msg[:35]}", style=_WARN_COLOR)
         elif msg and phase not in ("-", "queued", "completed", "failed", "filtered", "cancelled", "skipped"):
