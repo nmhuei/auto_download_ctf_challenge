@@ -142,6 +142,21 @@ def _solver_running_label(*, animate: bool) -> str:
     return f"{frames[int(time.monotonic() * 8) % len(frames)]} running"
 
 
+def _format_flag_compact(flag: str, max_len: int = 24) -> str:
+    """Format flag compactly for table display: PREFIX{head…tail}."""
+    flag = str(flag or "").strip()
+    if not flag:
+        return ""
+    if len(flag) <= max_len:
+        return flag
+    if "{" in flag and flag.endswith("}"):
+        prefix, inner = flag.split("{", 1)
+        inner = inner[:-1]
+        if len(inner) > 8:
+            return f"{prefix}{{{inner[:4]}…{inner[-4:]}}}"
+    return f"{flag[:max_len - 5]}…{flag[-4:]}"
+
+
 def _get_challenge_flag(service: SolverService, job: SolverJob, state: dict) -> str | None:
     """Compatibility wrapper around the shared local-flag detector."""
     return service.get_local_flag(job, state)
@@ -223,14 +238,14 @@ def _solver_table(
             shown_outcome, outcome_style = ("–", _MUTED_COLOR)
 
         # PHASE column:
-        # 1. Local has flag -> show flag
+        # 1. Local has flag -> show compact flag (e.g. PREFIX{head…tail})
         # 2. No flag but solved on CTF platform -> note '✔ platform'
         # 3. Neither -> normal status (ready / error / message / phase)
         phase = str(state.get("phase") or "-")
         msg = str(state.get("message") or "")
 
         if flag:
-            phase_text = Text(f"★ {flag}", style=_SOLVED_COLOR)
+            phase_text = Text(f"★ {_format_flag_compact(flag)}", style=_SOLVED_COLOR)
         elif job.is_solved:
             phase_text = Text("✔ platform", style=_SOLVED_COLOR)
         elif state.get("error_code"):

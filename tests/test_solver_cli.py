@@ -377,3 +377,32 @@ def test_live_worker_count_recovers_dead_pid_before_counting():
 
         assert table.title == "Live Radar · 0 workers running"
         assert service.read_job(service.scan()[0])["error_code"] == "E_WORKER_CRASH"
+
+
+def test_solver_table_compacts_long_flags():
+    from ctf_downloader.cli_commands import _solver_table, _format_flag_compact
+    from ctf_downloader.services.solver_service import SolverService
+    from rich.console import Console
+
+    assert _format_flag_compact("ASIS{f4r3w3ll_cl4ss1c_h3ll0_unc3rt41n_3r4!}") == "ASIS{f4r3…3r4!}"
+    assert _format_flag_compact("CTF{short}") == "CTF{short}"
+
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        chal = root / "Crypto" / "long_flag_chal"
+        (chal / "challenge").mkdir(parents=True)
+        (chal / "challenge" / "task.py").write_text("print(1)", encoding="utf-8")
+        (chal / "script").mkdir()
+        (chal / "metadata.json").write_text(json.dumps({
+            "id": 1, "name": "Long Flag Chal", "category": "Crypto",
+        }), encoding="utf-8")
+        (chal / "flag.txt").write_text(
+            "ASIS{f4r3w3ll_cl4ss1c_h3ll0_unc3rt41n_3r4!}", encoding="utf-8"
+        )
+
+        table = _solver_table(SolverService(root), animate=False)
+        output = Console(record=True, width=120)
+        output.print(table)
+        rendered = output.export_text()
+
+        assert "★ ASIS{f4r3…3r4!}" in rendered
