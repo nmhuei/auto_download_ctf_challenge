@@ -285,13 +285,13 @@ def test_solver_table_displays_flag_in_phase_column():
         console.print(table)
         rendered = console.export_text()
 
-        # Check that flags appear in PHASE instead of generic "completed"
+        # Check that flags appear in PHASE with ★ prefix
         assert "★ CTF{baby_mic_check_flag}" in rendered
         assert "★ ASIS{arch_rev_ok}" in rendered
         # Chal 3 should retain generic "completed"
         assert "completed" in rendered
-        # The new compact status names the flag's local provenance.
-        assert "★ flag" in rendered
+        # Local-flag provenance appears in OUTCOME.
+        assert "★ solved" in rendered
 
 
 def test_solver_table_can_show_live_worker_count():
@@ -348,10 +348,12 @@ def test_solver_table_separates_platform_and_local_solve_states():
         output.print(table)
         rendered = output.export_text()
 
-        assert "CTF / FLAG" in rendered
-        assert "✓ solved" in rendered
-        assert "★ flag" in rendered
-        assert "READY" in rendered
+        assert "OUTCOME" in rendered
+        assert "✓ platform" in rendered
+        assert "★ solved" in rendered
+        assert "✔ platform" in rendered
+        assert "★ CTF{real_hoarded_flag}" in rendered
+        assert "ready" in rendered
 
 
 def test_live_worker_count_recovers_dead_pid_before_counting():

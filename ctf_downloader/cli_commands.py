@@ -169,7 +169,7 @@ def _solver_table(
     table.add_column("CHALLENGE", style=FG_BASE, no_wrap=True, overflow="ellipsis")
     table.add_column("CATEGORY", style=_MUTED_COLOR, no_wrap=True)
     table.add_column("STATE", no_wrap=True)
-    table.add_column("CTF / FLAG", no_wrap=True)
+    table.add_column("OUTCOME", no_wrap=True)
     table.add_column("SRC", justify="center", no_wrap=True)
     table.add_column("INST", justify="center", no_wrap=True)
     table.add_column("PHASE", style=_MUTED_COLOR, no_wrap=True, overflow="ellipsis", ratio=1)
@@ -186,9 +186,9 @@ def _solver_table(
         "failed": ("! failed", _ERROR_COLOR),
         "filtered": ("! filtered", _ERROR_COLOR),
         "skipped_no_source": ("— no source", _MUTED_COLOR),
-        "skipped_no_input": ("— no source", _MUTED_COLOR),
-        "skipped_platform_solved": ("✓ skipped", _SOLVED_COLOR),
-        "skipped_local_flag": ("★ skipped", _SOLVED_COLOR),
+        "skipped_no_input": ("— no input", _MUTED_COLOR),
+        "skipped_platform_solved": ("— platform", _MUTED_COLOR),
+        "skipped_local_flag": ("— hoarded", _MUTED_COLOR),
         "skipped_active": ("◌ active", _WARN_COLOR),
         "cancelled": ("— cancelled", _MUTED_COLOR),
     }
@@ -208,13 +208,13 @@ def _solver_table(
         shown, style = labels.get(value, ("· idle", _MUTED_COLOR))
         outcome_val = str(state.get("outcome") or "")
 
-        # --- CTF / FLAG column: compact solve status ---
+        # OUTCOME column
         if job.is_solved and flag:
             shown_outcome, outcome_style = ("✓+★", _SOLVED_COLOR)
         elif job.is_solved:
-            shown_outcome, outcome_style = ("✓ solved", _SOLVED_COLOR)
+            shown_outcome, outcome_style = ("✓ platform", _SOLVED_COLOR)
         elif flag:
-            shown_outcome, outcome_style = ("★ flag", _SOLVED_COLOR)
+            shown_outcome, outcome_style = ("★ solved", _SOLVED_COLOR)
         elif outcome_val:
             shown_outcome, outcome_style = outcome_labels.get(
                 outcome_val, (outcome_val, _MUTED_COLOR)
@@ -222,16 +222,21 @@ def _solver_table(
         else:
             shown_outcome, outcome_style = ("–", _MUTED_COLOR)
 
-        # --- PHASE column: flag value or operational detail ---
+        # PHASE column:
+        # 1. Local has flag -> show flag
+        # 2. No flag but solved on CTF platform -> note '✔ platform'
+        # 3. Neither -> normal status (ready / error / message / phase)
         phase = str(state.get("phase") or "-")
         msg = str(state.get("message") or "")
 
         if flag:
             phase_text = Text(f"★ {flag}", style=_SOLVED_COLOR)
+        elif job.is_solved:
+            phase_text = Text("✔ platform", style=_SOLVED_COLOR)
         elif state.get("error_code"):
             phase_text = Text(str(state["error_code"]), style=_ERROR_COLOR)
         elif eligibility.reason == "ready" and value == "idle":
-            phase_text = Text("READY", style=_INFO_COLOR)
+            phase_text = Text("ready", style=_INFO_COLOR)
         elif eligibility.reason == "no_input" and value == "idle":
             phase_text = Text("no input", style=_MUTED_COLOR)
         elif msg and phase in ("running", "starting"):
