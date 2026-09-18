@@ -181,13 +181,13 @@ def _solver_table(
         pad_edge=False,
     )
     table.add_column("ID", justify="right", style=_MUTED_COLOR, no_wrap=True)
-    table.add_column("CHALLENGE", style=FG_BASE, no_wrap=True, overflow="ellipsis")
+    table.add_column("CHALLENGE", style=FG_BASE, no_wrap=True, overflow="ellipsis", ratio=2, max_width=24)
     table.add_column("CATEGORY", style=_MUTED_COLOR, no_wrap=True)
     table.add_column("STATE", no_wrap=True)
     table.add_column("OUTCOME", no_wrap=True)
     table.add_column("SRC", justify="center", no_wrap=True)
     table.add_column("INST", justify="center", no_wrap=True)
-    table.add_column("PHASE", style=_MUTED_COLOR, no_wrap=True, overflow="ellipsis", ratio=1)
+    table.add_column("PHASE", style=_MUTED_COLOR, no_wrap=True, overflow="ellipsis", ratio=3)
     if animate is None:
         animate = bool(console.is_terminal)
     if show_worker_count:
