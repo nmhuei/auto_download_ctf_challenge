@@ -1046,7 +1046,7 @@ class CTFInteractiveConsole:
                     continue
                 con.print()
                 con.print(f"  [bold green]✔ {res.get('message')}[/bold green]")
-                return
+                continue
             elif act_clean in ('2', 'superbqa', 'super', 'all', 'feast'):
                 solvable = [j for j in jobs if j.has_source or j.has_instance]
                 if not solvable:

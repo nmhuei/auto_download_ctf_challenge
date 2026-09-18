@@ -277,7 +277,7 @@ def test_menu_solver_background_spawn_and_banner(monkeypatch):
 
     # User inputs: option '1', then the selected display ID.  BQA EATING
     # returns immediately after handing work to the daemon.
-    con = FakeMenuConsole(inputs=["1", "1"])
+    con = FakeMenuConsole(inputs=["1", "1", "0"])
     monkeypatch.setattr(im, "_menu_console", lambda: con)
     monkeypatch.setattr(im, "_pause", lambda: None)
     monkeypatch.setattr(im, "_prompt", lambda prompt: con.input(prompt))
@@ -302,6 +302,7 @@ def test_menu_solver_background_spawn_and_banner(monkeypatch):
         output = "\n".join(con.printed)
         assert "Daemon started for 1" in output
         assert "Attach Live Radar now?" not in output
+        assert output.count("[1] BQA EATING") == 2
 
 
 def test_menu_solver_bqa_eating_labels_and_help_alias(monkeypatch):
@@ -425,6 +426,5 @@ def test_menu_solver_active_agy_workers_with_running_job(monkeypatch):
         assert "No active BQA workers running" not in output
         assert "Hackel" in output
         assert "recon" in output
-
 
 
