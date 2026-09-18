@@ -131,6 +131,41 @@ def test_spawn_background_and_already_running(monkeypatch):
         assert res2["error"] == "ALREADY_RUNNING"
 
 
+def test_spawn_background_passes_per_category_mode_to_daemon(monkeypatch):
+    with tempfile.TemporaryDirectory() as temp:
+        workspace = Path(temp)
+        make_challenge(workspace, "Web", "test-bg", 1, source=True)
+        service = SolverService(workspace)
+
+        class _MockDaemonProc:
+            pid = 55555
+            def poll(self):
+                return None
+
+        spawned_cmds = []
+
+        def mock_popen(cmd, **kwargs):
+            spawned_cmds.append(cmd)
+            state_path = workspace / ".ctf-solver" / "manager-state.json"
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(json.dumps({
+                "daemon_pid": os.getpid(),
+                "pid_start_ticks": get_pid_start_ticks(os.getpid()),
+                "boot_id": get_system_boot_id(),
+                "status": "running",
+                "target_ids": "1",
+                "active_ids": ["1"],
+            }), encoding="utf-8")
+            return _MockDaemonProc()
+
+        monkeypatch.setattr(subprocess, "Popen", mock_popen)
+
+        res = service.spawn_background("1", workers=1, per_category=True)
+
+        assert res["success"] is True
+        assert "--per-category" in spawned_cmds[0]
+
+
 def test_stop_background_cancels_workers_and_daemon(monkeypatch):
     with tempfile.TemporaryDirectory() as temp:
         workspace = Path(temp)
@@ -211,5 +246,4 @@ def test_daemon_blocks_concurrent_solver(monkeypatch):
             # Also foreground service.run should raise SolverAlreadyRunning
             with pytest.raises(SolverAlreadyRunning):
                 service.run("1")
-
 

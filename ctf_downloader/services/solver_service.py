@@ -904,9 +904,9 @@ class SolverService:
 
     def run(self, raw_ids: str, *, workers: int = 3, agy_command: Sequence[str] | None = None,
             on_refresh: Callable[[], None] | None = None, acquire_lock: bool = True,
-            reuse_session: bool = True) -> list[dict]:
-        if workers < 1 or workers > 3:
-            raise ValueError("workers must be between 1 and 3.")
+            reuse_session: bool = True, per_category: bool = False) -> list[dict]:
+        if workers < 1 or (workers > 3 and not per_category):
+            raise ValueError("workers must be between 1 and 3 unless per_category mode is enabled.")
         jobs = self.select_ids(raw_ids)
         raw_cmd = list(agy_command or ["agy", "--mode", "accept-edits", "--dangerously-skip-permissions"])
         if raw_cmd:
@@ -942,19 +942,34 @@ class SolverService:
                 queue.append(job)
             try:
                 while queue or active:
-                    active_categories = {j.category.strip().casefold() for j in active.keys()} if reuse_session else set()
+                    active_categories = (
+                        {j.category.strip().casefold() for j in active.keys()}
+                        if (reuse_session or per_category) else set()
+                    )
                     while len(active) < workers:
                         if not queue:
                             break
-                        candidate_idx = 0
+                        if per_category:
+                            candidate_idx = next(
+                                (
+                                    idx for idx, queued_job in enumerate(queue)
+                                    if queued_job.category.strip().casefold() not in active_categories
+                                ),
+                                None,
+                            )
+                            if candidate_idx is None:
+                                break
+                        else:
+                            candidate_idx = 0
                         job = queue.pop(candidate_idx)
                         job_cat = job.category.strip().casefold()
-                        # Same-category jobs may run concurrently.  The first
-                        # worker can create/reuse the category session; later
-                        # workers fork it when available, or start fresh when
-                        # the first worker has not reported a conversation yet.
+                        # Normal BQA may run same-category jobs concurrently;
+                        # per-category mode deliberately selects a different
+                        # category while one worker for this category is active.
+                        # When reuse is enabled, a concurrent same-category
+                        # worker forks the session if one is available.
                         fork_session = bool(reuse_session and job_cat in active_categories)
-                        if reuse_session:
+                        if reuse_session or per_category:
                             active_categories.add(job_cat)
                         started = time.monotonic()
                         try:
@@ -969,7 +984,7 @@ class SolverService:
                                 proc = self._start_worker(job, command)
                         except OSError:
                             completed[job] = self.read_job(job)
-                            if reuse_session:
+                            if reuse_session or per_category:
                                 active_categories.discard(job.category.strip().casefold())
                             continue
                         active[job] = (proc, started)
@@ -1056,6 +1071,7 @@ class SolverService:
         timeout_seconds: int = 3600,
         stale_seconds: int = 300,
         reuse_session: bool = True,
+        per_category: bool = False,
     ) -> dict:
         jobs = self.select_ids(raw_ids)
         if not jobs:
@@ -1087,6 +1103,8 @@ class SolverService:
         ]
         if not reuse_session:
             cmd.append("--new-session")
+        if per_category:
+            cmd.append("--per-category")
 
         env = os.environ.copy()
         pkg_root = str(Path(__file__).resolve().parent.parent.parent)

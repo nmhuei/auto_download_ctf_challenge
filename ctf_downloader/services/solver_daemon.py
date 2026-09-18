@@ -28,7 +28,15 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def run_daemon(workspace: Path, ids: str, workers: int, timeout: int, stale_timeout: int, reuse_session: bool = True) -> int:
+def run_daemon(
+    workspace: Path,
+    ids: str,
+    workers: int,
+    timeout: int,
+    stale_timeout: int,
+    reuse_session: bool = True,
+    per_category: bool = False,
+) -> int:
     control_dir = workspace / ".ctf-solver"
     control_dir.mkdir(parents=True, exist_ok=True)
     lock_path = control_dir / "manager.lock"
@@ -113,6 +121,7 @@ def run_daemon(workspace: Path, ids: str, workers: int, timeout: int, stale_time
             on_refresh=_on_refresh,
             acquire_lock=False,
             reuse_session=reuse_session,
+            per_category=per_category,
         )
         with log_path.open("a", encoding="utf-8") as f:
             f.write(f"[{_now()}] Daemon completed work for ids '{ids}'. Total results: {len(results)}\n")
@@ -153,10 +162,19 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--timeout", type=int, default=3600, help="Per-worker timeout seconds")
     parser.add_argument("--stale-timeout", type=int, default=300, help="Stale heartbeat timeout seconds")
     parser.add_argument("--new-session", action="store_true", help="Start new sessions instead of reusing category sessions")
+    parser.add_argument("--per-category", action="store_true", help="Allow one worker slot per category")
     args = parser.parse_args(argv)
 
     ws = Path(args.workspace).resolve()
-    sys.exit(run_daemon(ws, args.ids, args.workers, args.timeout, args.stale_timeout, reuse_session=not args.new_session))
+    sys.exit(run_daemon(
+        ws,
+        args.ids,
+        args.workers,
+        args.timeout,
+        args.stale_timeout,
+        reuse_session=not args.new_session,
+        per_category=args.per_category,
+    ))
 
 
 if __name__ == "__main__":

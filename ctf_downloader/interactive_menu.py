@@ -1064,7 +1064,12 @@ class CTFInteractiveConsole:
                     return
                 if not confirm:
                     continue
-                res = service.spawn_background(source_ids, workers=3)
+                category_count = len({job.category.strip().casefold() for job in target_jobs})
+                res = service.spawn_background(
+                    source_ids,
+                    workers=max(1, category_count),
+                    per_category=True,
+                )
                 if not res.get("success"):
                     Logger.error(res.get("message", "SUPERBQA EATING startup failed."))
                     _pause()

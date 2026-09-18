@@ -337,6 +337,41 @@ def test_menu_solver_bqa_eating_labels_and_help_alias(monkeypatch):
         assert "[7] Help" in output
 
 
+def test_menu_solver_superbqa_uses_one_worker_per_category(monkeypatch):
+    from ctf_downloader.services.solver_service import SolverService
+
+    con = FakeMenuConsole(inputs=["2", "n", "0"])
+    monkeypatch.setattr(im, "_menu_console", lambda: con)
+    monkeypatch.setattr(im, "_pause", lambda: None)
+    monkeypatch.setattr(im, "_prompt", lambda prompt: con.input(prompt))
+    monkeypatch.setattr(im.Confirm, "ask", lambda *args, **kwargs: True)
+
+    calls = []
+    monkeypatch.setattr(
+        SolverService,
+        "spawn_background",
+        lambda self, ids, **kwargs: calls.append((ids, kwargs)) or {
+            "success": True,
+            "message": "SuperBQA daemon started",
+        },
+    )
+
+    with tempfile.TemporaryDirectory() as temp:
+        ws = create_dummy_workspace(temp)
+        crypto_meta = ws / "Crypto" / "chall-2" / "metadata.json"
+        metadata = json.loads(crypto_meta.read_text(encoding="utf-8"))
+        metadata.pop("solved_by_me", None)
+        crypto_meta.write_text(json.dumps(metadata), encoding="utf-8")
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = str(ws)
+        app.cookie = app.token = None
+        app.config = {}
+
+        app._menu_solver()
+
+    assert calls == [("1,2", {"workers": 2, "per_category": True})]
+
+
 def test_menu_solver_live_radar_opens_directly(monkeypatch):
     # Option 3 is now a direct Live Radar view; it has no active-worker
     # listing or follow-up selection prompt.
@@ -426,5 +461,3 @@ def test_menu_solver_active_agy_workers_with_running_job(monkeypatch):
         assert "No active BQA workers running" not in output
         assert "Hackel" in output
         assert "recon" in output
-
-

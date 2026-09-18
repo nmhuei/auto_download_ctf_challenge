@@ -745,6 +745,39 @@ def test_multi_worker_starts_same_category_jobs_concurrently(monkeypatch):
         assert service.max_active_workers == 2
 
 
+def test_per_category_pool_starts_one_worker_for_each_category(monkeypatch):
+    with tempfile.TemporaryDirectory() as temp:
+        workspace = Path(temp)
+        make_challenge(workspace, "Crypto", "crypto-1", 1, source=True)
+        make_challenge(workspace, "Crypto", "crypto-2", 2, source=True)
+        make_challenge(workspace, "Forensics", "forensics-1", 3, source=True)
+        make_challenge(workspace, "Web", "web-1", 4, source=True)
+        service = SolverService(workspace)
+        started = []
+
+        class _ControlledProc:
+            def __init__(self, job_id):
+                self.pid = 92000 + job_id
+                self.returncode = 0
+                self.poll_count = 0
+
+            def poll(self):
+                self.poll_count += 1
+                return None if self.poll_count == 1 else 0
+
+        def mock_start(job, cmd, **kwargs):
+            started.append(job.name)
+            return _ControlledProc(job.display_id)
+
+        monkeypatch.setattr(service, "_start_worker", mock_start)
+
+        service.run("1,2,3,4", workers=3, per_category=True)
+
+        assert started[:3] == ["crypto-1", "forensics-1", "web-1"]
+        assert started[3:] == ["crypto-2"]
+        assert service.max_active_workers == 3
+
+
 def test_solver_worker_forks_session_when_requested(monkeypatch, tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -788,4 +821,3 @@ def test_solver_worker_forks_session_when_requested(monkeypatch, tmp_path: Path)
         assert state["reused_session"] is False
         # Verify master session was NOT corrupted or changed
         assert service.get_category_session("Crypto") == "conv-master-crypto-123"
-
