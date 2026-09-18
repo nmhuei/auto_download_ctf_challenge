@@ -26,7 +26,7 @@ from .services.instance_service import InstanceService
 from .services.pull_service import PullService
 from .services.rank_service import RankService
 from .services.status_service import StatusService
-from .services.solver_service import SolverAlreadyRunning, SolverSelectionError, SolverService
+from .services.solver_service import SolverAlreadyRunning, SolverJob, SolverSelectionError, SolverService
 from .services.submit_service import SubmitService
 from .storage.workspace_repo import WorkspaceRepo, is_superseded
 from .ui.theme import (
@@ -188,37 +188,93 @@ def _get_challenge_flag(service: SolverService, job: SolverJob, state: dict) -> 
     return service.get_local_flag(job, state)
 
 
+class SolverTableView:
+    """Live Radar renderable matching StatusService (Tree View) phosphor layout."""
+
+    def __init__(
+        self,
+        sections: list[tuple[Text, list[Text]]],
+        header_line: Text | None = None,
+        title: str | None = None,
+        overview_panel: object = None,
+    ):
+        self.sections = sections
+        self.header_line = header_line
+        self.title = title
+        self.overview_panel = overview_panel
+
+    def __rich_console__(self, console, options):
+        if self.overview_panel is not None:
+            yield self.overview_panel
+        elif self.title:
+            dot_style = _SOLVED_COLOR if (" 0 workers" not in (self.title or "")) else _FAINT_COLOR
+            title_text = Text()
+            title_text.append("● ", style=dot_style)
+            title_text.append(self.title, style=f"bold {FG_BASE}")
+            yield title_text
+
+        if self.header_line:
+            yield self.header_line
+
+        if not self.sections:
+            yield Text("  (no challenges found)", style=_FAINT_COLOR)
+            return
+
+        for heading, rows in self.sections:
+            yield heading
+            for row in rows:
+                yield row
+
+    def _get_items(self):
+        items = []
+        if self.overview_panel is not None:
+            items.append(self.overview_panel)
+        elif self.title:
+            dot_style = _SOLVED_COLOR if (" 0 workers" not in (self.title or "")) else _FAINT_COLOR
+            title_text = Text()
+            title_text.append("● ", style=dot_style)
+            title_text.append(self.title, style=f"bold {FG_BASE}")
+            items.append(title_text)
+        if self.header_line:
+            items.append(self.header_line)
+        if not self.sections:
+            items.append(Text("  (no challenges found)", style=_FAINT_COLOR))
+        else:
+            for heading, rows in self.sections:
+                items.append(heading)
+                items.extend(rows)
+        return items
+
+    def __rich__(self):
+        from rich.console import Group
+        return Group(*self._get_items())
+
+    def __str__(self) -> str:
+        return "\n".join(
+            item.plain if hasattr(item, "plain") else str(item)
+            for item in self._get_items()
+        )
+
+    @property
+    def plain(self) -> str:
+        return str(self)
+
+
 def _solver_table(
     service: SolverService,
     *,
     animate: bool | None = None,
     show_worker_count: bool = False,
 ):
-    """Current solver rows grouped by category with visual progress meters."""
-    from rich import box
-    from rich.table import Table
+    """Current solver rows grouped by category matching StatusService (Tree View) layout."""
+    from rich.cells import cell_len
     from .ui.widgets import meter, SOLVE_RAMP
 
-    table = Table(
-        box=box.SIMPLE_HEAVY,
-        show_edge=False,
-        header_style=_FAINT_COLOR,
-        expand=True,
-        padding=(0, 1),
-        pad_edge=False,
-    )
-    table.add_column("ID", justify="right", style=_FAINT_COLOR, no_wrap=True)
-    table.add_column("CHALLENGE", no_wrap=True, overflow="ellipsis", ratio=1)
-    table.add_column("STATE", no_wrap=True)
-    table.add_column("OUTCOME", no_wrap=True)
-    table.add_column("SRC", justify="center", no_wrap=True)
-    table.add_column("INST", justify="center", no_wrap=True)
-    table.add_column("PHASE", style=_FAINT_COLOR, no_wrap=True, overflow="ellipsis", ratio=1)
     if animate is None:
         animate = bool(console.is_terminal)
     if show_worker_count:
-        # A stale state file must not inflate the radar's live worker count.
         service.recover_stale_jobs()
+
     labels = {
         "queued": ("○ queued", _MUTED_COLOR),
         "starting": ("◌ starting", _WARN_COLOR),
@@ -261,38 +317,30 @@ def _solver_table(
             cat_stats[cat]["solved"] += 1
         job_data.append((job, state, eligibility, flag, is_solved))
 
-    current_cat = None
+    cols = StatusService._tty_columns()
+    name_limit = 18 if cols < 80 else 24
+
+    hdr_cells = [
+        Text(""),
+        Text("ID", style=_FAINT_COLOR),
+        Text("CHALLENGE", style=_FAINT_COLOR),
+        Text("STATE", style=_FAINT_COLOR),
+        Text("OUTCOME", style=_FAINT_COLOR),
+        Text("SRC", style=_FAINT_COLOR),
+        Text("INST", style=_FAINT_COLOR),
+        Text("PHASE", style=_FAINT_COLOR),
+    ]
+
+    all_raw_rows = [hdr_cells]
+    cat_rows_map: dict[str, list[list[Text]]] = {}
+
     for job, state, eligibility, flag, is_solved in job_data:
-        if job.category != current_cat:
-            current_cat = job.category
-            st = cat_stats[current_cat]
-            s_cnt, t_cnt = st["solved"], st["total"]
-            pct = (s_cnt / t_cnt * 100) if t_cnt > 0 else 0
-            m = meter(pct, 10, SOLVE_RAMP)
-            pct_color = _SOLVED_COLOR if pct == 100 else (_WARN_COLOR if pct > 0 else _FAINT_COLOR)
-            phase_filler = Text(f"{pct:3.0f}%", style=f"bold {pct_color}", overflow="crop")
-            phase_filler.append(" " + "─" * 30, style="accent.deep")
-            phase_filler.overflow = "crop"
-
-            table.add_section()
-            table.add_row(
-                Text("┌┐", style="accent.deep"),
-                Text(current_cat.upper(), style=f"bold {_category_color(current_cat)}"),
-                Text(f"{s_cnt}/{t_cnt}", style=f"bold {FG_BASE}"),
-                m,
-                Text(""),
-                Text(""),
-                phase_filler,
-            )
-
         value = str(state.get("state") or "idle")
         shown, style = labels.get(value, ("· idle", _FAINT_COLOR))
         outcome_val = str(state.get("outcome") or "")
 
-        # Challenge name: solved -> muted (dim), unsolved -> base (bright)
         chal_style = _MUTED_COLOR if is_solved else FG_BASE
 
-        # OUTCOME column
         if job.is_solved and flag:
             shown_outcome, outcome_style = ("✔+★", _SOLVED_COLOR)
         elif job.is_solved:
@@ -306,10 +354,6 @@ def _solver_table(
         else:
             shown_outcome, outcome_style = ("–", _FAINT_COLOR)
 
-        # PHASE column:
-        # 1. Local has flag -> show compact flag (e.g. PREFIX{head…tail})
-        # 2. No flag but solved on CTF platform -> note '✔ platform'
-        # 3. Neither -> normal status (ready / error / message / phase)
         phase = str(state.get("phase") or "-")
         msg = str(state.get("message") or "")
 
@@ -330,21 +374,84 @@ def _solver_table(
         else:
             phase_text = Text(phase, style=_FAINT_COLOR)
 
+        if is_solved:
+            glyph = Text("✔", style=_SOLVED_COLOR)
+        elif value in ("running", "starting"):
+            glyph = Text("●", style=_WARN_COLOR)
+        elif value in ("failed", "filtered"):
+            glyph = Text("!", style=_ERROR_COLOR)
+        elif value in ("cancelled", "skipped_no_source", "skipped_no_input", "skipped_platform_solved", "skipped_local_flag"):
+            glyph = Text("—", style=_FAINT_COLOR)
+        elif value == "queued":
+            glyph = Text("○", style=_MUTED_COLOR)
+        else:
+            glyph = Text("·", style=_FAINT_COLOR)
+
         src_cell = Text("✓", style=_MUTED_COLOR) if job.has_source else Text("–", style=_FAINT_COLOR)
         inst_cell = Text("✓", style=_INFO_COLOR) if job.has_instance else Text("–", style=_FAINT_COLOR)
 
-        table.add_row(
-            str(job.display_id),
-            Text(f"  {job.name}", style=chal_style),
+        name_truncated = StatusService._truncate_cells(job.name, limit=name_limit)
+        name_cell = Text(name_truncated, style=chal_style)
+
+        row_cells = [
+            glyph,
+            Text(str(job.display_id), style=_FAINT_COLOR),
+            name_cell,
             Text(shown, style=style),
             Text(shown_outcome, style=outcome_style),
             src_cell,
             inst_cell,
             phase_text,
-        )
-    if show_worker_count:
-        table.title = f"Live Radar · {active_workers} worker{'s' if active_workers != 1 else ''} running"
-    return table
+        ]
+        all_raw_rows.append(row_cells)
+        cat_rows_map.setdefault(job.category, []).append(row_cells)
+
+    aligns = ["left", "right", "left", "left", "left", "center", "center", "left"]
+    gaps = [1, 2, 2, 2, 2, 2, 2, 2]
+    aligned_lines = StatusService._aligned_grid(all_raw_rows, aligns, gaps=gaps) if all_raw_rows else []
+
+    header_line = None
+    if aligned_lines:
+        header_line = Text("  ") + aligned_lines[0]
+        header_line.no_wrap = True
+
+    target_width = min(88, max(40, cols - 4))
+    sections: list[tuple[Text, list[Text]]] = []
+    idx = 1
+    for cat, raw_rows in cat_rows_map.items():
+        st = cat_stats[cat]
+        s_cnt, t_cnt = st["solved"], st["total"]
+        pct = (s_cnt / t_cnt * 100) if t_cnt > 0 else 0
+        m = meter(pct, 10, SOLVE_RAMP)
+        pct_color = _SOLVED_COLOR if pct == 100 else (_WARN_COLOR if pct > 0 else _FAINT_COLOR)
+
+        head = Text()
+        head.append("┌┐ ", style="accent.deep")
+        head.append(str(cat).upper(), style=f"bold {_category_color(cat)}")
+        tail = Text()
+        tail.append("  ")
+        tail.append(f"{s_cnt}/{t_cnt} ", style=f"bold {FG_BASE}")
+        tail.append_text(m)
+        tail.append(" ")
+        tail.append(f"{pct:3.0f}%", style=f"bold {pct_color}")
+
+        pad = target_width - cell_len(head.plain) - cell_len(tail.plain)
+        head.append(" ", style="accent.deep")
+        head.append("─" * max(1, pad), style="accent.deep")
+        head.append_text(tail)
+        head.no_wrap = True
+
+        rendered_cat_rows = []
+        for line in aligned_lines[idx : idx + len(raw_rows)]:
+            row_line = Text("  ") + line
+            row_line.no_wrap = True
+            rendered_cat_rows.append(row_line)
+        idx += len(raw_rows)
+
+        sections.append((head, rendered_cat_rows))
+
+    title_val = f"Live Radar · {active_workers} worker{'s' if active_workers != 1 else ''} running" if show_worker_count else None
+    return SolverTableView(sections, header_line=header_line, title=title_val)
 
 
 def _make_solver_overview_panel(service: SolverService, jobs: list[SolverJob] | None = None):
@@ -466,7 +573,7 @@ def _render_solver_status(service: SolverService, *, target: str | None, watch: 
 
         if not watch:
             console.print(_make_solver_overview_panel(service))
-            console.print(_solver_table(service))
+            console.print(_solver_table(service), soft_wrap=True)
             return
         with Live(_make_solver_radar_view(service), console=console, refresh_per_second=4) as live:
             while True:

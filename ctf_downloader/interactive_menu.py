@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import glob
+from pathlib import Path
 from typing import Optional
 
 from rich.prompt import Confirm
@@ -979,7 +980,7 @@ class CTFInteractiveConsole:
 
     def _menu_solver(self):
         from .services.solver_service import SolverService
-        from .cli_commands import _solver_table
+        from .cli_commands import _solver_table, _make_solver_overview_panel
 
         while True:
             _section('SuperBQA')
@@ -998,6 +999,7 @@ class CTFInteractiveConsole:
                 return
 
             con = _menu_console()
+            con.print(_make_solver_overview_panel(service))
             con.print(_solver_table(service, animate=False))
 
             daemon_info = service.get_daemon_status()

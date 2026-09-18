@@ -993,6 +993,13 @@ class StatusService:
                 if aligns[i] == 'right':
                     line.append(pad)
                     line.append_text(cell)
+                elif aligns[i] == 'center':
+                    pad_len = widths[i] - cell_len(cell.plain)
+                    pl = pad_len // 2
+                    pr = pad_len - pl
+                    line.append(" " * pl)
+                    line.append_text(cell)
+                    line.append(" " * pr)
                 else:
                     line.append_text(cell)
                     line.append(pad)

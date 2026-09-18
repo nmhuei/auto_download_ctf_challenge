@@ -218,12 +218,8 @@ class SolverService:
         with self._activity_lock:
             return self._last_activity.get(job.path, fallback)
 
-    def scan(self, *, force_refresh: bool = False) -> list[SolverJob]:
-        now = time.monotonic()
-        cached = getattr(self, "_cached_jobs", None)
-        cached_time = getattr(self, "_cached_jobs_time", 0.0)
-        if not force_refresh and cached is not None and (now - cached_time < 1.5):
-            return list(cached)
+    def scan(self) -> list[SolverJob]:
+        """Read the current workspace state without caching mutable challenge data."""
         rows: list[tuple[dict, Path]] = []
         for meta_path in self.repo.iter_challenges():
             meta = self.repo.read_metadata(meta_path)
@@ -251,8 +247,6 @@ class SolverService:
                 has_instance=self._has_instance(meta),
                 is_solved=is_solved,
             ))
-        self._cached_jobs = list(jobs)
-        self._cached_jobs_time = now
         return jobs
 
     @staticmethod
