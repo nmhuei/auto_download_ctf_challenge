@@ -349,9 +349,8 @@ def test_solver_table_separates_platform_and_local_solve_states():
         rendered = output.export_text()
 
         assert "OUTCOME" in rendered
-        assert "✓ platform" in rendered
-        assert "★ solved" in rendered
         assert "✔ platform" in rendered
+        assert "★ solved" in rendered
         assert "★ CTF{real_hoarded_flag}" in rendered
         assert "ready" in rendered
 

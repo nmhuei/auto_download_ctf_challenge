@@ -29,14 +29,40 @@ from .services.status_service import StatusService
 from .services.solver_service import SolverAlreadyRunning, SolverSelectionError, SolverService
 from .services.submit_service import SubmitService
 from .storage.workspace_repo import WorkspaceRepo, is_superseded
-from .ui.theme import ERROR as _ERROR_COLOR
-from .ui.theme import FG_BASE
-from .ui.theme import FG_FAINT as _FAINT_COLOR
-from .ui.theme import FG_MUTED as _MUTED_COLOR
-from .ui.theme import INFO as _INFO_COLOR
-from .ui.theme import SOLVED as _SOLVED_COLOR
-from .ui.theme import WARN as _WARN_COLOR
+from .ui.theme import (
+    ERROR as _ERROR_COLOR,
+    FG_BASE,
+    FG_FAINT as _FAINT_COLOR,
+    FG_MUTED as _MUTED_COLOR,
+    INFO as _INFO_COLOR,
+    SOLVED as _SOLVED_COLOR,
+    WARN as _WARN_COLOR,
+    CATEGORY_WEB,
+    CATEGORY_CRYPTO,
+    CATEGORY_PWN,
+    CATEGORY_REV,
+    CATEGORY_FORENSICS,
+    CATEGORY_MISC,
+)
 from .utils.logger import Logger, console
+
+_CAT_COLORS = {
+    "web": CATEGORY_WEB,
+    "crypto": CATEGORY_CRYPTO,
+    "pwn": CATEGORY_PWN,
+    "pwnable": CATEGORY_PWN,
+    "reverse": CATEGORY_REV,
+    "rev": CATEGORY_REV,
+    "forensics": CATEGORY_FORENSICS,
+}
+
+
+def _category_color(cat: str) -> str:
+    c = cat.strip().lower()
+    for k, v in _CAT_COLORS.items():
+        if k in c:
+            return v
+    return CATEGORY_MISC
 
 
 def get_auth_for_workspace(ws_path: str, cookie_arg: Optional[str] = None,
@@ -180,14 +206,14 @@ def _solver_table(
         padding=(0, 1),
         pad_edge=False,
     )
-    table.add_column("ID", justify="right", style=_MUTED_COLOR, no_wrap=True)
-    table.add_column("CHALLENGE", style=FG_BASE, no_wrap=True, overflow="ellipsis", ratio=2, max_width=24)
-    table.add_column("CATEGORY", style=_MUTED_COLOR, no_wrap=True)
+    table.add_column("ID", justify="right", style=_FAINT_COLOR, no_wrap=True)
+    table.add_column("CHALLENGE", no_wrap=True, overflow="ellipsis", ratio=2, max_width=24)
+    table.add_column("CATEGORY", no_wrap=True)
     table.add_column("STATE", no_wrap=True)
     table.add_column("OUTCOME", no_wrap=True)
     table.add_column("SRC", justify="center", no_wrap=True)
     table.add_column("INST", justify="center", no_wrap=True)
-    table.add_column("PHASE", style=_MUTED_COLOR, no_wrap=True, overflow="ellipsis", ratio=3)
+    table.add_column("PHASE", style=_FAINT_COLOR, no_wrap=True, overflow="ellipsis", ratio=3)
     if animate is None:
         animate = bool(console.is_terminal)
     if show_worker_count:
@@ -197,15 +223,15 @@ def _solver_table(
         "queued": ("○ queued", _MUTED_COLOR),
         "starting": ("◌ starting", _WARN_COLOR),
         "running": (_solver_running_label(animate=animate), _WARN_COLOR),
-        "completed": ("✓ completed", _SOLVED_COLOR),
+        "completed": ("✔ completed", _SOLVED_COLOR),
         "failed": ("! failed", _ERROR_COLOR),
         "filtered": ("! filtered", _ERROR_COLOR),
-        "skipped_no_source": ("— no source", _MUTED_COLOR),
-        "skipped_no_input": ("— no input", _MUTED_COLOR),
-        "skipped_platform_solved": ("— platform", _MUTED_COLOR),
-        "skipped_local_flag": ("— hoarded", _MUTED_COLOR),
+        "skipped_no_source": ("— no source", _FAINT_COLOR),
+        "skipped_no_input": ("— no input", _FAINT_COLOR),
+        "skipped_platform_solved": ("— platform", _FAINT_COLOR),
+        "skipped_local_flag": ("— hoarded", _FAINT_COLOR),
         "skipped_active": ("◌ active", _WARN_COLOR),
-        "cancelled": ("— cancelled", _MUTED_COLOR),
+        "cancelled": ("— cancelled", _FAINT_COLOR),
     }
     outcome_labels = {
         "solved_local": ("★ solved", _SOLVED_COLOR),
@@ -220,22 +246,26 @@ def _solver_table(
         value = str(state.get("state") or "idle")
         if value in ("starting", "running"):
             active_workers += 1
-        shown, style = labels.get(value, ("· idle", _MUTED_COLOR))
+        shown, style = labels.get(value, ("· idle", _FAINT_COLOR))
         outcome_val = str(state.get("outcome") or "")
+
+        # Challenge name: solved -> muted (dim), unsolved -> base (bright)
+        is_solved = bool(job.is_solved or flag)
+        chal_style = _MUTED_COLOR if is_solved else FG_BASE
 
         # OUTCOME column
         if job.is_solved and flag:
-            shown_outcome, outcome_style = ("✓+★", _SOLVED_COLOR)
+            shown_outcome, outcome_style = ("✔+★", _SOLVED_COLOR)
         elif job.is_solved:
-            shown_outcome, outcome_style = ("✓ platform", _SOLVED_COLOR)
+            shown_outcome, outcome_style = ("✔ platform", _SOLVED_COLOR)
         elif flag:
             shown_outcome, outcome_style = ("★ solved", _SOLVED_COLOR)
         elif outcome_val:
             shown_outcome, outcome_style = outcome_labels.get(
-                outcome_val, (outcome_val, _MUTED_COLOR)
+                outcome_val, (outcome_val, _FAINT_COLOR)
             )
         else:
-            shown_outcome, outcome_style = ("–", _MUTED_COLOR)
+            shown_outcome, outcome_style = ("–", _FAINT_COLOR)
 
         # PHASE column:
         # 1. Local has flag -> show compact flag (e.g. PREFIX{head…tail})
@@ -253,22 +283,25 @@ def _solver_table(
         elif eligibility.reason == "ready" and value == "idle":
             phase_text = Text("ready", style=_INFO_COLOR)
         elif eligibility.reason == "no_input" and value == "idle":
-            phase_text = Text("no input", style=_MUTED_COLOR)
+            phase_text = Text("no input", style=_FAINT_COLOR)
         elif msg and phase in ("running", "starting"):
             phase_text = Text(f"{phase} · {msg[:35]}", style=_WARN_COLOR)
         elif msg and phase not in ("-", "queued", "completed", "failed", "filtered", "cancelled", "skipped"):
-            phase_text = Text(f"{phase} · {msg[:25]}", style=_MUTED_COLOR)
+            phase_text = Text(f"{phase} · {msg[:25]}", style=_FAINT_COLOR)
         else:
-            phase_text = Text(phase, style=_MUTED_COLOR)
+            phase_text = Text(phase, style=_FAINT_COLOR)
+
+        src_cell = Text("✓", style=_MUTED_COLOR) if job.has_source else Text("–", style=_FAINT_COLOR)
+        inst_cell = Text("✓", style=_INFO_COLOR) if job.has_instance else Text("–", style=_FAINT_COLOR)
 
         table.add_row(
             str(job.display_id),
-            job.name,
-            job.category,
+            Text(job.name, style=chal_style),
+            Text(job.category, style=_category_color(job.category)),
             Text(shown, style=style),
             Text(shown_outcome, style=outcome_style),
-            "✓" if job.has_source else "–",
-            "✓" if job.has_instance else "–",
+            src_cell,
+            inst_cell,
             phase_text,
         )
     if show_worker_count:
