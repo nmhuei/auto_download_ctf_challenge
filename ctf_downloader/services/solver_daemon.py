@@ -102,7 +102,11 @@ def run_daemon(
             st = service.read_job(job)
             if st.get("state") in ("starting", "running"):
                 active.append(str(job.display_id))
-            elif st.get("state") in ("completed", "failed", "cancelled", "filtered", "skipped_no_source"):
+            elif st.get("state") in (
+                "completed", "failed", "cancelled", "filtered",
+                "skipped_no_source", "skipped_no_input",
+                "skipped_platform_solved", "skipped_local_flag", "skipped_active",
+            ):
                 completed.append(str(job.display_id))
 
         def mutate(cur):

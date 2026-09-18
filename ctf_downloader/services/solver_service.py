@@ -36,6 +36,15 @@ class SolverAlreadyRunning(RuntimeError):
 
 
 @dataclass(frozen=True)
+class SolverEligibility:
+    """Whether a challenge is safe to add to the automatic solver queue."""
+
+    ready: bool
+    reason: str
+    local_flag: str | None = None
+
+
+@dataclass(frozen=True)
 class SolverJob:
     display_id: int
     challenge_id: object
@@ -110,6 +119,16 @@ def _is_dummy_flag(candidate: str) -> bool:
     if content in dummy_patterns or content.startswith("test_"):
         return True
     return False
+
+
+def _valid_local_flag(candidate: object) -> str | None:
+    """Return a complete, non-placeholder flag token from durable state."""
+    if not isinstance(candidate, str):
+        return None
+    match = _FLAG_RE.search(candidate.strip())
+    if match and not _is_dummy_flag(match.group(0)):
+        return match.group(0)
+    return None
 
 
 def _extract_flag_from_job(job: SolverJob, report: dict, log_content: str) -> str | None:
@@ -213,9 +232,10 @@ class SolverService:
         ))
         jobs: list[SolverJob] = []
         for display_id, (meta, path) in enumerate(rows, start=1):
-            is_solved = bool(meta.get("solved_by_me")) or (
-                self.repo.read_status(path / "metadata.json", meta=meta).get("solve") == "solved_by_me"
-            )
+            solve_state = self.repo.read_status(path / "metadata.json", meta=meta).get("solve")
+            is_solved = bool(meta.get("solved_by_me")) or solve_state in {
+                "solved_by_me", "solved_by_team", "solved_other",
+            }
             jobs.append(SolverJob(
                 display_id=display_id,
                 challenge_id=meta.get("id"),
@@ -266,6 +286,56 @@ class SolverService:
         if isinstance(connection, str):
             return bool(connection.strip())
         return bool(connection)
+
+    def get_local_flag(self, job: SolverJob, state: dict | None = None) -> str | None:
+        """Return a non-placeholder flag already hoarded in this challenge.
+
+        This deliberately reads only durable local artifacts.  It does not infer
+        a solve from an Agy completion without a flag or platform confirmation.
+        """
+        state = state if isinstance(state, dict) else self.read_job(job)
+        candidate = _valid_local_flag(state.get("candidate_flag") or state.get("flag"))
+        if candidate:
+            return candidate
+
+        report: dict = {}
+        report_path = job.script_dir / "worker-report.json"
+        if report_path.is_file():
+            try:
+                raw_report = json.loads(report_path.read_text(encoding="utf-8"))
+                if isinstance(raw_report, dict):
+                    report = raw_report
+            except (OSError, ValueError):
+                pass
+        candidate = _valid_local_flag(report.get("candidate_flag") or report.get("flag"))
+        if candidate:
+            return candidate
+        candidate = _extract_flag_from_job(job, report, "")
+        if candidate:
+            return candidate
+
+        try:
+            status = self.repo.read_status(job.path / "metadata.json")
+            saved = _valid_local_flag((status.get("flag") or {}).get("value"))
+            if saved:
+                return saved
+        except Exception:
+            pass
+        return None
+
+    def queue_eligibility(self, job: SolverJob, state: dict | None = None) -> SolverEligibility:
+        """Classify one job for BQA EATING and render the matching radar phase."""
+        state = state if isinstance(state, dict) else self.read_job(job)
+        local_flag = self.get_local_flag(job, state)
+        if job.is_solved:
+            return SolverEligibility(False, "platform_solved", local_flag)
+        if local_flag:
+            return SolverEligibility(False, "local_flag", local_flag)
+        if str(state.get("state") or "") in {"queued", "starting", "running"}:
+            return SolverEligibility(False, "active")
+        if not (job.has_source or job.has_instance):
+            return SolverEligibility(False, "no_input")
+        return SolverEligibility(True, "ready")
 
     def select_ids(self, raw_ids: str) -> list[SolverJob]:
         tokens = [part.strip() for part in str(raw_ids).split(",") if part.strip()]
@@ -921,13 +991,21 @@ class SolverService:
                 self.recover_category_sessions_from_history()
             queue: list[SolverJob] = []
             for job in jobs:
-                if not job.has_source and not job.has_instance:
+                prior = self.read_job(job)
+                eligibility = self.queue_eligibility(job, prior)
+                if not eligibility.ready:
+                    skip_reasons = {
+                        "platform_solved": "Platform already solved; worker was not started.",
+                        "local_flag": f"Local flag already hoarded ({eligibility.local_flag}); worker was not started.",
+                        "active": "Worker already active; skipped duplicate launch.",
+                        "no_input": "No local source or remote instance detected; worker was not started.",
+                    }
                     completed[job] = self._write_job(
-                        job, state="skipped_no_source", phase="skipped", error_code=None,
-                        message="No local source or remote instance detected; worker was not started.", ended_at=self._now(),
+                        job, state=f"skipped_{eligibility.reason}", phase="skipped", error_code=None,
+                        message=skip_reasons.get(eligibility.reason, f"Skipped: {eligibility.reason}"),
+                        ended_at=self._now(),
                     )
                     continue
-                prior = self.read_job(job)
                 was_filtered = (prior.get("state") == "filtered") or bool(prior.get("filter_detected")) or bool(prior.get("was_filtered"))
                 prior_conv_id = prior.get("conversation_id")
                 self._write_job(

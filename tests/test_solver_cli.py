@@ -290,8 +290,8 @@ def test_solver_table_displays_flag_in_phase_column():
         assert "★ ASIS{arch_rev_ok}" in rendered
         # Chal 3 should retain generic "completed"
         assert "completed" in rendered
-        # Outcome for chal1 should be solved
-        assert "★ solved" in rendered
+        # The new compact status names the flag's local provenance.
+        assert "★ local flag" in rendered
 
 
 def test_solver_table_can_show_live_worker_count():
@@ -316,6 +316,44 @@ def test_solver_table_can_show_live_worker_count():
         assert table.title == "Live Radar · 2 workers running"
 
 
+def test_solver_table_separates_platform_and_local_solve_states():
+    """Platform completion and a hoarded local flag must not look identical."""
+    from ctf_downloader.cli_commands import _solver_table
+    from ctf_downloader.services.solver_service import SolverService
+    from rich.console import Console
+
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        for challenge_id, name, solved_by_me in (
+            (1, "Platform Solved", True),
+            (2, "Local Flag", False),
+            (3, "Ready", False),
+        ):
+            chal = root / "Crypto" / name.casefold().replace(" ", "_")
+            (chal / "challenge").mkdir(parents=True)
+            (chal / "challenge" / "task.py").write_text("print(1)", encoding="utf-8")
+            (chal / "script").mkdir()
+            (chal / "metadata.json").write_text(json.dumps({
+                "id": challenge_id,
+                "name": name,
+                "category": "Crypto",
+                "solved_by_me": solved_by_me,
+            }), encoding="utf-8")
+        (root / "Crypto" / "local_flag" / "flag.txt").write_text(
+            "CTF{real_hoarded_flag}", encoding="utf-8"
+        )
+
+        table = _solver_table(SolverService(root), animate=False)
+        output = Console(record=True, width=160)
+        output.print(table)
+        rendered = output.export_text()
+
+        assert "CTF / FLAG" in rendered
+        assert "✓ platform" in rendered
+        assert "★ local flag" in rendered
+        assert "READY · eligible for BQA" in rendered
+
+
 def test_live_worker_count_recovers_dead_pid_before_counting():
     from ctf_downloader.cli_commands import _solver_table
     from ctf_downloader.services.solver_service import SolverService
@@ -337,5 +375,3 @@ def test_live_worker_count_recovers_dead_pid_before_counting():
 
         assert table.title == "Live Radar · 0 workers running"
         assert service.read_job(service.scan()[0])["error_code"] == "E_WORKER_CRASH"
-
-

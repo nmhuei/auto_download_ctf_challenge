@@ -44,8 +44,63 @@ def test_scan_classifies_source_and_instance_and_assigns_stable_display_ids():
         assert [(job.display_id, job.category, job.name, job.has_source, job.has_instance)
                 for job in jobs] == [
                     (1, "Crypto", "rsa", False, False),
-                    (2, "Web", "portal", True, True),
-                ]
+                (2, "Web", "portal", True, True),
+            ]
+
+
+def test_scan_treats_all_platform_solved_states_as_solved():
+    """Solve all must agree with the Tree View's platform-solved markers."""
+    with tempfile.TemporaryDirectory() as temp:
+        workspace = Path(temp)
+        for challenge_id, solve_state in enumerate(
+            ("solved_by_me", "solved_by_team", "solved_other"), start=1
+        ):
+            root = make_challenge(workspace, "Web", solve_state, challenge_id, source=True)
+            metadata_path = root / "metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["status"] = {"solve": solve_state}
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+        assert [job.is_solved for job in SolverService(workspace).scan()] == [True, True, True]
+
+
+def test_queue_eligibility_ignores_malformed_cached_flag():
+    """A partial worker value is not a hoarded flag and must not block BQA."""
+    with tempfile.TemporaryDirectory() as temp:
+        workspace = Path(temp)
+        root = make_challenge(workspace, "Web", "partial", 1, source=True)
+        (root / "script" / "worker-state.json").write_text(
+            json.dumps({"candidate_flag": "CTF{partial"}), encoding="utf-8"
+        )
+
+        service = SolverService(workspace)
+        eligibility = service.queue_eligibility(service.scan()[0])
+
+        assert eligibility.ready is True
+        assert eligibility.local_flag is None
+
+
+def test_per_category_run_rechecks_platform_solve_before_launching_worker():
+    """The daemon must enforce Solve all eligibility after the menu confirmation."""
+    with tempfile.TemporaryDirectory() as temp:
+        workspace = Path(temp)
+        root = make_challenge(workspace, "Web", "already_solved", 1, source=True)
+        metadata_path = root / "metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["status"] = {"solve": "solved_by_team"}
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        worker = workspace / "fake_agy.py"
+        worker.write_text(
+            "from pathlib import Path; Path('script/started').write_text('yes')\n",
+            encoding="utf-8",
+        )
+
+        SolverService(workspace).run(
+            "1", workers=1, per_category=True,
+            agy_command=[sys.executable, str(worker)],
+        )
+
+        assert not (root / "script" / "started").exists()
 
 
 def test_select_ids_rejects_unknown_and_duplicate_ids():
@@ -248,7 +303,7 @@ def test_no_source_job_is_skipped_without_launching_worker():
             "1", agy_command=[sys.executable, str(worker)]
         )[0]
 
-        assert result["state"] == "skipped_no_source"
+        assert result["state"] == "skipped_no_input"
         assert result["phase"] == "skipped"
         assert result["error_code"] is None
         assert not (challenge / "script" / "launched").exists()

@@ -143,47 +143,8 @@ def _solver_running_label(*, animate: bool) -> str:
 
 
 def _get_challenge_flag(service: SolverService, job: SolverJob, state: dict) -> str | None:
-    """Retrieve candidate or solved flag from state, local flag files, metadata, or report."""
-    from .services.solver_service import _FLAG_RE, _is_dummy_flag
-
-    candidate = state.get("candidate_flag") or state.get("flag")
-    if isinstance(candidate, str) and candidate.strip() and not _is_dummy_flag(candidate.strip()):
-        return candidate.strip()
-
-    for p in (job.path / "flag.txt", job.path / "solver" / "flag.txt", job.script_dir / "flag.txt"):
-        if p.is_file():
-            try:
-                txt = p.read_text(encoding="utf-8", errors="replace").strip()
-                if txt:
-                    m = _FLAG_RE.search(txt)
-                    cand = m.group(0) if m else txt
-                    if not _is_dummy_flag(cand):
-                        return cand
-            except OSError:
-                pass
-
-    try:
-        meta_path = job.path / "metadata.json"
-        if meta_path.is_file() and hasattr(service, "repo"):
-            st = service.repo.read_status(meta_path)
-            fl_val = str((st.get("flag") or {}).get("value") or "").strip()
-            if fl_val and not _is_dummy_flag(fl_val):
-                return fl_val
-    except Exception:
-        pass
-
-    rep_file = job.script_dir / "worker-report.json"
-    if rep_file.is_file():
-        try:
-            rep = json.loads(rep_file.read_text(encoding="utf-8"))
-            if isinstance(rep, dict):
-                r_cand = rep.get("candidate_flag") or rep.get("flag")
-                if isinstance(r_cand, str) and r_cand.strip() and not _is_dummy_flag(r_cand.strip()):
-                    return r_cand.strip()
-        except (OSError, ValueError):
-            pass
-
-    return None
+    """Compatibility wrapper around the shared local-flag detector."""
+    return service.get_local_flag(job, state)
 
 
 def _solver_table(
@@ -208,7 +169,7 @@ def _solver_table(
     table.add_column("CHALLENGE", style=FG_BASE, no_wrap=True, overflow="ellipsis")
     table.add_column("CATEGORY", style=_MUTED_COLOR, no_wrap=True)
     table.add_column("STATE", no_wrap=True)
-    table.add_column("OUTCOME", no_wrap=True)
+    table.add_column("CTF / FLAG", no_wrap=True)
     table.add_column("SRC", justify="center", no_wrap=True)
     table.add_column("INST", justify="center", no_wrap=True)
     table.add_column("PHASE", style=_MUTED_COLOR, no_wrap=True, overflow="ellipsis", ratio=1)
@@ -225,6 +186,10 @@ def _solver_table(
         "failed": ("! failed", _ERROR_COLOR),
         "filtered": ("! filtered", _ERROR_COLOR),
         "skipped_no_source": ("— no source", _MUTED_COLOR),
+        "skipped_no_input": ("— no source", _MUTED_COLOR),
+        "skipped_platform_solved": ("✓ skipped", _SOLVED_COLOR),
+        "skipped_local_flag": ("★ skipped", _SOLVED_COLOR),
+        "skipped_active": ("◌ active", _WARN_COLOR),
         "cancelled": ("— cancelled", _MUTED_COLOR),
     }
     outcome_labels = {
@@ -235,24 +200,41 @@ def _solver_table(
     active_workers = 0
     for job in service.scan():
         state = service.read_job(job)
-        flag = _get_challenge_flag(service, job, state)
+        eligibility = service.queue_eligibility(job, state)
+        flag = eligibility.local_flag
         value = str(state.get("state") or "idle")
         if value in ("starting", "running"):
             active_workers += 1
         shown, style = labels.get(value, ("· idle", _MUTED_COLOR))
         outcome_val = str(state.get("outcome") or "")
-        if not outcome_val and flag:
-            outcome_val = "solved_local" if (job.path / "solver" / "solve.py").is_file() else "candidate_found"
-        shown_outcome, outcome_style = outcome_labels.get(
-            outcome_val, (outcome_val if outcome_val else "–", _MUTED_COLOR)
-        )
+        if job.is_solved and flag:
+            shown_outcome, outcome_style = ("✓ platform + ★ local", _SOLVED_COLOR)
+        elif job.is_solved:
+            shown_outcome, outcome_style = ("✓ platform", _SOLVED_COLOR)
+        elif flag:
+            shown_outcome, outcome_style = ("★ local flag", _SOLVED_COLOR)
+        else:
+            shown_outcome, outcome_style = ("–", _MUTED_COLOR)
+        if not (job.is_solved or flag):
+            shown_outcome, outcome_style = outcome_labels.get(
+                outcome_val, (outcome_val if outcome_val else "–", _MUTED_COLOR)
+            )
         phase = str(state.get("phase") or "-")
         msg = str(state.get("message") or "")
 
-        if flag:
-            phase_text = Text(f"★ {flag}", style=_SOLVED_COLOR)
+        if eligibility.reason == "platform_solved":
+            details = "skipped · platform solved"
+            if flag:
+                details += f" · ★ {flag}"
+            phase_text = Text(details, style=_SOLVED_COLOR)
+        elif eligibility.reason == "local_flag":
+            phase_text = Text(f"skipped · local flag · ★ {flag}", style=_SOLVED_COLOR)
+        elif eligibility.reason == "ready" and value == "idle":
+            phase_text = Text("READY · eligible for BQA", style=_INFO_COLOR)
         elif state.get("error_code"):
             phase_text = Text(str(state["error_code"]), style=_ERROR_COLOR)
+        elif eligibility.reason == "no_input" and value == "idle":
+            phase_text = Text("BLOCKED · no source/instance", style=_MUTED_COLOR)
         elif msg and phase in ("running", "starting"):
             phase_text = Text(f"{phase} · {msg[:35]}", style=_WARN_COLOR)
         elif msg and phase not in ("-", "queued", "completed", "failed", "filtered", "cancelled", "skipped"):

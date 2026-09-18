@@ -985,6 +985,7 @@ class CTFInteractiveConsole:
             _section('SuperBQA')
             try:
                 service = SolverService(self.workspace_path)
+                service.recover_stale_jobs()
                 jobs = service.scan()
             except Exception as e:
                 Logger.error(f'Failed to initialize Solver Service: {e}')
@@ -1048,13 +1049,14 @@ class CTFInteractiveConsole:
                 con.print(f"  [bold green]✔ {res.get('message')}[/bold green]")
                 continue
             elif act_clean in ('2', 'superbqa', 'super', 'all', 'feast'):
-                solvable = [j for j in jobs if j.has_source or j.has_instance]
-                if not solvable:
-                    Logger.warning('No challenges found with attachments or dynamic containers.')
+                target_jobs = [
+                    job for job in jobs
+                    if service.queue_eligibility(job).ready
+                ]
+                if not target_jobs:
+                    Logger.warning('No eligible challenges: platform-solved, hoarded, active, or missing-input items were skipped.')
                     _pause()
                     continue
-                unsolved = [j for j in solvable if not j.is_solved]
-                target_jobs = unsolved if unsolved else solvable
                 source_ids = ",".join(str(j.display_id) for j in target_jobs)
                 con.print()
                 con.print(f"  [bold yellow]Preparing SUPERBQA EATING on {len(target_jobs)} challenges ({source_ids}).[/bold yellow]")

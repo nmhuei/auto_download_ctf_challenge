@@ -372,6 +372,77 @@ def test_menu_solver_superbqa_uses_one_worker_per_category(monkeypatch):
     assert calls == [("1,2", {"workers": 2, "per_category": True})]
 
 
+def test_menu_solver_superbqa_queues_only_platform_unsolved_without_local_flag(monkeypatch):
+    """Solve all must not relaunch platform-solved or hoarded-flag challenges."""
+    from ctf_downloader.services.solver_service import SolverService
+
+    con = FakeMenuConsole(inputs=["2", "n", "0"])
+    monkeypatch.setattr(im, "_menu_console", lambda: con)
+    monkeypatch.setattr(im, "_pause", lambda: None)
+    monkeypatch.setattr(im, "_prompt", lambda prompt: con.input(prompt))
+    monkeypatch.setattr(im.Confirm, "ask", lambda *args, **kwargs: True)
+
+    calls = []
+    monkeypatch.setattr(
+        SolverService,
+        "spawn_background",
+        lambda self, ids, **kwargs: calls.append((ids, kwargs)) or {
+            "success": True, "message": "SuperBQA daemon started",
+        },
+    )
+
+    with tempfile.TemporaryDirectory() as temp:
+        ws = create_dummy_workspace(temp)
+        # Challenge #2 is platform-solved in the shared fixture.
+        (ws / "Web" / "chall-1" / "flag.txt").write_text("CTF{already_hoarded}", encoding="utf-8")
+        ready = ws / "Pwn" / "ready"
+        (ready / "challenge").mkdir(parents=True)
+        (ready / "challenge" / "main.py").write_text("print(1)", encoding="utf-8")
+        (ready / "metadata.json").write_text(json.dumps({
+            "id": 103, "name": "Ready Pwn", "category": "Pwn",
+        }), encoding="utf-8")
+
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = str(ws)
+        app.cookie = app.token = None
+        app.config = {}
+        app._menu_solver()
+
+    assert calls == [("2", {"workers": 1, "per_category": True})]
+
+
+def test_menu_solver_superbqa_recovers_stale_worker_before_selecting_ready_jobs(monkeypatch):
+    """A dead PID is failed first, then its challenge is eligible for Solve all."""
+    from ctf_downloader.services.solver_service import SolverService
+
+    con = FakeMenuConsole(inputs=["2", "n", "0"])
+    monkeypatch.setattr(im, "_menu_console", lambda: con)
+    monkeypatch.setattr(im, "_pause", lambda: None)
+    monkeypatch.setattr(im, "_prompt", lambda prompt: con.input(prompt))
+    monkeypatch.setattr(im.Confirm, "ask", lambda *args, **kwargs: True)
+    calls = []
+    monkeypatch.setattr(
+        SolverService,
+        "spawn_background",
+        lambda self, ids, **kwargs: calls.append((ids, kwargs)) or {
+            "success": True, "message": "SuperBQA daemon started",
+        },
+    )
+
+    with tempfile.TemporaryDirectory() as temp:
+        ws = create_dummy_workspace(temp)
+        (ws / "Web" / "chall-1" / "script" / "worker-state.json").write_text(
+            json.dumps({"state": "running", "pid": 99999999}), encoding="utf-8"
+        )
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = str(ws)
+        app.cookie = app.token = None
+        app.config = {}
+        app._menu_solver()
+
+    assert calls == [("2", {"workers": 1, "per_category": True})]
+
+
 def test_menu_solver_live_radar_opens_directly(monkeypatch):
     # Option 3 is now a direct Live Radar view; it has no active-worker
     # listing or follow-up selection prompt.
