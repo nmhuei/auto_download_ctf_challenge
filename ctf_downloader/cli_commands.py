@@ -194,9 +194,10 @@ def _solver_table(
     animate: bool | None = None,
     show_worker_count: bool = False,
 ):
-    """Current solver rows.  It reads durable per-challenge state only."""
+    """Current solver rows grouped by category with visual progress meters."""
     from rich import box
     from rich.table import Table
+    from .ui.widgets import meter, SOLVE_RAMP
 
     table = Table(
         box=box.SIMPLE_HEAVY,
@@ -207,13 +208,12 @@ def _solver_table(
         pad_edge=False,
     )
     table.add_column("ID", justify="right", style=_FAINT_COLOR, no_wrap=True)
-    table.add_column("CHALLENGE", no_wrap=True, overflow="ellipsis", ratio=2, max_width=24)
-    table.add_column("CATEGORY", no_wrap=True)
+    table.add_column("CHALLENGE", no_wrap=True, overflow="ellipsis", ratio=1)
     table.add_column("STATE", no_wrap=True)
     table.add_column("OUTCOME", no_wrap=True)
     table.add_column("SRC", justify="center", no_wrap=True)
     table.add_column("INST", justify="center", no_wrap=True)
-    table.add_column("PHASE", style=_FAINT_COLOR, no_wrap=True, overflow="ellipsis", ratio=3)
+    table.add_column("PHASE", style=_FAINT_COLOR, no_wrap=True, overflow="ellipsis", ratio=1)
     if animate is None:
         animate = bool(console.is_terminal)
     if show_worker_count:
@@ -238,19 +238,58 @@ def _solver_table(
         "candidate_found": ("⚑ candidate", _WARN_COLOR),
         "analyzed": ("✦ analyzed", _INFO_COLOR),
     }
+
+    jobs = list(service.scan())
+    job_data = []
+    cat_stats: dict[str, dict[str, int]] = {}
     active_workers = 0
-    for job in service.scan():
+
+    for job in jobs:
         state = service.read_job(job)
         eligibility = service.queue_eligibility(job, state)
         flag = eligibility.local_flag
         value = str(state.get("state") or "idle")
         if value in ("starting", "running"):
             active_workers += 1
+
+        is_solved = bool(job.is_solved or flag)
+        cat = job.category
+        if cat not in cat_stats:
+            cat_stats[cat] = {"total": 0, "solved": 0}
+        cat_stats[cat]["total"] += 1
+        if is_solved:
+            cat_stats[cat]["solved"] += 1
+        job_data.append((job, state, eligibility, flag, is_solved))
+
+    current_cat = None
+    for job, state, eligibility, flag, is_solved in job_data:
+        if job.category != current_cat:
+            current_cat = job.category
+            st = cat_stats[current_cat]
+            s_cnt, t_cnt = st["solved"], st["total"]
+            pct = (s_cnt / t_cnt * 100) if t_cnt > 0 else 0
+            m = meter(pct, 10, SOLVE_RAMP)
+            pct_color = _SOLVED_COLOR if pct == 100 else (_WARN_COLOR if pct > 0 else _FAINT_COLOR)
+            phase_filler = Text(f"{pct:3.0f}%", style=f"bold {pct_color}", overflow="crop")
+            phase_filler.append(" " + "─" * 30, style="accent.deep")
+            phase_filler.overflow = "crop"
+
+            table.add_section()
+            table.add_row(
+                Text("┌┐", style="accent.deep"),
+                Text(current_cat.upper(), style=f"bold {_category_color(current_cat)}"),
+                Text(f"{s_cnt}/{t_cnt}", style=f"bold {FG_BASE}"),
+                m,
+                Text(""),
+                Text(""),
+                phase_filler,
+            )
+
+        value = str(state.get("state") or "idle")
         shown, style = labels.get(value, ("· idle", _FAINT_COLOR))
         outcome_val = str(state.get("outcome") or "")
 
         # Challenge name: solved -> muted (dim), unsolved -> base (bright)
-        is_solved = bool(job.is_solved or flag)
         chal_style = _MUTED_COLOR if is_solved else FG_BASE
 
         # OUTCOME column
@@ -296,8 +335,7 @@ def _solver_table(
 
         table.add_row(
             str(job.display_id),
-            Text(job.name, style=chal_style),
-            Text(job.category, style=_category_color(job.category)),
+            Text(f"  {job.name}", style=chal_style),
             Text(shown, style=style),
             Text(shown_outcome, style=outcome_style),
             src_cell,
@@ -307,6 +345,66 @@ def _solver_table(
     if show_worker_count:
         table.title = f"Live Radar · {active_workers} worker{'s' if active_workers != 1 else ''} running"
     return table
+
+
+def _make_solver_overview_panel(service: SolverService, jobs: list[SolverJob] | None = None):
+    """Overview panel with gradient solve meter, hoarded flags, and active workers."""
+    from rich import box
+    from rich.panel import Panel
+    from rich.text import Text
+    from .ui.widgets import meter, SOLVE_RAMP
+
+    if jobs is None:
+        jobs = service.scan()
+
+    total = len(jobs)
+    solved = 0
+    hoarded = 0
+    active = 0
+
+    for j in jobs:
+        st = service.read_job(j)
+        elig = service.queue_eligibility(j, st)
+        flag = elig.local_flag
+        if flag:
+            hoarded += 1
+        if j.is_solved or flag:
+            solved += 1
+        if str(st.get("state")) in ("starting", "running"):
+            active += 1
+
+    pct = (solved / total * 100) if total > 0 else 0
+    m = meter(pct, 20, SOLVE_RAMP)
+
+    row = Text()
+    row.append_text(m)
+    row.append(f"  {solved}/{total} solved", style=f"bold {FG_BASE}")
+    row.append(f" · {pct:.1f}%", style=_SOLVED_COLOR)
+    row.append(" · ", style=_FAINT_COLOR)
+    row.append(f"{hoarded} hoarded", style=f"bold {_SOLVED_COLOR}")
+    row.append(" · ", style=_FAINT_COLOR)
+    worker_s = "s" if active != 1 else ""
+    worker_style = f"bold {_WARN_COLOR}" if active > 0 else _FAINT_COLOR
+    row.append(f"{active} worker{worker_s} running", style=worker_style)
+
+    return Panel(
+        row,
+        box=box.ROUNDED,
+        border_style="accent.deep",
+        title=Text(" SUPERBQA SOLVER · RADAR ", style=f"bold {FG_BASE}"),
+        expand=True,
+        padding=(0, 1),
+    )
+
+
+def _make_solver_radar_view(service: SolverService, *, animate: bool | None = None):
+    """Unified Live Radar renderable grouping overview panel and categorized table."""
+    from rich.console import Group
+
+    return Group(
+        _make_solver_overview_panel(service),
+        _solver_table(service, animate=animate, show_worker_count=False),
+    )
 
 
 def _render_solver_status(service: SolverService, *, target: str | None, watch: bool) -> None:
@@ -361,18 +459,19 @@ def _render_solver_status(service: SolverService, *, target: str | None, watch: 
             if not watch:
                 console.print(_make_target_panel())
                 return
-            with Live(_make_target_panel(), console=console, refresh_per_second=5) as live:
+            with Live(_make_target_panel(), console=console, refresh_per_second=4) as live:
                 while True:
                     time.sleep(0.25)
                     live.update(_make_target_panel())
 
         if not watch:
+            console.print(_make_solver_overview_panel(service))
             console.print(_solver_table(service))
             return
-        with Live(_solver_table(service, show_worker_count=True), console=console, refresh_per_second=5) as live:
+        with Live(_make_solver_radar_view(service), console=console, refresh_per_second=4) as live:
             while True:
                 time.sleep(0.25)
-                live.update(_solver_table(service, show_worker_count=True))
+                live.update(_make_solver_radar_view(service))
     except KeyboardInterrupt:
         return
 
@@ -554,16 +653,17 @@ def handle_solve(args):
     if getattr(args, 'attach', False):
         console.print("[dim]💡 Connecting to SuperBQA Radar. Press Ctrl+C to detach safely (worker continues in background).[/dim]\n")
         try:
-            with Live(_solver_table(service, show_worker_count=True), console=console, refresh_per_second=4) as live:
+            with Live(_make_solver_radar_view(service), console=console, refresh_per_second=4) as live:
                 while True:
                     time.sleep(0.25)
-                    live.update(_solver_table(service, show_worker_count=True))
+                    live.update(_make_solver_radar_view(service))
         except KeyboardInterrupt:
             console.print("\n[dim]💡 Detached from Radar. SuperBQA is continuing in background.[/dim]")
         return
 
     ids = getattr(args, 'ids', None)
     if not ids:
+        console.print(_make_solver_overview_panel(service))
         console.print(_solver_table(service))
         if not sys.stdin.isatty():
             Logger.error("Missing --ids and stdin is not an interactive terminal.")
@@ -591,11 +691,11 @@ def handle_solve(args):
 
     # 6. Default: Foreground execution with Live table
     try:
-        with Live(_solver_table(service, show_worker_count=True), console=console, refresh_per_second=8) as live:
+        with Live(_make_solver_radar_view(service), console=console, refresh_per_second=4) as live:
             service.run(
                 ids,
                 workers=getattr(args, 'workers', 3),
-                on_refresh=lambda: live.update(_solver_table(service, show_worker_count=True)),
+                on_refresh=lambda: live.update(_make_solver_radar_view(service)),
                 reuse_session=reuse_session,
             )
     except (SolverSelectionError, SolverAlreadyRunning) as exc:

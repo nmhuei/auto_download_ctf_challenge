@@ -218,7 +218,12 @@ class SolverService:
         with self._activity_lock:
             return self._last_activity.get(job.path, fallback)
 
-    def scan(self) -> list[SolverJob]:
+    def scan(self, *, force_refresh: bool = False) -> list[SolverJob]:
+        now = time.monotonic()
+        cached = getattr(self, "_cached_jobs", None)
+        cached_time = getattr(self, "_cached_jobs_time", 0.0)
+        if not force_refresh and cached is not None and (now - cached_time < 1.5):
+            return list(cached)
         rows: list[tuple[dict, Path]] = []
         for meta_path in self.repo.iter_challenges():
             meta = self.repo.read_metadata(meta_path)
@@ -246,6 +251,8 @@ class SolverService:
                 has_instance=self._has_instance(meta),
                 is_solved=is_solved,
             ))
+        self._cached_jobs = list(jobs)
+        self._cached_jobs_time = now
         return jobs
 
     @staticmethod
@@ -383,6 +390,7 @@ class SolverService:
             state["updated_at"] = self._now()
             return state
 
+        self._cached_jobs = None
         state = locked_update_json(job.state_path, mutate)
         if state is not None:
             return state
@@ -1018,6 +1026,8 @@ class SolverService:
                     last_output=None,
                 )
                 queue.append(job)
+            last_refresh = 0.0
+            last_active_count = -1
             try:
                 while queue or active:
                     active_categories = (
@@ -1057,7 +1067,7 @@ class SolverService:
                                     command,
                                     reuse_session=reuse_session,
                                     fork_session=fork_session,
-                                )
+                                    )
                             except TypeError:
                                 proc = self._start_worker(job, command)
                         except OSError:
@@ -1067,7 +1077,10 @@ class SolverService:
                             continue
                         active[job] = (proc, started)
                     self.max_active_workers = max(self.max_active_workers, len(active))
-                    if on_refresh:
+                    now = time.monotonic()
+                    if on_refresh and (now - last_refresh >= 0.2 or len(active) != last_active_count):
+                        last_refresh = now
+                        last_active_count = len(active)
                         with contextlib.suppress(Exception):
                             on_refresh()
                     for job, (process, started) in list(active.items()):
