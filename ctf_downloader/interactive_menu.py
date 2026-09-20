@@ -35,6 +35,14 @@ from .ui.splash import splash
 from .ui.theme import ACCENT, FG_BASE, FG_FAINT, FG_MUTED, INFO, WARN, load_theme
 from .ui.widgets import SOLVE_RAMP, meter
 
+from .ui.menu_hubs import (
+    hub_workspace_targets,
+    hub_challenge_operations,
+    hub_flag_submission,
+    hub_system_arsenal,
+    challenge_action_card,
+)
+
 #: Meter dùng chung ramp 3 mốc spec §3.3 (than hồng → hổ phách → vàng nhạt)
 #: — ``ui.widgets.AMBER_RAMP`` canonical theo SPEC UI v2 §M1: mỗi ô nhận
 #: ĐÚNG một trong ba màu theo vị trí cột, không nội suy trung gian.
@@ -45,35 +53,25 @@ SWITCHER_TITLE_W = 30
 SWITCHER_PLATFORM_W = 8
 
 _MAIN_ACTIONS_FULL = (
-    ('1', 'Clone / Download new CTF challenge files'),
-    ('2', 'Select / Switch active competition workspace'),
-    ('3', 'View challenge tree & progress (Tree View)'),
-    ('4', 'Lookup & view challenge description, hints, files'),
-    ('5', 'Manage dynamic container / instance (start / stop / renew)'),
-    ('6', 'Submit flag for a specific challenge'),
-    ('7', 'Auto scan & submit hoarded flags in workspace'),
-    ('8', 'Scan & summarize all CTF workspaces on machine'),
-    ('9', 'Configure & save Cookie / Token for this event'),
-    ('G', 'Git Sync & Remote Backup (Kho vũ khí GitHub)'),
-    ('T', 'Switch Visual Theme (Cyberpunk / Matrix / Amber / Nord)'),
-    ('S', 'SUPERBQA EATING'),
-    ('0', 'Exit'),
+    ('1', '🎯 Workspace & Targets      (Switch active event / Clone CTF / Auth)'),
+    ('2', '⚔️ Challenge Operations     (Tree View / Action Card / Instances)'),
+    ('3', '🚩 Flag Submission Lab      (Submit single / Auto-submit hoarded flags)'),
+    ('4', '⚡ SuperBQA AI Solver       (Autonomous AGYworker agents / Live Radar)'),
+    ('5', '🛠️ System & Arsenal         (Git safe sync / Push backup / Switch theme)'),
+    ('G', '⚡ Quick Git Sync           (Direct shortcut to GitHub repo)'),
+    ('T', '🎨 Switch Visual Theme      (Cyberpunk / Matrix / Amber / Nord / ExOdia)'),
+    ('0', '🚪 Exit'),
 )
 
 _MAIN_ACTIONS_COMPACT = (
-    ('1', 'Clone / Download CTF event'),
-    ('2', 'Select / Switch workspace'),
-    ('3', 'Challenge tree & progress'),
-    ('4', 'View challenge / hints / files'),
-    ('5', 'Container / Instance: status & renew'),
-    ('6', 'Submit flag'),
-    ('7', 'Auto-submit hoarded flags'),
-    ('8', 'Summarize local workspaces'),
-    ('9', 'Configure Cookie / Token'),
-    ('G', 'Git Sync & Remote Backup'),
-    ('T', 'Switch Visual Theme'),
-    ('S', 'SUPERBQA EATING'),
-    ('0', 'Exit'),
+    ('1', '🎯 Workspace & Targets'),
+    ('2', '⚔️ Challenge Operations'),
+    ('3', '🚩 Flag Submission Lab'),
+    ('4', '⚡ SuperBQA AI Solver'),
+    ('5', '🛠️ System & Arsenal'),
+    ('G', '⚡ Quick Git Sync'),
+    ('T', '🎨 Switch Theme'),
+    ('0', '🚪 Exit'),
 )
 
 
@@ -427,9 +425,9 @@ class CTFInteractiveConsole:
                     else:
                         _option(key, label)
 
-                prompt_msg = 'Select action (0-9, G, T, S): '
+                prompt_msg = 'Select action (1-5, G, T, 0): '
                 if self._last_action:
-                    prompt_msg = f'Select action (0-9, G, T, S) [default {self._last_action}]: '
+                    prompt_msg = f'Select action (1-5, G, T, 0) [default {self._last_action}]: '
                 raw_choice = _prompt(prompt_msg).strip()
                 choice = raw_choice.strip(" []().")
                 if not choice and self._last_action:
@@ -439,18 +437,14 @@ class CTFInteractiveConsole:
                 choice_lower = choice.lower()
                 key_map = {
                     '0': '0', 'q': '0', 'quit': '0', 'exit': '0', 'thoat': '0',
-                    '1': '1', 'clone': '1', 'pull': '1', 'download': '1',
-                    '2': '2', 'switch': '2', 'workspace': '2', 'ws': '2',
-                    '3': '3', 'tree': '3', 'ls': '3', 'status': '3',
-                    '4': '4', 'view': '4', 'detail': '4', 'cat': '4', 'info': '4',
-                    '5': '5', 'container': '5', 'instance': '5', 'docker': '5',
-                    '6': '6', 'submit': '6', 'flag': '6', 'nop': '6',
-                    '7': '7', 'auto': '7', 'auto-submit': '7',
-                    '8': '8', 'scan': '8', 'summary': '8',
-                    '9': '9', 'auth': '9', 'cookie': '9', 'token': '9', 'config': '9',
+                    '1': '1', 'workspace': '1', 'ws': '1', 'target': '1',
+                    '2': '2', 'chall': '2', 'challenge': '2', 'tree': '2', 'ls': '2',
+                    '3': '3', 'flag': '3', 'submit': '3', 'nop': '3',
+                    '4': '4', 'solve': '4', 'solver': '4', 'bqa': '4', 'eating': '4',
+                    '5': '5', 'system': '5', 'arsenal': '5', 'sys': '5',
                     'g': 'G', 'git': 'G', 'sync': 'G', 'push': 'G', 'backup': 'G',
                     't': 'T', 'theme': 'T', 'color': 'T', 'colors': 'T', 'style': 'T',
-                    's': 'S', 'solve': 'S', 'solver': 'S', 'bqa': 'S', 'eating': 'S', 'eat': 'S',
+                    's': 'S',
                 }
                 canonical = key_map.get(choice_lower, choice.upper() if choice.upper() in ('S', 'G', 'T') else choice)
 
@@ -460,15 +454,22 @@ class CTFInteractiveConsole:
                              style=FG_MUTED))
                     break
                 elif canonical == '1':
-                    self._menu_download_new()
+                    hub_workspace_targets(self)
                 elif canonical == '2':
-                    self._menu_switch_workspace()
+                    hub_challenge_operations(self)
                 elif canonical == '3':
-                    self._menu_view_tree()
+                    hub_flag_submission(self)
                 elif canonical == '4':
-                    self._menu_view_challenge_detail()
+                    self._menu_solver()
                 elif canonical == '5':
-                    self._menu_container_manager()
+                    hub_system_arsenal(self)
+                elif canonical == 'G':
+                    self._menu_git()
+                elif canonical == 'T':
+                    self._menu_theme()
+                elif canonical == 'S':
+                    self._menu_solver()
+                # Compatibility fallbacks for legacy inputs
                 elif canonical == '6':
                     self._menu_submit_flag()
                 elif canonical == '7':
@@ -477,14 +478,8 @@ class CTFInteractiveConsole:
                     self._menu_scan_workspaces()
                 elif canonical == '9':
                     self._menu_configure_auth()
-                elif canonical == 'G':
-                    self._menu_git()
-                elif canonical == 'T':
-                    self._menu_theme()
-                elif canonical == 'S':
-                    self._menu_solver()
                 else:
-                    Logger.warning('Invalid selection. Please choose an option from 0 to 9 (or G, T, S).')
+                    Logger.warning('Invalid selection. Please choose an option from 1 to 5, G, T, or 0.')
                 # Ghi nhớ hành động gần nhất để vòng sau đánh dấu ❯ (§S1.1);
                 # input lạ ('x', '99') không được tính là action.
                 if canonical in ('1', '2', '3', '4', '5', '6', '7', '8', '9', 'G', 'T', 'S'):
@@ -815,6 +810,138 @@ class CTFInteractiveConsole:
                 self._run_solver_for_target(target)
             else:
                 break
+
+    def _view_challenge_detail_for(self, target: dict):
+        ws_root = os.path.abspath(self.workspace_path)
+        raw_folder = str(target.get('_folder') or '')
+        if raw_folder:
+            abs_folder = os.path.abspath(raw_folder if os.path.isabs(raw_folder) else os.path.join(ws_root, raw_folder))
+            folder = abs_folder if os.path.isdir(abs_folder) else ''
+        else:
+            folder = ''
+
+        con = _menu_console()
+        con.print()
+        head = selected_row(str(target.get('name') or 'Unknown'), selected=True)
+        head.append(f"  ID: {target.get('id')}  ", style=FG_FAINT)
+        if target.get('solved_by_me'):
+            head.append('✔ SOLVED', style='solved')
+        else:
+            head.append('· UNSOLVED', style=FG_FAINT)
+        con.print(head)
+
+        meta = Text('  Category: ')
+        meta.append(str(target.get('category') or 'Other'), style=FG_BASE)
+        meta.append('  ·  ', style=FG_FAINT)
+        meta.append(f"{target.get('points', '-')} pts", style=FG_MUTED)
+        meta.append('  ·  ', style=FG_FAINT)
+        meta.append(f"{target.get('solves_count', '-')} solves", style=FG_MUTED)
+        con.print(meta)
+
+        rel_loc = target.get('_rel_folder') or folder or '(not downloaded)'
+        loc = Text('  Local directory: ')
+        loc.append(str(rel_loc), style=INFO)
+        con.print(loc)
+        if target.get('connection_info'):
+            ci = Text('  Connection: ')
+            ci.append(str(target.get('connection_info')), style=INFO)
+            con.print(ci)
+
+        if folder and os.path.isdir(folder):
+            att_dir = os.path.join(folder, 'challenge')
+            if os.path.isdir(att_dir):
+                try:
+                    files = [f for f in sorted(os.listdir(att_dir)) if not f.startswith('.') and f not in ('README.md', 'NOTE.md', 'metadata.json')]
+                    if files:
+                        con.print(Text(f"  Attachments ({len(files)} files): {', '.join(files)}", style=INFO))
+                except OSError as e:
+                    Logger.warning(f"Cannot read challenge/ directory: {e}")
+
+            readme_candidates = [
+                os.path.join(folder, 'challenge', 'README.md'),
+                os.path.join(folder, 'README.md'),
+            ]
+            for rp in readme_candidates:
+                if os.path.isfile(rp):
+                    try:
+                        with open(rp, 'r', encoding='utf-8', errors='replace') as rf:
+                            con.print(Text('\n  Challenge Description (README.md):', style=f'bold {FG_FAINT}'))
+                            con.print(rf.read()[:2000])
+                        break
+                    except (OSError, UnicodeError) as e:
+                        Logger.warning(f"Cannot read README.md ({rp}): {e}")
+
+            note_candidates = [
+                os.path.join(folder, 'challenge', 'NOTE.md'),
+                os.path.join(folder, 'NOTE.md'),
+            ]
+            for np in note_candidates:
+                if os.path.isfile(np):
+                    try:
+                        with open(np, 'r', encoding='utf-8', errors='replace') as nf:
+                            con.print(Text('\n  Notes / Triage (NOTE.md):', style=f'bold {FG_FAINT}'))
+                            con.print(nf.read()[:1000])
+                        break
+                    except (OSError, UnicodeError) as e:
+                        Logger.warning(f"Cannot read NOTE.md ({np}): {e}")
+        else:
+            con.print(Text('  (Challenge does not have a valid local directory)', style=FG_MUTED))
+        _pause()
+
+    def _menu_select_and_open_card(self):
+        dash = CTFDashboard(self.workspace_path)
+        challs = dash.local_challenges
+        _section('Challenge Command Card')
+        if not challs:
+            Logger.warning('No challenges found in current workspace.')
+            _pause()
+            return
+
+        con = _menu_console()
+        for idx, c in enumerate(challs, 1):
+            name = fit_cells(str(c.get('name') or 'Unknown'), 28, pad=True)
+            cat = fit_cells(str(c.get('category') or 'Other'), 12, pad=True)
+            pts = f"{c.get('points', '-'):>4} pts"
+            cid = str(c.get('id', ''))
+            is_solved = bool(c.get('solved_by_me'))
+
+            row = Text('  ')
+            row.append(f'[{idx:>2}]', style=ACCENT)
+            row.append(f' {name} ', style=FG_BASE)
+            row.append(f'{cat} ', style=FG_MUTED)
+            row.append(f'{pts} ', style=FG_MUTED)
+            if is_solved:
+                row.append('✔ SOLVED', style='solved')
+            else:
+                row.append('· Unsolved', style=FG_FAINT)
+            if cid:
+                row.append(f' (ID: {cid})', style=FG_FAINT)
+            con.print(row)
+
+        con.print()
+        q = _prompt(f'Select challenge (1-{len(challs)}), or enter ID/Name [0 to return]: ').strip()
+        target, err = _resolve_challenge_selection(challs, q)
+        if not target:
+            if err:
+                Logger.error(err)
+                _pause()
+            return
+        challenge_action_card(self, target)
+
+    def _menu_select_workspace(self):
+        return self._menu_switch_workspace()
+
+    def _menu_config_credentials(self):
+        return self._menu_configure_auth()
+
+    def _menu_switch_theme(self):
+        return self._menu_theme()
+
+    def _menu_manage_instances(self):
+        return self._menu_container_manager()
+
+    def _launch_solver_for_target(self, target):
+        return self._run_solver_for_target(target)
 
     def _menu_container_manager(self):
         try:

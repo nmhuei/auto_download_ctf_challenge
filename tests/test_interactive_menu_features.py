@@ -77,10 +77,10 @@ def test_main_menu_enter_selects_last_action(monkeypatch):
         app._last_action = "4"
 
         called = []
-        monkeypatch.setattr(app, "_menu_view_challenge_detail", lambda: called.append("detail"))
+        monkeypatch.setattr(app, "_menu_solver", lambda: called.append("solver"))
         app.run()
 
-        assert "detail" in called
+        assert "solver" in called
 
 
 def test_main_menu_aliases_and_cleaning(monkeypatch):
@@ -96,10 +96,10 @@ def test_main_menu_aliases_and_cleaning(monkeypatch):
         app._last_action = None
 
         called = []
-        monkeypatch.setattr(app, "_menu_view_challenge_detail", lambda: called.append("detail"))
+        monkeypatch.setattr(app, "_menu_solver", lambda: called.append("solver"))
         app.run()
 
-        assert "detail" in called
+        assert "solver" in called
         assert app._last_action == "4"
 
 
