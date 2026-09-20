@@ -532,6 +532,22 @@ class CTFInteractiveConsole:
                         cookie=cookie,
                         token=token,
                     )
+                    try:
+                        from .services.git_workflow import GitWorkflowService
+                        repo_root = GitWorkflowService.find_repo_root(dl.output_dir)
+                        if repo_root:
+                            res = GitWorkflowService.checkpoint_and_push(
+                                dl.output_dir,
+                                message=f"ctf({os.path.basename(dl.output_dir)}): pull snapshot",
+                                push=True,
+                                scoped_only=True,
+                            )
+                            if res.get("pushed"):
+                                Logger.success(f"Git: Đã tạo và push snapshot ban đầu lên {res.get('remote') or 'origin'}.")
+                            elif res.get("committed"):
+                                Logger.info("Git: Đã tạo snapshot baseline cục bộ.")
+                    except Exception as ge:
+                        Logger.warning(f"Git auto-snapshot: {ge}")
         except Exception as e:
             Logger.error(f'Download failed: {e}')
         _pause()
@@ -894,11 +910,27 @@ class CTFInteractiveConsole:
             cookie=self.cookie,
             token=self.token
         )
-        sub.submit_single_flag(
+        ok, msg = sub.submit_single_flag(
             challenge_id=target.get('id'),
             challenge_name=target.get('name'),
             flag_value=flag_str
         )
+        if ok:
+            try:
+                from .services.git_workflow import GitWorkflowService
+                repo_root = GitWorkflowService.find_repo_root(self.workspace_path)
+                if repo_root:
+                    cname = target.get('name') or target.get('id')
+                    res = GitWorkflowService.checkpoint_and_push(
+                        self.workspace_path,
+                        message=f"solve({target.get('category', 'ctf')}): {cname} -> flag captured",
+                        push=True,
+                        scoped_only=True,
+                    )
+                    if res.get("committed"):
+                        Logger.success("Git: Đã tự động checkpoint bài giải thành công lên Git.")
+            except Exception as ge:
+                Logger.warning(f"Git auto-checkpoint: {ge}")
         _pause()
 
     def _run_container_action_for_id(self, cid: str, challenge_name: str = ""):
@@ -1221,7 +1253,22 @@ class CTFInteractiveConsole:
                 cookie=self.cookie,
                 token=self.token
             )
-            sub.auto_submit_all()
+            results = sub.auto_submit_all()
+            if results and any(r.get("success") or r.get("status") == "correct" for r in results if isinstance(r, dict)):
+                try:
+                    from .services.git_workflow import GitWorkflowService
+                    repo_root = GitWorkflowService.find_repo_root(self.workspace_path)
+                    if repo_root:
+                        res = GitWorkflowService.checkpoint_and_push(
+                            self.workspace_path,
+                            message="solve(auto-submit): checkpoint captured flags",
+                            push=True,
+                            scoped_only=True,
+                        )
+                        if res.get("committed"):
+                            Logger.success("Git: Đã tự động checkpoint các flag vừa submit thành công lên Git.")
+                except Exception as ge:
+                    Logger.warning(f"Git auto-checkpoint: {ge}")
         _pause()
 
     def _menu_scan_workspaces(self):
