@@ -58,23 +58,35 @@ SEL_BG = SELECTED_BG
 
 from .palettes import EXODIA_PALETTE, PRESET_PALETTES, Palette
 
-_CURRENT_PALETTE: Palette = EXODIA_PALETTE
+_CURRENT_PALETTE: Palette | None = None
 
 DEFAULT_STYLES: dict[str, str] = EXODIA_PALETTE.to_rich_styles()
 
 
 def get_active_palette() -> Palette:
-    """Get current active palette, checking CTF_THEME env var first."""
+    """Get current active palette, checking in-memory override, env var, then global config."""
+    if _CURRENT_PALETTE is not None:
+        return _CURRENT_PALETTE
     import os
     env_theme = os.environ.get("CTF_THEME", "").strip().lower()
     if env_theme and env_theme in PRESET_PALETTES:
         return PRESET_PALETTES[env_theme]
-    return _CURRENT_PALETTE
+    try:
+        from ..storage.global_config import load_global_config
+        cfg_theme = str(load_global_config().get("theme") or "").strip().lower()
+        if cfg_theme and cfg_theme in PRESET_PALETTES:
+            return PRESET_PALETTES[cfg_theme]
+    except Exception:
+        pass
+    return EXODIA_PALETTE
 
 
-def set_active_theme(name: str) -> bool:
-    """Set active theme palette by preset name."""
+def set_active_theme(name: str | None) -> bool:
+    """Set active theme palette by preset name (None resets to global/default)."""
     global _CURRENT_PALETTE
+    if name is None:
+        _CURRENT_PALETTE = None
+        return True
     key = name.strip().lower()
     if key in PRESET_PALETTES:
         _CURRENT_PALETTE = PRESET_PALETTES[key]

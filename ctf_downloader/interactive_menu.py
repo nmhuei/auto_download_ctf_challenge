@@ -32,7 +32,7 @@ from .storage.global_config import (  # noqa: F401 — re-export để giữ tư
 from .ui.banner import app_header
 from .ui.selection import MENU_CURSOR, fit_cells, selected_row
 from .ui.splash import splash
-from .ui.theme import ACCENT, FG_BASE, FG_FAINT, FG_MUTED, INFO, WARN, load_theme
+from .ui.theme import ACCENT, FG_BASE, FG_FAINT, FG_MUTED, INFO, WARN, SOLVED as _SOLVED_COLOR, load_theme
 from .ui.widgets import SOLVE_RAMP, meter
 
 from .ui.menu_hubs import (
@@ -52,26 +52,36 @@ from .ui.menu_hubs import (
 SWITCHER_TITLE_W = 30
 SWITCHER_PLATFORM_W = 8
 
-_MAIN_ACTIONS_FULL = (
-    ('1', '🎯 Workspace & Targets      (Switch active event / Clone CTF / Auth)'),
-    ('2', '⚔️ Challenge Operations     (Tree View / Action Card / Instances)'),
-    ('3', '🚩 Flag Submission Lab      (Submit single / Auto-submit hoarded flags)'),
-    ('4', '⚡ SuperBQA AI Solver       (Autonomous AGYworker agents / Live Radar)'),
-    ('5', '🛠️ System & Arsenal         (Git safe sync / Push backup / Switch theme)'),
-    ('G', '⚡ Quick Git Sync           (Direct shortcut to GitHub repo)'),
-    ('T', '🎨 Switch Visual Theme      (Cyberpunk / Matrix / Amber / Nord / ExOdia)'),
-    ('0', '🚪 Exit'),
+_MAIN_ACTIONS_RAW = (
+    ('1', '🎯', 'Workspace & Targets', '(Switch active event / Clone CTF / Auth)'),
+    ('2', '⚔️', 'Challenge Operations', '(Tree View / Action Card / Instances)'),
+    ('3', '🚩', 'Flag Submission Lab', '(Submit single / Auto-submit hoarded flags)'),
+    ('4', '⚡', 'SuperBQA AI Solver', '(Autonomous AGYworker agents / Live Radar)'),
+    ('5', '🛠️', 'System & Arsenal', '(Git safe sync / Push backup / Switch theme)'),
+    ('G', '⚡', 'Quick Git Sync', '(Direct shortcut to GitHub repo)'),
+    ('T', '🎨', 'Switch Visual Theme', '(Cyberpunk / Matrix / Amber / Nord / ExOdia)'),
+    ('0', '🚪', 'Exit', ''),
 )
 
-_MAIN_ACTIONS_COMPACT = (
-    ('1', '🎯 Workspace & Targets'),
-    ('2', '⚔️ Challenge Operations'),
-    ('3', '🚩 Flag Submission Lab'),
-    ('4', '⚡ SuperBQA AI Solver'),
-    ('5', '🛠️ System & Arsenal'),
-    ('G', '⚡ Quick Git Sync'),
-    ('T', '🎨 Switch Theme'),
-    ('0', '🚪 Exit'),
+from rich.cells import cell_len as _cell_len
+
+_MAX_ACTION_TITLE_W = max(_cell_len(f"{icon} {title}") for _, icon, title, _ in _MAIN_ACTIONS_RAW)
+
+def _format_action_full(icon: str, title: str, desc: str) -> str:
+    title_str = f"{icon} {title}"
+    if not desc:
+        return title_str
+    pad = " " * max(2, (_MAX_ACTION_TITLE_W + 2) - _cell_len(title_str))
+    return f"{title_str}{pad}{desc}"
+
+_MAIN_ACTIONS_FULL = tuple(
+    (key, _format_action_full(icon, title, desc))
+    for key, icon, title, desc in _MAIN_ACTIONS_RAW
+)
+
+_MAIN_ACTIONS_COMPACT = tuple(
+    (key, f"{icon} {title}")
+    for key, icon, title, _ in _MAIN_ACTIONS_RAW
 )
 
 
@@ -85,16 +95,17 @@ _MENU_CON = None
 
 def _run_live_radar(service, con):
     """Display the solver status as a continuously refreshed live radar."""
-    from .cli_commands import _solver_table
+    from .cli_commands import _make_solver_radar_view
 
-    con.print("\n  [bold cyan]Live Radar[/bold cyan] — Press Ctrl+C to detach.\n")
+    radar_hdr = Text("\n  Live Radar · SuperBQA — Press Ctrl+C to detach.\n", style=f"bold {FG_BASE}")
+    con.print(radar_hdr)
     try:
-        with Live(_solver_table(service, show_worker_count=True), console=con, refresh_per_second=4) as live:
+        with Live(_make_solver_radar_view(service), console=con, refresh_per_second=4) as live:
             while True:
                 time.sleep(0.25)
-                live.update(_solver_table(service, show_worker_count=True))
+                live.update(_make_solver_radar_view(service))
     except KeyboardInterrupt:
-        con.print("\n  [dim]Detached from Live Radar.[/dim]")
+        con.print(Text("\n  Detached from Live Radar.\n", style=FG_MUTED))
 
 
 def _frame_timestamp():
@@ -138,10 +149,15 @@ def _section(title: str):
 
 
 def _option(key: str, label: str):
-    """Dòng lựa chọn ``[số] <tên>`` — số accent amber, tên fg.base."""
+    """Dòng lựa chọn ``[số] <tên>`` — số accent amber, tên fg.base, desc fg.muted."""
     t = Text('  ')
     t.append(f'[{key}]', style=ACCENT)
-    t.append(f' {label}', style=FG_BASE)
+    if ' (' in label and label.endswith(')'):
+        title_part, paren_part = label.split(' (', 1)
+        t.append(f' {title_part} ', style=FG_BASE)
+        t.append(f'({paren_part}', style=FG_MUTED)
+    else:
+        t.append(f' {label}', style=FG_BASE)
     _menu_console().print(t)
 
 
@@ -1143,16 +1159,16 @@ class CTFInteractiveConsole:
                 return
 
             con.print()
-            con.print(f"  [bold green]✔ {res.get('message')}[/bold green]")
-            con.print("  [dim]Press Ctrl+C to detach.[/dim]\n")
+            con.print(Text(f"  ✔ {res.get('message')}", style=f"bold {_SOLVED_COLOR}"))
+            con.print(Text("  Press Ctrl+C to detach.\n", style=FG_FAINT))
 
             try:
-                with Live(_solver_table(service, show_worker_count=True), console=con, refresh_per_second=4) as live:
+                with Live(_make_solver_radar_view(service), console=con, refresh_per_second=4) as live:
                     while True:
                         time.sleep(0.25)
-                        live.update(_solver_table(service, show_worker_count=True))
+                        live.update(_make_solver_radar_view(service))
             except KeyboardInterrupt:
-                con.print("\n  [dim]Detached.[/dim]")
+                con.print(Text("\n  Detached.\n", style=FG_MUTED))
         except Exception as e:
             Logger.error(f'SuperBQA error: {e}')
         _pause()
@@ -1257,20 +1273,21 @@ class CTFInteractiveConsole:
                     Logger.error(res.get("message", "SUPERBQA EATING startup failed."))
                     _pause()
                     continue
-                con.print(f"\n  [bold green]✔ {res.get('message')}[/bold green]")
+                con.print()
+                con.print(Text(f"  ✔ {res.get('message')}", style=f"bold {_SOLVED_COLOR}"))
                 try:
                     watch_now = _prompt('  Attach Live Radar now? [Y/n]: ').strip().lower()
                 except (EOFError, KeyboardInterrupt):
                     return
                 if watch_now != 'n':
-                    con.print("\n  [dim]Press Ctrl+C to detach.[/dim]\n")
+                    con.print(Text("\n  Press Ctrl+C to detach.\n", style=FG_FAINT))
                     try:
-                        with Live(_solver_table(service, show_worker_count=True), console=con, refresh_per_second=4) as live:
+                        with Live(_make_solver_radar_view(service), console=con, refresh_per_second=4) as live:
                             while True:
                                 time.sleep(0.25)
-                                live.update(_solver_table(service, show_worker_count=True))
+                                live.update(_make_solver_radar_view(service))
                     except KeyboardInterrupt:
-                        con.print("\n  [dim]Detached.[/dim]")
+                        con.print(Text("\n  Detached.\n", style=FG_MUTED))
                 _pause()
                 continue
             elif act_clean in ('3', 'radar', 'live', 'watch', 'active', 'agy', 'workers', 'tasks', 'running'):
@@ -1297,12 +1314,13 @@ class CTFInteractiveConsole:
                     Logger.warning(f'No log file found for {matched_job.name if matched_job else tid}.')
                     _pause()
                     continue
-                con.print(f"\n  [bold cyan]Latest log for {matched_job.name} ({matched_job.log_path}):[/bold cyan]\n")
+                log_hdr = Text(f"\n  Latest log for {matched_job.name} ({matched_job.log_path}):\n", style=f"bold {FG_BASE}")
+                con.print(log_hdr)
                 try:
-                    with matched_job.log_path.open('r', encoding='utf-8', errors='replace') as lf:
-                        lines = lf.readlines()
-                        con.print(''.join(lines[-40:]), markup=False)
-                except OSError as e:
+                    from .cli_commands import read_log_tail
+                    lines = read_log_tail(matched_job.log_path, max_lines=40)
+                    con.print(''.join(lines), markup=False)
+                except Exception as e:
                     Logger.error(f'Unable to read log file: {e}')
                 _pause()
                 continue
@@ -1613,9 +1631,14 @@ class CTFInteractiveConsole:
             _update_menu_theme(chosen.name)
             try:
                 from .storage.global_config import update_global_config
-                update_global_config({"theme": chosen.name})
-            except Exception:
-                pass
+
+                def _save_theme(state: dict) -> dict:
+                    state["theme"] = chosen.name
+                    return state
+
+                update_global_config(_save_theme)
+            except Exception as e:
+                Logger.warning(f"Không thể lưu cấu hình theme: {e}")
             Logger.success(f"Đã chuyển giao diện sang: {chosen.display_name}!")
             _pause()
 

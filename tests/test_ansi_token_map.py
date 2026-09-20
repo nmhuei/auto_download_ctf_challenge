@@ -193,9 +193,9 @@ class TestUiPackageFreeOfLegacyTerminalStyles(unittest.TestCase):
     def test_ui_sources_free_of_legacy_terminal_colors(self):
         offenders = []
         for path in sorted(Path(self.UI_DIR).glob("*.py")):
-            # theme.py is the semantic source of truth and intentionally owns
-            # a token named "cyan"; style.py is validated separately below.
-            if path.name in {"style.py", "theme.py"}:
+            # theme.py and palettes.py are the semantic sources of truth and intentionally
+            # own the "cyan" alias style; style.py is validated separately below.
+            if path.name in {"style.py", "theme.py", "palettes.py"}:
                 continue
             hit = self.LEGACY.search(self._masked(str(path)))
             if hit:

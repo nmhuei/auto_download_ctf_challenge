@@ -384,6 +384,14 @@ class GitWorkflowService:
             )
 
     @classmethod
+    def _is_clean(cls, repo: Path, *, scoped_path: Path | None = None) -> bool:
+        args = ["status", "--porcelain", "--untracked-files=all"]
+        if scoped_path:
+            args += ["--", scoped_path.as_posix()]
+        status = cls._run(repo, args).stdout.strip()
+        return not bool(status)
+
+    @classmethod
     def scan_large_files(
         cls,
         workspace: str | os.PathLike,
@@ -658,7 +666,26 @@ class GitWorkflowService:
 
         meta = cls._load_meta(ws)
         current = cls._current_branch(repo)
-        branch = str(meta.get("branch") or current)
+        expected_branch = meta.get("branch")
+        if expected_branch:
+            branch = str(expected_branch)
+            if current != branch:
+                if cls._is_clean(repo):
+                    if cls._branch_exists(repo, branch):
+                        cls._run(repo, ["checkout", branch], check=True)
+                    elif cls._remote_branch_exists(repo, remote_name, branch):
+                        cls._run(repo, ["checkout", "-b", branch, "--track", f"{remote_name}/{branch}"], check=True)
+                    else:
+                        cls._run(repo, ["checkout", "-b", branch], check=True)
+                    current = branch
+                else:
+                    raise GitWorkflowError(
+                        f"Workspace '{ws.name}' gắn với branch '{branch}', nhưng git repo "
+                        f"đang ở branch '{current}' và có thay đổi chưa commit. "
+                        f"Hãy commit hoặc chuyển về đúng branch trước khi sync."
+                    )
+        else:
+            branch = current
         remote_name = str(remote or meta.get("remote") or cls.DEFAULT_REMOTE)
 
         if not cls._remote_exists(repo, remote_name):

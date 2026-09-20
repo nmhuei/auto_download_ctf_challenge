@@ -12,3 +12,5 @@
 4. **Full Autonomous Authority (Toàn quyền tự quyết & Tự động hóa)**:
    - Agent có toàn quyền quyết định phương án thiết kế, tái cấu trúc và tối ưu hóa tốt nhất theo tiêu chí đơn giản, hiện đại, tiện dụng.
    - Tự hành động xuyên suốt từ lập kế hoạch, refactor, kiểm thử thực tế, debug chi tiết đến hoàn thiện mà không cần dừng lại xin xác nhận hay chờ approve từ user.
+5. **Solver Testing & Prompt Generation Guideline (Kiểm thử Solver & Prompt)**:
+   - Khi kiểm thử tính năng giải bài (solver/AGYworker) hoặc sinh prompt: chỉ cần đảm bảo luồng hoạt động ổn định, sinh prompt chuẩn xác, không kích hoạt/dính bộ lọc an toàn (cybersecurity filter/censorship) là coi như ĐẠT. Không cần ép agent phải giải hoàn chỉnh ra flag toàn bộ bài đó trong quá trình test.

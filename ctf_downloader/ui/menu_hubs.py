@@ -13,7 +13,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
+from rich.cells import cell_len
 from rich import box
 
 from .theme import (
@@ -33,15 +35,25 @@ from ..utils.logger import Logger
 
 def _hub_console() -> Console:
     """Return an interactive console configured with active theme."""
-    return Console(stderr=True, theme=load_theme(None))
+    try:
+        from ..interactive_menu import _menu_console
+        return _menu_console()
+    except Exception:
+        return Console(stderr=True, theme=load_theme(None))
 
 
 def _prompt(prompt_text: str = "❯ Select action: ") -> str:
-    """Read a single line of input from stdin."""
+    """Read a single line of input from console."""
     try:
-        return input(prompt_text).strip()
+        con = _hub_console()
+        return con.input(prompt_text).strip()
     except (EOFError, KeyboardInterrupt):
         return "0"
+    except Exception:
+        try:
+            return input(prompt_text).strip()
+        except (EOFError, KeyboardInterrupt):
+            return "0"
 
 
 def _pause() -> None:
@@ -79,15 +91,31 @@ def render_hub_menu(
         )
     )
 
-    # Action list
+    # Action list (dynamic cell_len alignment, zero manual spacing)
+    split_actions = []
+    has_hints = False
     for key, desc in actions:
-        row = Text()
-        if key == "0":
-            row.append("  [0] ", style=f"bold {FG_FAINT}")
-            row.append(desc, style=FG_MUTED)
+        if " (" in desc and desc.endswith(")"):
+            main_part, hint_part = desc.split(" (", 1)
+            split_actions.append((key, main_part, f"({hint_part}"))
+            has_hints = True
         else:
-            row.append(f"  [{key}] ", style=f"bold {ACCENT}")
-            row.append(desc, style=FG_BASE)
+            split_actions.append((key, desc, ""))
+
+    max_main_w = max(cell_len(main_part) for _, main_part, _ in split_actions) if has_hints else 0
+
+    for key, main_part, hint in split_actions:
+        row = Text()
+        key_style = f"bold {FG_FAINT}" if key == "0" else f"bold {ACCENT}"
+        row.append(f"  [{key}] ", style=key_style)
+
+        main_style = FG_MUTED if key == "0" else FG_BASE
+        row.append(main_part, style=main_style)
+
+        if hint:
+            pad = " " * max(2, (max_main_w + 2) - cell_len(main_part))
+            row.append(pad)
+            row.append(hint, style=FG_MUTED)
         con.print(row)
 
     con.print()
@@ -158,15 +186,21 @@ def challenge_action_card(app: Any, target: Dict[str, Any]) -> None:
 
     while True:
         con.print()
-        card_content = Text()
-        card_content.append(f"Challenge: {cname}\n", style=f"bold {FG_BASE}")
-        card_content.append(f"ID: {cid}  ·  Category: {cat}  ·  Points: {pts}\n", style=FG_MUTED)
+        card_table = Table(box=None, show_header=False, pad_edge=False, padding=(0, 1))
+        card_table.add_column("Field", style=FG_MUTED, no_wrap=True)
+        card_table.add_column("Value")
+        card_table.add_row("Challenge", Text(str(cname), style=f"bold {FG_BASE}"))
+        card_table.add_row("Metadata", Text(f"ID: {cid}  ·  Category: {cat}  ·  Points: {pts}", style=FG_MUTED))
         if target.get("connection_info"):
-            card_content.append(f"Connection: {target['connection_info']}\n", style=INFO)
+            card_table.add_row("Connection", Text(str(target["connection_info"]), style=INFO))
+        if target.get("solved_by_me"):
+            card_table.add_row("Status", Text("✔ SOLVED", style="solved"))
+        else:
+            card_table.add_row("Status", Text("· Unsolved", style=FG_FAINT))
 
         con.print(
             Panel(
-                card_content,
+                card_table,
                 title=Text(" ACTION CARD ", style=f"bold {ACCENT}"),
                 box=box.ROUNDED,
                 border_style=ACCENT_DEEP,

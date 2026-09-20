@@ -277,6 +277,7 @@ class SolverTableView:
 def _solver_table(
     service: SolverService,
     *,
+    jobs: list[SolverJob] | None = None,
     animate: bool | None = None,
     show_worker_count: bool = False,
 ):
@@ -309,7 +310,8 @@ def _solver_table(
         "analyzed": ("✦ analyzed", _INFO_COLOR),
     }
 
-    jobs = list(service.scan())
+    if jobs is None:
+        jobs = list(service.scan())
     job_data = []
     cat_stats: dict[str, dict[str, int]] = {}
     active_workers = 0
@@ -332,18 +334,42 @@ def _solver_table(
         job_data.append((job, state, eligibility, flag, is_solved))
 
     cols = StatusService._tty_columns()
-    name_limit = 18 if cols < 80 else 24
-
-    hdr_cells = [
-        Text(""),
-        Text("ID", style=_FAINT_COLOR),
-        Text("CHALLENGE", style=_FAINT_COLOR),
-        Text("STATE", style=_FAINT_COLOR),
-        Text("OUTCOME", style=_FAINT_COLOR),
-        Text("SRC", style=_FAINT_COLOR),
-        Text("INST", style=_FAINT_COLOR),
-        Text("PHASE", style=_FAINT_COLOR),
-    ]
+    if cols < 60:
+        name_limit = 14
+        hdr_cells = [
+            Text(""),
+            Text("ID", style=_FAINT_COLOR),
+            Text("CHALLENGE", style=_FAINT_COLOR),
+            Text("STATE", style=_FAINT_COLOR),
+        ]
+        aligns = ["left", "right", "left", "left"]
+        gaps = [1, 2, 2, 2]
+    elif cols < 90:
+        name_limit = 18
+        hdr_cells = [
+            Text(""),
+            Text("ID", style=_FAINT_COLOR),
+            Text("CHALLENGE", style=_FAINT_COLOR),
+            Text("STATE", style=_FAINT_COLOR),
+            Text("OUTCOME", style=_FAINT_COLOR),
+            Text("PHASE", style=_FAINT_COLOR),
+        ]
+        aligns = ["left", "right", "left", "left", "left", "left"]
+        gaps = [1, 2, 2, 2, 2, 2]
+    else:
+        name_limit = 24
+        hdr_cells = [
+            Text(""),
+            Text("ID", style=_FAINT_COLOR),
+            Text("CHALLENGE", style=_FAINT_COLOR),
+            Text("STATE", style=_FAINT_COLOR),
+            Text("OUTCOME", style=_FAINT_COLOR),
+            Text("SRC", style=_FAINT_COLOR),
+            Text("INST", style=_FAINT_COLOR),
+            Text("PHASE", style=_FAINT_COLOR),
+        ]
+        aligns = ["left", "right", "left", "left", "left", "center", "center", "left"]
+        gaps = [1, 2, 2, 2, 2, 2, 2, 2]
 
     all_raw_rows = [hdr_cells]
     cat_rows_map: dict[str, list[list[Text]]] = {}
@@ -407,21 +433,36 @@ def _solver_table(
         name_truncated = StatusService._truncate_cells(job.name, limit=name_limit)
         name_cell = Text(name_truncated, style=chal_style)
 
-        row_cells = [
-            glyph,
-            Text(str(job.display_id), style=_FAINT_COLOR),
-            name_cell,
-            Text(shown, style=style),
-            Text(shown_outcome, style=outcome_style),
-            src_cell,
-            inst_cell,
-            phase_text,
-        ]
+        if cols < 60:
+            row_cells = [
+                glyph,
+                Text(str(job.display_id), style=_FAINT_COLOR),
+                name_cell,
+                Text(shown, style=style),
+            ]
+        elif cols < 90:
+            row_cells = [
+                glyph,
+                Text(str(job.display_id), style=_FAINT_COLOR),
+                name_cell,
+                Text(shown, style=style),
+                Text(shown_outcome, style=outcome_style),
+                phase_text,
+            ]
+        else:
+            row_cells = [
+                glyph,
+                Text(str(job.display_id), style=_FAINT_COLOR),
+                name_cell,
+                Text(shown, style=style),
+                Text(shown_outcome, style=outcome_style),
+                src_cell,
+                inst_cell,
+                phase_text,
+            ]
         all_raw_rows.append(row_cells)
         cat_rows_map.setdefault(job.category, []).append(row_cells)
 
-    aligns = ["left", "right", "left", "left", "left", "center", "center", "left"]
-    gaps = [1, 2, 2, 2, 2, 2, 2, 2]
     aligned_lines = StatusService._aligned_grid(all_raw_rows, aligns, gaps=gaps) if all_raw_rows else []
 
     header_line = None
@@ -519,13 +560,21 @@ def _make_solver_overview_panel(service: SolverService, jobs: list[SolverJob] | 
     )
 
 
-def _make_solver_radar_view(service: SolverService, *, animate: bool | None = None):
+def _make_solver_radar_view(
+    service: SolverService,
+    *,
+    animate: bool | None = None,
+    jobs: list[SolverJob] | None = None,
+):
     """Unified Live Radar renderable grouping overview panel and categorized table."""
     from rich.console import Group
 
+    if jobs is None:
+        jobs = list(service.scan())
+
     return Group(
-        _make_solver_overview_panel(service),
-        _solver_table(service, animate=animate, show_worker_count=False),
+        _make_solver_overview_panel(service, jobs=jobs),
+        _solver_table(service, jobs=jobs, animate=animate, show_worker_count=False),
     )
 
 
@@ -541,12 +590,19 @@ def _render_solver_status(service: SolverService, *, target: str | None, watch: 
             d_pid = daemon_info.get("daemon_pid")
             d_targets = daemon_info.get("target_ids", "-")
             d_active = ", ".join(daemon_info.get("active_ids", [])) or "idle"
-            console.print(f"[bold green]🟢 SuperBQA daemon running in background (PID {d_pid})[/bold green] · Targets: {d_targets} · Active: {d_active}\n")
+            d_banner = Text()
+            d_banner.append("🟢 SuperBQA daemon running in background ", style=f"bold {_SOLVED_COLOR}")
+            d_banner.append(f"(PID {d_pid})", style=f"bold {FG_BASE}")
+            d_banner.append(f" · Targets: {d_targets} · Active: {d_active}\n", style=_MUTED_COLOR)
+            console.print(d_banner)
 
         cat_sessions = service.get_category_sessions()
         if cat_sessions:
             sess_strs = [f"{cat} ({info.get('conversation_id', '')[:8]}...)" for cat, info in cat_sessions.items()]
-            console.print(f"[dim]📁 Persistent Sessions: {', '.join(sess_strs)}[/dim]\n")
+            sess_text = Text()
+            sess_text.append("📁 Persistent Sessions: ", style=_MUTED_COLOR)
+            sess_text.append(", ".join(sess_strs) + "\n", style=_FAINT_COLOR)
+            console.print(sess_text)
 
         if target:
             try:
@@ -689,6 +745,26 @@ def render_active_agy_workers(service: SolverService, console_inst=None) -> list
     return active_list
 
 
+def read_log_tail(log_path: Path | str, max_bytes: int = 65536, max_lines: int = 40) -> list[str]:
+    """Read bounded trailing lines from a file without full-file read memory penalty."""
+    p = Path(log_path)
+    if not p.is_file():
+        return []
+    try:
+        with p.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            seek_pos = max(0, size - max_bytes)
+            f.seek(seek_pos, os.SEEK_SET)
+            content = f.read().decode("utf-8", errors="replace")
+            lines = content.splitlines(keepends=True)
+            if seek_pos > 0 and len(lines) > 1:
+                lines = lines[1:]
+            return lines[-max_lines:]
+    except OSError:
+        return []
+
+
 def handle_solve(args):
     """SuperBQA solver controller supporting background daemon and live modes."""
     from rich.live import Live
@@ -719,7 +795,7 @@ def handle_solve(args):
         else:
             cat_sessions = service.get_category_sessions()
             if cat_sessions:
-                categories = list(cat_sessions.keys())
+                categories = sorted(cat_sessions.keys())
             else:
                 categories = sorted({j.category for j in service.scan() if j.category})
 
@@ -731,10 +807,10 @@ def handle_solve(args):
             with console.status(f"[bold cyan]Distilling SOP Playbook for {cat}...[/bold cyan]"):
                 res = service.distill_playbook(cat)
             if res.get("success"):
-                console.print(f"[bold green]✔ Distilled operational playbook for {cat}:[/bold green]")
-                console.print(f"  📄 Playbook: [cyan]{res.get('playbook_path')}[/cyan]")
+                Logger.success(f"Distilled operational playbook for {cat}:")
+                console.print(f"  📄 Playbook: {res.get('playbook_path')}")
                 if res.get("main_conversation_id"):
-                    console.print(f"  🧠 Updated Master Session: [dim]{res.get('main_conversation_id')}[/dim]")
+                    console.print(Text(f"  🧠 Updated Master Session: {res.get('main_conversation_id')}", style=_MUTED_COLOR))
             else:
                 Logger.error(f"Failed to distill playbook for {cat}")
         return
@@ -749,7 +825,7 @@ def handle_solve(args):
     if getattr(args, 'stop', None):
         target = None if args.stop == 'all' else args.stop
         res = service.stop_background(target)
-        console.print(f"[bold green]✔ {res.get('message')}[/bold green]")
+        Logger.success(str(res.get('message', 'Stopped')))
         return
 
     # 3. Check --logs
@@ -766,21 +842,25 @@ def handle_solve(args):
         if not job.log_path.is_file():
             Logger.warning(f"No log file found for {job.name}")
             return
-        console.print(f"[bold cyan]Latest log for {job.name} ({job.log_path}):[/bold cyan]\n")
-        with job.log_path.open("r", encoding="utf-8", errors="replace") as f:
-            console.print("".join(f.readlines()[-40:]), markup=False)
+        hdr = Text()
+        hdr.append("Latest log for ", style=_MUTED_COLOR)
+        hdr.append(str(job.name), style=f"bold {FG_BASE}")
+        hdr.append(f" ({job.log_path}):\n", style=_FAINT_COLOR)
+        console.print(hdr)
+        lines = read_log_tail(job.log_path, max_lines=40)
+        console.print("".join(lines), markup=False)
         return
 
     # 4. Check --attach
     if getattr(args, 'attach', False):
-        console.print("[dim]💡 Connecting to SuperBQA Radar. Press Ctrl+C to detach safely (worker continues in background).[/dim]\n")
+        console.print(Text("💡 Connecting to SuperBQA Radar. Press Ctrl+C to detach safely.\n", style=_FAINT_COLOR))
         try:
             with Live(_make_solver_radar_view(service), console=console, refresh_per_second=4) as live:
                 while True:
                     time.sleep(0.25)
                     live.update(_make_solver_radar_view(service))
         except KeyboardInterrupt:
-            console.print("\n[dim]💡 Detached from Radar. SuperBQA is continuing in background.[/dim]")
+            console.print(Text("\n💡 Detached from Radar. SuperBQA is continuing in background.", style=_FAINT_COLOR))
         return
 
     ids = getattr(args, 'ids', None)
@@ -825,6 +905,9 @@ def handle_solve(args):
         sys.exit(1)
     except KeyboardInterrupt:
         Logger.info("Stopped foreground scheduler; cancelled active workers and queued jobs.")
+
+
+solve_command = handle_solve
 
 
 def handle_note(args):

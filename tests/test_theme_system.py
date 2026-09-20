@@ -43,12 +43,15 @@ def test_theme_menu_switch(tmp_path):
     ws.mkdir()
     app = CTFInteractiveConsole(workspace_path=str(ws))
 
-    # Test selecting theme 2 (Cyberpunk), then pausing ""
-    inputs = iter(["2", ""])
-    with patch("ctf_downloader.interactive_menu._prompt", side_effect=lambda *args: next(inputs)):
-        app._menu_theme()
+    try:
+        # Test selecting theme 2 (Cyberpunk), then pausing ""
+        inputs = iter(["2", ""])
+        with patch("ctf_downloader.interactive_menu._prompt", side_effect=lambda *args: next(inputs)):
+            app._menu_theme()
 
-    assert get_active_palette().name == "cyberpunk"
-
-    # Reset back to default
-    set_active_theme("exodia")
+        assert get_active_palette().name == "cyberpunk"
+    finally:
+        set_active_theme("exodia")
+        from ctf_downloader.storage.global_config import update_global_config
+        update_global_config(lambda s: s.pop("theme", None) or s)
+        set_active_theme(None)
