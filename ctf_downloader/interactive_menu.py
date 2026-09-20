@@ -1055,13 +1055,13 @@ class CTFInteractiveConsole:
                 con.print(f"  [dim]📁 Persistent Sessions: {', '.join(sess_strs)}[/dim]")
 
             con.print()
-            _option('1', 'BQA EATING')
-            _option('2', 'SUPERBQA EATING')
-            _option('3', 'Live Radar')
-            _option('4', 'Worker log tail')
-            _option('5', 'Stop / Cancel')
-            _option('6', 'Distill category playbook')
-            _option('7', 'Help')
+            _option('1', 'BQA EATING · Solve specific challenges by ID (e.g. 1 or 1,3,5)')
+            _option('2', 'SUPERBQA EATING · Auto-queue all eligible challenges')
+            _option('3', 'Live Radar · Monitor solving progress in real time')
+            _option('4', 'Worker log tail · Inspect subagent logs & live thoughts')
+            _option('5', 'Stop / Cancel · Terminate active solver workers')
+            _option('6', 'Distill playbook · Synthesize category methodologies')
+            _option('7', 'Help / Escalate · Route hard puzzle to Codex Astra')
             _option('0', 'Back to main menu')
 
             try:

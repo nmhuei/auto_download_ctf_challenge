@@ -118,6 +118,7 @@ def handle_pull(args):
         git_base_branch=getattr(args, 'git_base', 'main') or 'main',
         git_remote=getattr(args, 'git_remote', 'origin') or 'origin',
         git_auto_push=not getattr(args, 'no_git_push', False),
+        insecure=getattr(args, 'insecure', False),
     )
 
     try:
@@ -143,6 +144,19 @@ def handle_pull(args):
 
 
 def handle_status(args):
+    # Hỗ trợ `ctf status --set <target> <state>` hoặc `ctf status set <target> <state>`
+    set_args = getattr(args, 'set_solve', None)
+    if not set_args and getattr(args, 'target', None) == 'set':
+        extra = getattr(args, 'args_extra', [])
+        if len(extra) >= 2:
+            set_args = [extra[0], extra[1]]
+    if set_args:
+        repo = WorkspaceRepo(args.workspace)
+        success = StatusService.set_solve(repo, set_args[0], set_args[1])
+        if not success:
+            sys.exit(1)
+        return
+
     if bool(getattr(args, 'solver', False)):
         service = SolverService(args.workspace)
         _render_solver_status(service, target=getattr(args, 'target', None),
@@ -460,6 +474,7 @@ def _make_solver_overview_panel(service: SolverService, jobs: list[SolverJob] | 
     from rich.panel import Panel
     from rich.text import Text
     from .ui.widgets import meter, SOLVE_RAMP
+    from .ui.theme import ACCENT_DEEP
 
     if jobs is None:
         jobs = service.scan()
@@ -497,7 +512,7 @@ def _make_solver_overview_panel(service: SolverService, jobs: list[SolverJob] | 
     return Panel(
         row,
         box=box.ROUNDED,
-        border_style="accent.deep",
+        border_style=ACCENT_DEEP,
         title=Text(" SUPERBQA SOLVER · RADAR ", style=f"bold {FG_BASE}"),
         expand=True,
         padding=(0, 1),
@@ -1642,8 +1657,29 @@ def handle_sync(args):
                      f"'{args.workspace}': {e}")
         sys.exit(1)
 
+    if getattr(args, 'pull', False):
+        try:
+            config = DownloaderConfig(
+                url=platform.ctf_info.url,
+                cookie=cookie_val,
+                token=token_val,
+                output_dir=args.workspace,
+                incremental_update=True,
+                insecure=getattr(args, 'insecure', False),
+            )
+            result = PullService.run_update(config)
+            if not result.get('ok'):
+                sys.exit(1)
+            return
+        except Exception as e:
+            Logger.error(f'Pull cập nhật thất bại: {e}')
+            sys.exit(1)
+
     try:
-        result = PullService.sync_workspace(repo, platform)
+        result = PullService.sync_workspace(
+            repo, platform,
+            apply_drift=getattr(args, 'apply_drift', False),
+        )
         if getattr(args, 'verify', False):
             verdict = PullService.verify(repo, platform)
             _render_verify_drift(verdict)
@@ -1671,8 +1707,8 @@ def _render_verify_drift(verdict):
     Logger.print_table(
         'Verify — local chưa solve, server đã solve',
         ['Challenge', 'Ai', 'Người solve'], rows)
-    Logger.warning("⚠️ KHÔNG tự đổi trạng thái — user quyết định qua "
-                   "'status set' hoặc submit flag.")
+    Logger.warning("💡 Dùng 'ctf sync --apply' để tự động cập nhật trạng thái solved từ server vào local, "
+                   "hoặc 'ctf status set <id> solved'.")
 
 
 # Icon kết quả submit cho `ctf history` (result strings của SubmitService).
