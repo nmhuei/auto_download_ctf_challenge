@@ -54,6 +54,7 @@ _MAIN_ACTIONS_FULL = (
     ('7', 'Auto scan & submit hoarded flags in workspace'),
     ('8', 'Scan & summarize all CTF workspaces on machine'),
     ('9', 'Configure & save Cookie / Token for this event'),
+    ('G', 'Git Sync & Remote Backup (Kho vũ khí GitHub)'),
     ('S', 'SUPERBQA EATING'),
     ('0', 'Exit'),
 )
@@ -68,6 +69,7 @@ _MAIN_ACTIONS_COMPACT = (
     ('7', 'Auto-submit hoarded flags'),
     ('8', 'Summarize local workspaces'),
     ('9', 'Configure Cookie / Token'),
+    ('G', 'Git Sync & Remote Backup'),
     ('S', 'SUPERBQA EATING'),
     ('0', 'Exit'),
 )
@@ -414,9 +416,9 @@ class CTFInteractiveConsole:
                     else:
                         _option(key, label)
 
-                prompt_msg = 'Select action (0-9, S): '
+                prompt_msg = 'Select action (0-9, G, S): '
                 if self._last_action:
-                    prompt_msg = f'Select action (0-9, S) [default {self._last_action}]: '
+                    prompt_msg = f'Select action (0-9, G, S) [default {self._last_action}]: '
                 raw_choice = _prompt(prompt_msg).strip()
                 choice = raw_choice.strip(" []().")
                 if not choice and self._last_action:
@@ -435,9 +437,10 @@ class CTFInteractiveConsole:
                     '7': '7', 'auto': '7', 'auto-submit': '7',
                     '8': '8', 'scan': '8', 'summary': '8',
                     '9': '9', 'auth': '9', 'cookie': '9', 'token': '9', 'config': '9',
+                    'g': 'G', 'git': 'G', 'sync': 'G', 'push': 'G', 'backup': 'G',
                     's': 'S', 'solve': 'S', 'solver': 'S', 'bqa': 'S', 'eating': 'S', 'eat': 'S',
                 }
-                canonical = key_map.get(choice_lower, choice.upper() if choice.upper() == 'S' else choice)
+                canonical = key_map.get(choice_lower, choice.upper() if choice.upper() in ('S', 'G') else choice)
 
                 if canonical == '0':
                     _menu_console().print(
@@ -462,13 +465,15 @@ class CTFInteractiveConsole:
                     self._menu_scan_workspaces()
                 elif canonical == '9':
                     self._menu_configure_auth()
+                elif canonical == 'G':
+                    self._menu_git()
                 elif canonical == 'S':
                     self._menu_solver()
                 else:
-                    Logger.warning('Invalid selection. Please choose an option from 0 to 9 (or S).')
+                    Logger.warning('Invalid selection. Please choose an option from 0 to 9 (or G, S).')
                 # Ghi nhớ hành động gần nhất để vòng sau đánh dấu ❯ (§S1.1);
                 # input lạ ('x', '99') không được tính là action.
-                if canonical in ('1', '2', '3', '4', '5', '6', '7', '8', '9', 'S'):
+                if canonical in ('1', '2', '3', '4', '5', '6', '7', '8', '9', 'G', 'S'):
                     self._last_action = canonical
             except (EOFError, KeyboardInterrupt):
                 _menu_console().print(
@@ -1270,6 +1275,134 @@ class CTFInteractiveConsole:
             self.token = None
             self._save_current_workspace()
             Logger.info('Credentials cleared.')
+            _pause()
+
+    def _menu_git(self):
+        import subprocess
+        from .services.git_workflow import GitWorkflowService, GitWorkflowError
+        _section('Git Sync & Remote Backup (Kho vũ khí GitHub)')
+        con = _menu_console()
+
+        ws = Path(self.workspace_path)
+        repo_root = GitWorkflowService.find_repo_root(ws)
+        if not repo_root:
+            Logger.warning(f"Thư mục '{ws.name}' chưa nằm trong Git repository nào.")
+            con.print("  [dim]Bạn có thể khởi tạo Git repo cho thư mục này để lưu trữ bài giải.[/dim]\n")
+            _option('1', 'Khởi tạo Git repo mới tại đây')
+            _option('0', 'Quay lại')
+            ch = _prompt('Lựa chọn (0-1) [default 1]: ').strip() or '1'
+            if ch == '1':
+                remote_url = _prompt('Remote GitHub URL (ví dụ: https://github.com/user/repo.git) [Enter bỏ qua]: ').strip() or None
+                try:
+                    res = GitWorkflowService.initialize_repository(
+                        ws,
+                        remote_url=remote_url,
+                        base_branch='main',
+                        push=bool(remote_url),
+                        import_existing=True,
+                    )
+                    Logger.success(f"Đã khởi tạo Git repo tại: {res['repo_root']}")
+                except Exception as e:
+                    Logger.error(f"Khởi tạo Git thất bại: {e}")
+            _pause()
+            return
+
+        # Status summary
+        try:
+            st = GitWorkflowService.status(ws)
+            branch = st.get("current_branch") or st.get("branch") or "-"
+            dirty = st.get("dirty_files", 0)
+            remote_ok = st.get("remote_configured", False)
+            dirty_style = "bold yellow" if dirty > 0 else "bold green"
+            remote_style = "bold green" if remote_ok else "dim"
+
+            con.print(f"  📁 Workspace    : [bold cyan]{ws.name}[/bold cyan]")
+            con.print(f"  🌿 Active Branch: [bold]{branch}[/bold]")
+            con.print(f"  📝 Modified     : [{dirty_style}]{dirty} files changed[/{dirty_style}]")
+            con.print(f"  ☁️  Remote Repo  : [{remote_style}]{'Connected' if remote_ok else 'No remote configured'}[/{remote_style}]\n")
+        except Exception as e:
+            con.print(f"  [dim]Git status check: {e}[/dim]\n")
+
+        _option('1', 'Quick Push / Checkpoint (Lưu tiến độ giải này lên Git)')
+        _option('2', 'Safe Sync (Kéo cập nhật mới về + đẩy bài lên)')
+        _option('3', 'Detailed Status & Large File Guard (Quét file nặng > 50MB)')
+        _option('4', 'Configure Remote GitHub URL')
+        _option('0', 'Back to main menu')
+
+        act = _prompt('Choice (0-4) [default 1]: ').strip() or '1'
+        if act in ('0', 'q', 'back'):
+            return
+        elif act == '1':
+            msg = _prompt(f"Commit message [default: ctf({ws.name}): checkpoint]: ").strip() or None
+            try:
+                res = GitWorkflowService.checkpoint_and_push(ws, message=msg, push=True, scoped_only=True)
+                if res.get("committed"):
+                    Logger.success(f"Đã commit checkpoint cho {ws.name}.")
+                else:
+                    Logger.info("Không có thay đổi mới trong workspace để commit.")
+                if res.get("pushed"):
+                    Logger.success(f"Đã push thành công lên {res.get('remote') or 'origin'}.")
+                else:
+                    Logger.warning("Chưa cấu hình remote hoặc không có remote để push (đã lưu local).")
+            except Exception as e:
+                Logger.error(f"Lỗi khi push Git: {e}")
+            _pause()
+        elif act == '2':
+            try:
+                res = GitWorkflowService.safe_sync(ws)
+                if res.get("rebased"):
+                    Logger.info("Đã rebase commit mới từ remote về.")
+                Logger.success(f"Đã sync thành công nhánh {res.get('branch')} với {res.get('remote')}.")
+            except Exception as e:
+                Logger.error(f"Lỗi khi sync Git: {e}")
+            _pause()
+        elif act == '3':
+            # Scan large files
+            large = GitWorkflowService.scan_large_files(ws, threshold_mb=50)
+            if large:
+                con.print(f"\n  [bold red]⚠️ CẢNH BÁO: Phát hiện {len(large)} file > 50MB (nguy cơ bị GitHub reject):[/bold red]")
+                for fpath, size in large:
+                    mb = size / (1024 * 1024)
+                    rel_p = fpath.relative_to(ws) if fpath.is_relative_to(ws) else fpath
+                    con.print(f"    - [yellow]{rel_p}[/yellow] ({mb:.1f} MB)")
+                con.print("  [dim]Gợi ý: Thêm các file này vào .gitignore trước khi push.[/dim]")
+            else:
+                con.print("\n  [bold green]✔ Anti-bloat check: Không có file nào > 50MB trong workspace.[/bold green]")
+
+            # Detailed git status
+            try:
+                proc = subprocess.run(["git", "status", "-s", "--", str(ws)], cwd=str(repo_root), capture_output=True, text=True)
+                lines = proc.stdout.strip().splitlines()
+                if lines:
+                    con.print(f"\n  [bold]Danh sách thay đổi trong {ws.name}:[/bold]")
+                    for line in lines[:15]:
+                        con.print(f"    {line}")
+                    if len(lines) > 15:
+                        con.print(f"    ... và {len(lines) - 15} files khác")
+                else:
+                    con.print("\n  [dim]Workspace hoàn toàn sạch sẽ (no unstaged changes).[/dim]")
+            except Exception:
+                pass
+            _pause()
+        elif act == '4':
+            cur_remote = "None"
+            try:
+                r_proc = subprocess.run(["git", "remote", "get-url", "origin"], cwd=str(repo_root), capture_output=True, text=True)
+                if r_proc.returncode == 0 and r_proc.stdout.strip():
+                    cur_remote = r_proc.stdout.strip()
+            except Exception:
+                pass
+            con.print(f"  Remote hiện tại: [cyan]{cur_remote}[/cyan]")
+            new_url = _prompt("Nhập GitHub remote URL mới (Enter bỏ qua): ").strip()
+            if new_url:
+                try:
+                    if cur_remote != "None":
+                        subprocess.run(["git", "remote", "set-url", "origin", new_url], cwd=str(repo_root), check=True)
+                    else:
+                        subprocess.run(["git", "remote", "add", "origin", new_url], cwd=str(repo_root), check=True)
+                    Logger.success(f"Đã cập nhật remote 'origin' -> {new_url}")
+                except Exception as e:
+                    Logger.error(f"Lỗi cập nhật remote: {e}")
             _pause()
 
 
