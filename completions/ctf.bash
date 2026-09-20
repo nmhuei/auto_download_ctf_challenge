@@ -9,7 +9,7 @@ _ctf() {
 
     local GLOBAL_OPTS="-v --version -i --interactive -w --workspace"
 
-    local SUBCOMMANDS="pull download clone status tree ls dashboard solve solver bqa eating note ghi-chu tag tags workspaces scan instance container spawn submit flag hoard flag-stash rank scoreboard leaderboard watch register reg doctor health checkup menu ui console storage du archive sync resync history log open sniper serve web git config bridge ext ask expert astra"
+    local SUBCOMMANDS="pull download clone status tree ls dashboard solve solver bqa eating note ghi-chu tag tags workspaces scan instance container spawn submit flag hoard flag-stash rank scoreboard leaderboard watch register reg doctor health checkup menu ui console storage du archive sync resync history log open sniper serve web git config bridge ext ask expert astra platform platforms schema"
 
     # Tìm subcommand cuối (bỏ qua option và giá trị của nó)
     local cmd=""
@@ -39,6 +39,7 @@ _ctf() {
             sniper)                       cmd="sniper" ;;
             serve|web)                    cmd="serve" ;;
             ask|expert|astra)             cmd="ask" ;;
+            platform|platforms|schema)    cmd="platform" ;;
         esac
     done
 
@@ -68,6 +69,7 @@ _ctf() {
         sniper)      opts="-w --workspace --start-at --retry-wrong --poll" ;;
         serve)       opts="-w --workspace --port" ;;
         ask)         opts="-w --workspace -o --output --model --effort --preflight-only --verify-only --dry-run" ;;
+        platform)    opts="list show probe add remove --url --save --scope --key --label -w --workspace" ;;
         *)           opts="$GLOBAL_OPTS $SUBCOMMANDS" ;;
     esac
 

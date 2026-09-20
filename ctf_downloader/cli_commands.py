@@ -14,6 +14,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Optional
 
+from rich.markup import escape
 from rich.console import Console
 from rich.text import Text
 
@@ -30,12 +31,15 @@ from .services.solver_service import SolverAlreadyRunning, SolverJob, SolverSele
 from .services.submit_service import SubmitService
 from .storage.workspace_repo import WorkspaceRepo, is_superseded
 from .ui.theme import (
+    ACCENT,
+    ACCENT as _ACCENT_COLOR,
     ERROR as _ERROR_COLOR,
     FG_BASE,
     FG_FAINT as _FAINT_COLOR,
     FG_MUTED as _MUTED_COLOR,
     INFO as _INFO_COLOR,
     SOLVED as _SOLVED_COLOR,
+    SUCCESS as _SUCCESS_COLOR,
     WARN as _WARN_COLOR,
     CATEGORY_WEB,
     CATEGORY_CRYPTO,
@@ -582,6 +586,7 @@ def _render_solver_status(service: SolverService, *, target: str | None, watch: 
     """Render one worker detail or a live overview without touching a worker."""
     from rich.live import Live
     from rich.panel import Panel
+    from rich.table import Table
 
     try:
         service.recover_stale_jobs()
@@ -591,7 +596,7 @@ def _render_solver_status(service: SolverService, *, target: str | None, watch: 
             d_targets = daemon_info.get("target_ids", "-")
             d_active = ", ".join(daemon_info.get("active_ids", [])) or "idle"
             d_banner = Text()
-            d_banner.append("🟢 SuperBQA daemon running in background ", style=f"bold {_SOLVED_COLOR}")
+            d_banner.append("● SuperBQA daemon running in background ", style=f"bold {_SOLVED_COLOR}")
             d_banner.append(f"(PID {d_pid})", style=f"bold {FG_BASE}")
             d_banner.append(f" · Targets: {d_targets} · Active: {d_active}\n", style=_MUTED_COLOR)
             console.print(d_banner)
@@ -600,7 +605,7 @@ def _render_solver_status(service: SolverService, *, target: str | None, watch: 
         if cat_sessions:
             sess_strs = [f"{cat} ({info.get('conversation_id', '')[:8]}...)" for cat, info in cat_sessions.items()]
             sess_text = Text()
-            sess_text.append("📁 Persistent Sessions: ", style=_MUTED_COLOR)
+            sess_text.append("◈ Persistent Sessions: ", style=f"bold {ACCENT}")
             sess_text.append(", ".join(sess_strs) + "\n", style=_FAINT_COLOR)
             console.print(sess_text)
 
@@ -615,24 +620,28 @@ def _render_solver_status(service: SolverService, *, target: str | None, watch: 
                 state = service.read_job(job)
                 conv_id = state.get("conversation_id")
                 reused = state.get("reused_session")
-                session_line = f"Session: {conv_id or '-'}" + (" (reused)" if reused else "")
-                lines = [
-                    f"State: {state.get('state', 'idle')}",
-                    f"Outcome: {state.get('outcome', '-')}",
-                    f"Phase: {state.get('phase', '-')}",
-                    session_line,
-                    f"Source: {'yes' if job.has_source else 'no'} · Instance: {'yes' if job.has_instance else 'no'}",
-                    f"PID: {state.get('pid', '-')}",
-                    f"Heartbeat: {state.get('heartbeat_at', '-')}",
-                    f"Last output: {state.get('last_output', '-')}",
-                    f"Log: {job.log_path}",
-                ]
+                session_val = f"{conv_id or '-'}" + (" (reused)" if reused else "")
+
+                tbl = Table(box=None, show_header=False, pad_edge=False, expand=True)
+                tbl.add_column("Field", style=f"bold {_MUTED_COLOR}", width=18, no_wrap=True)
+                tbl.add_column("Value", style=f"{FG_BASE}")
+
+                tbl.add_row("State", str(state.get("state", "idle")))
+                tbl.add_row("Outcome", str(state.get("outcome", "-")))
                 chal_flag = _get_challenge_flag(service, job, state)
                 if chal_flag:
-                    lines.insert(2, f"Candidate Flag: {chal_flag}")
+                    tbl.add_row("Candidate Flag", f"[{_SOLVED_COLOR}]{chal_flag}[/{_SOLVED_COLOR}]")
                 if state.get("error_code"):
-                    lines.insert(2, f"Error: {state['error_code']}")
-                return Panel("\n".join(lines), title=f"Solver {job.display_id}: {job.name}")
+                    tbl.add_row("Error", f"[{_ERROR_COLOR}]{state['error_code']}[/{_ERROR_COLOR}]")
+                tbl.add_row("Phase", str(state.get("phase", "-")))
+                tbl.add_row("Session", session_val)
+                tbl.add_row("Source / Instance", f"{'yes' if job.has_source else 'no'} · {'yes' if job.has_instance else 'no'}")
+                tbl.add_row("PID", str(state.get("pid", "-")))
+                tbl.add_row("Heartbeat", str(state.get("heartbeat_at", "-")))
+                tbl.add_row("Last Output", str(state.get("last_output", "-")))
+                tbl.add_row("Log Path", str(job.log_path))
+
+                return Panel(tbl, title=f"Solver {job.display_id}: {job.name}", border_style="accent.deep")
 
             if not watch:
                 console.print(_make_target_panel())
@@ -675,7 +684,7 @@ def render_active_agy_workers(service: SolverService, console_inst=None) -> list
 
     if active_list:
         con.print()
-        con.print(f"  [bold green]🟢 {len(active_list)} active BQA worker(s) running:[/bold green]\n")
+        con.print(f"  [{_SUCCESS_COLOR}]🟢 {len(active_list)} active BQA worker(s) running:[/{_SUCCESS_COLOR}]\n")
 
         active_table = Table(
             box=box.SIMPLE_HEAVY,
@@ -778,7 +787,7 @@ def handle_solve(args):
     # 0. Check --reset-sessions
     if getattr(args, 'reset_sessions', False):
         service.clear_category_sessions()
-        console.print("[bold green]✔ Cleared persistent category sessions for this workspace.[/bold green]")
+        console.print(f"[{_SUCCESS_COLOR}]✔ Cleared persistent category sessions for this workspace.[/{_SUCCESS_COLOR}]")
         return
 
     # 0a. Check --active
@@ -804,7 +813,7 @@ def handle_solve(args):
             return
 
         for cat in categories:
-            with console.status(f"[bold cyan]Distilling SOP Playbook for {cat}...[/bold cyan]"):
+            with console.status(f"[{_ACCENT_COLOR}]Distilling SOP Playbook for {cat}...[/{_ACCENT_COLOR}]"):
                 res = service.distill_playbook(cat)
             if res.get("success"):
                 Logger.success(f"Distilled operational playbook for {cat}:")
@@ -886,7 +895,7 @@ def handle_solve(args):
         if not res.get("success"):
             Logger.error(res.get("message", "Background startup failed."))
             sys.exit(1)
-        console.print(f"\n[bold green]✔ {res.get('message')}[/bold green]")
+        console.print(f"\n[{_SUCCESS_COLOR}]✔ {res.get('message')}[/{_SUCCESS_COLOR}]")
         console.print("[dim]💡 Use 'ctf solve --status' or 'ctf solve --attach' to monitor progress.[/dim]")
         console.print("[dim]💡 Use 'ctf solve --stop' to terminate workers if needed.[/dim]")
         return
@@ -2662,3 +2671,198 @@ def handle_ask(args):
         sys.exit(0)
     else:
         sys.exit(res.returncode)
+
+
+def handle_platform(args):
+    """Quản lý các platform schema và chạy auto-recon khám phá nền tảng mới."""
+    action = getattr(args, "platform_action", None) or "list"
+    ws = getattr(args, "workspace", None)
+
+    from rich.console import Console
+    from rich.table import Table
+    from rich.syntax import Syntax
+    from rich.panel import Panel
+    from .ui.theme import load_theme, FG_BASE, FG_MUTED, FG_FAINT, ACCENT, INFO, SOLVED, WARN
+    from .platforms.schema_store import PlatformSchemaStore
+    from .platforms.schema import PlatformSchema
+    from .platforms.recon import PlatformReconEngine
+    from .platforms.registry import PLATFORMS
+
+    con = Console(theme=load_theme(None))
+
+    if action == "list":
+        PlatformSchemaStore.sync_to_registry(workspace_path=ws)
+        schemas = PlatformSchemaStore.load_all(workspace_path=ws)
+
+        table = Table(
+            title="REGISTERED CTF PLATFORMS & SCHEMAS",
+            title_style=f"bold {ACCENT}",
+            show_header=True,
+            header_style=f"bold {FG_MUTED}",
+            expand=True,
+        )
+        table.add_column("KEY", style=f"bold {ACCENT}", no_wrap=True)
+        table.add_column("LABEL", style=f"{FG_BASE}")
+        table.add_column("SOURCE", style=f"{INFO}")
+        table.add_column("THROTTLE", justify="right", style=f"{FG_MUTED}")
+        table.add_column("ENDPOINTS / CAPABILITIES", style=f"{FG_MUTED}")
+
+        for key, spec in sorted(PLATFORMS.items()):
+            source = "built-in adapter"
+            schema = schemas.get(key)
+            if schema:
+                source = f"{schema.source} schema"
+            elif getattr(spec, "source", None) == "custom_schema":
+                source = "custom schema"
+
+            endpoints_summary = []
+            if schema:
+                if schema.endpoints.challenges:
+                    endpoints_summary.append("challenges")
+                if schema.endpoints.auth_check:
+                    endpoints_summary.append("auth")
+                if schema.endpoints.submit:
+                    endpoints_summary.append("submit")
+                if schema.endpoints.scoreboard:
+                    endpoints_summary.append("scoreboard")
+            else:
+                if spec.supports_container:
+                    endpoints_summary.append("container")
+                if spec.supports_scoreboard:
+                    endpoints_summary.append("scoreboard")
+                if spec.probes:
+                    endpoints_summary.append(f"{len(spec.probes)} probes")
+
+            ep_str = ", ".join(endpoints_summary) if endpoints_summary else "standard"
+            table.add_row(
+                key,
+                spec.label,
+                source,
+                f"{spec.throttle:.1f}s",
+                ep_str,
+            )
+
+        con.print()
+        con.print(table)
+        con.print()
+
+    elif action == "show":
+        key = (getattr(args, "target", "") or "").strip().lower()
+        if not key:
+            Logger.error("Thiếu platform key. Ví dụ: ctf platform show metactf")
+            sys.exit(1)
+
+        schema = PlatformSchemaStore.get(key, workspace_path=ws)
+        if not schema:
+            if key in PLATFORMS:
+                spec = PLATFORMS[key]
+                con.print(Panel(
+                    f"[bold {FG_BASE}]{spec.label}[/bold {FG_BASE}] ({key})\n"
+                    f"Loại: [bold {INFO}]Built-in Python Adapter[/bold {INFO}]\n"
+                    f"Class: [bold {INFO}]{spec.cls.__module__}.{spec.cls.__name__}[/bold {INFO}]\n"
+                    f"Throttle: {spec.throttle}s\n"
+                    f"Markers: {', '.join(spec.html_markers) or 'none'}\n"
+                    f"Cookie hints: {', '.join(spec.cookie_hints) or 'none'}\n"
+                    f"Container: {'Có' if spec.supports_container else 'Không'}\n"
+                    f"Scoreboard: {'Có' if spec.supports_scoreboard else 'Không'}",
+                    title=f"Platform: {key}",
+                    border_style=ACCENT,
+                ))
+                return
+            Logger.error(f"Không tìm thấy platform schema cho key '{key}'")
+            sys.exit(1)
+
+        con.print(Panel(
+            Syntax(schema.to_json(indent=2), "json", theme="monokai", line_numbers=True),
+            title=f"Platform Schema: [bold {ACCENT}]{schema.label}[/bold {ACCENT}] ({schema.key})",
+            subtitle=f"Source: {schema.source}",
+            border_style=ACCENT,
+        ))
+
+    elif action == "probe":
+        url = (getattr(args, "url", "") or "").strip()
+        if not url:
+            Logger.error("Thiếu target URL để probe. Ví dụ: ctf platform probe https://ctf.example.com")
+            sys.exit(1)
+
+        Logger.info(f"Đang tiến hành Auto-Recon trên: [info]{url}[/info]", markup=True)
+        res = PlatformReconEngine.probe_url(
+            url,
+            custom_key=getattr(args, "key", None),
+            custom_label=getattr(args, "label", None),
+        )
+
+        res_table = Table(title="AUTO-RECON FINDINGS", title_style=f"bold {ACCENT}", expand=True)
+        res_table.add_column("PROPERTY", style=f"bold {FG_MUTED}")
+        res_table.add_column("VALUE", style=f"{FG_BASE}")
+
+        res_table.add_row("Target URL", escape(res.url))
+        res_table.add_row("Detected Title", escape(res.detected_title or "(none)"))
+        conf_style = _SOLVED_COLOR if res.confidence == "high" else (_WARN_COLOR if res.confidence == "medium" else _MUTED_COLOR)
+        res_table.add_row("Confidence", f"[{conf_style}]{escape(res.confidence.upper())}[/{conf_style}]")
+        res_table.add_row("Endpoints Found", escape(", ".join(f"{k} -> {v}" for k, v in res.endpoints_found.items()) or "(none)"))
+        res_table.add_row("HTML Markers", escape(", ".join(res.html_markers) or "(none)"))
+        res_table.add_row("Cookie Hints", escape(", ".join(res.cookie_hints) or "(none)"))
+
+        con.print()
+        con.print(res_table)
+        con.print()
+
+        if res.candidate_schema:
+            con.print(Panel(
+                Syntax(res.candidate_schema.to_json(indent=2), "json", theme="monokai", line_numbers=True),
+                title=f"Candidate Platform Schema ([bold {ACCENT}]{res.candidate_schema.key}[/bold {ACCENT}])",
+                border_style=ACCENT,
+            ))
+
+            if getattr(args, "save", False):
+                scope = getattr(args, "scope", "global")
+                saved_p = PlatformReconEngine.save_recon_schema(
+                    res.candidate_schema,
+                    scope=scope,
+                    workspace_path=ws,
+                )
+                Logger.success(f"Đã lưu candidate schema vào {saved_p} ({scope} scope).")
+            else:
+                Logger.info("Gợi ý: Thêm cờ [accent]--save[/accent] để tự động lưu schema vào kho cấu trúc platform.", markup=True)
+        else:
+            Logger.warning("Không tìm thấy đủ API endpoints để tự động suy luận platform schema.")
+
+    elif action == "add":
+        target = (getattr(args, "target", "") or "").strip()
+        if not target:
+            Logger.error("Thiếu đường dẫn file JSON hoặc nội dung schema JSON.")
+            sys.exit(1)
+
+        raw_json = ""
+        p = Path(target)
+        if p.is_file():
+            raw_json = p.read_text(encoding="utf-8")
+        else:
+            raw_json = target
+
+        try:
+            schema = PlatformSchema.from_json(raw_json)
+        except Exception as e:
+            Logger.error(f"JSON không hợp lệ cho platform schema: {e}")
+            sys.exit(1)
+
+        scope = getattr(args, "scope", "global")
+        saved_p = PlatformSchemaStore.save(schema, scope=scope, workspace_path=ws)
+        PlatformSchemaStore.sync_to_registry(workspace_path=ws)
+        Logger.success(f"Đã thêm và kích hoạt platform schema '[bold {ACCENT}]{schema.key}[/bold {ACCENT}]' tại {saved_p}")
+
+    elif action in ("remove", "rm", "delete"):
+        key = (getattr(args, "target", "") or "").strip().lower()
+        if not key:
+            Logger.error("Thiếu platform key cần xoá.")
+            sys.exit(1)
+
+        scope = getattr(args, "scope", "global")
+        ok = PlatformSchemaStore.delete(key, scope=scope, workspace_path=ws)
+        if ok:
+            PlatformSchemaStore.sync_to_registry(workspace_path=ws)
+            Logger.success(f"Đã xoá platform schema '{key}' khỏi {scope} scope.")
+        else:
+            Logger.warning(f"Không tìm thấy file schema '{key}.json' trong {scope} scope.")
+

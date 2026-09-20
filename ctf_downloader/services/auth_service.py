@@ -211,3 +211,35 @@ class AuthService:
         except Exception:
             return False
 
+    @classmethod
+    def delete_auth(
+        cls,
+        workspace: Optional[str] = None,
+        url: Optional[str] = None,
+    ) -> bool:
+        """Xoá auth entry khỏi global config."""
+        keys = []
+        if workspace:
+            keys.append(os.path.abspath(str(workspace)))
+            keys.append(str(workspace))
+        if url:
+            norm_url = str(url).rstrip('/')
+            if norm_url:
+                keys.append(norm_url)
+
+        if not keys:
+            return False
+
+        def _mut(fresh: dict) -> dict:
+            auth_map = fresh.get("auth", {})
+            for k in keys:
+                auth_map.pop(k, None)
+            return fresh
+
+        try:
+            from ..storage.global_config import update_global_config
+            res = update_global_config(_mut)
+            return res is not None
+        except Exception:
+            return False
+

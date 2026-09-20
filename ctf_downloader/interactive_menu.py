@@ -8,6 +8,8 @@ from typing import Optional
 from rich.prompt import Confirm
 from rich.live import Live
 from rich.text import Text
+from rich.table import Table
+from rich.panel import Panel
 
 from .dashboard import CTFDashboard
 from .instance_manager import InstanceManager
@@ -32,7 +34,7 @@ from .storage.global_config import (  # noqa: F401 — re-export để giữ tư
 from .ui.banner import app_header
 from .ui.selection import MENU_CURSOR, fit_cells, selected_row
 from .ui.splash import splash
-from .ui.theme import ACCENT, FG_BASE, FG_FAINT, FG_MUTED, INFO, WARN, SOLVED as _SOLVED_COLOR, load_theme
+from .ui.theme import ACCENT, FG_BASE, FG_FAINT, FG_MUTED, INFO, WARN, ERROR, SUCCESS, SOLVED as _SOLVED_COLOR, load_theme
 from .ui.widgets import SOLVE_RAMP, meter
 
 from .ui.menu_hubs import (
@@ -58,8 +60,6 @@ _MAIN_ACTIONS_RAW = (
     ('3', '🚩', 'Flag Submission Lab', '(Submit single / Auto-submit hoarded flags)'),
     ('4', '⚡', 'SuperBQA AI Solver', '(Autonomous AGYworker agents / Live Radar)'),
     ('5', '🛠️', 'System & Arsenal', '(Git safe sync / Push backup / Switch theme)'),
-    ('G', '⚡', 'Quick Git Sync', '(Direct shortcut to GitHub repo)'),
-    ('T', '🎨', 'Switch Visual Theme', '(Cyberpunk / Matrix / Amber / Nord / ExOdia)'),
     ('0', '🚪', 'Exit', ''),
 )
 
@@ -358,8 +358,8 @@ class CTFInteractiveConsole:
 
     def _load_saved_auth(self):
         auth_map = self.config.get('auth', {})
-        if self.workspace_path in auth_map:
-            saved = auth_map[self.workspace_path]
+        saved = AuthService.lookup_auth_entry(self.workspace_path, auth_map)
+        if saved:
             if not self.cookie and saved.get('cookie'):
                 self.cookie = saved.get('cookie')
             if not self.token and saved.get('token'):
@@ -419,7 +419,7 @@ class CTFInteractiveConsole:
 
         if not (self.cookie or self.token):
             ctx.append("\n  ")
-            ctx.append("! auth not configured · use [9]", style=WARN)
+            ctx.append("! auth not configured · use [1] -> [3] to configure credentials", style=WARN)
         con.print(ctx)
 
     def run(self):
@@ -441,9 +441,9 @@ class CTFInteractiveConsole:
                     else:
                         _option(key, label)
 
-                prompt_msg = 'Select action (1-5, G, T, 0): '
+                prompt_msg = 'Select action (1-5, 0 [G=Git, T=Theme]): '
                 if self._last_action:
-                    prompt_msg = f'Select action (1-5, G, T, 0) [default {self._last_action}]: '
+                    prompt_msg = f'Select action (1-5, 0 [G=Git, T=Theme]) [default {self._last_action}]: '
                 raw_choice = _prompt(prompt_msg).strip()
                 choice = raw_choice.strip(" []().")
                 if not choice and self._last_action:
@@ -647,13 +647,31 @@ class CTFInteractiveConsole:
         ws = self.workspace_path
         cookie, token = self.cookie, self.token
 
+        plat_url = None
+        try:
+            from .storage.workspace_repo import WorkspaceRepo
+            plat_url = WorkspaceRepo(ws).resolve_platform_url()
+        except Exception:
+            pass
+
         def _mut(fresh):
             fresh['default_workspace'] = ws
+            auth_map = fresh.setdefault('auth', {})
+            abs_ws = os.path.abspath(ws)
+            keys = [ws, abs_ws]
+            if plat_url:
+                keys.append(plat_url)
+                keys.append(plat_url.rstrip('/'))
             if cookie or token:
-                fresh.setdefault('auth', {})[ws] = {
+                entry = {
                     'cookie': cookie,
                     'token': token
                 }
+                for k in keys:
+                    auth_map[k] = entry
+            else:
+                for k in keys:
+                    auth_map.pop(k, None)
             return fresh
 
         try:
@@ -814,7 +832,7 @@ class CTFInteractiveConsole:
             con.print('  Actions for this challenge:', style=FG_MUTED)
             _option('1', 'Submit flag for this challenge')
             _option('2', 'Manage Container / Instance (if available)')
-            _option('3', 'BQA EATING for this challenge')
+            _option('3', 'Auto-Solve challenge with SuperBQA')
             _option('0', 'Back')
             act = _prompt('Choice (0-3) [Enter to return]: ').strip()
             if act == '1':
@@ -1160,15 +1178,7 @@ class CTFInteractiveConsole:
 
             con.print()
             con.print(Text(f"  ✔ {res.get('message')}", style=f"bold {_SOLVED_COLOR}"))
-            con.print(Text("  Press Ctrl+C to detach.\n", style=FG_FAINT))
-
-            try:
-                with Live(_make_solver_radar_view(service), console=con, refresh_per_second=4) as live:
-                    while True:
-                        time.sleep(0.25)
-                        live.update(_make_solver_radar_view(service))
-            except KeyboardInterrupt:
-                con.print(Text("\n  Detached.\n", style=FG_MUTED))
+            _run_live_radar(service, con)
         except Exception as e:
             Logger.error(f'SuperBQA error: {e}')
         _pause()
@@ -1178,7 +1188,7 @@ class CTFInteractiveConsole:
         from .cli_commands import _solver_table, _make_solver_overview_panel
 
         while True:
-            _section('SuperBQA')
+            _section('SuperBQA AI Solver')
             try:
                 service = SolverService(self.workspace_path)
                 service.recover_stale_jobs()
@@ -1189,8 +1199,23 @@ class CTFInteractiveConsole:
                 return
 
             if not jobs:
-                Logger.warning('No challenges with valid source code or metadata found in this workspace.')
-                _pause()
+                con = _menu_console()
+                con.print()
+                panel_content = Text()
+                panel_content.append("Chưa có bài thi nào có mã nguồn hoặc metadata trong workspace này.\n\n", style=FG_BASE)
+                panel_content.append("💡 Hướng dẫn tiếp tục:\n", style=f"bold {ACCENT}")
+                panel_content.append("  • Vào Hub [1] (Workspace & Targets) -> Chọn [2] để Clone / Download bài thi từ platform.\n", style=FG_MUTED)
+                panel_content.append("  • Hoặc chọn lại workspace cuộc thi đã có bài thi (Hub [1] -> [1]).\n", style=FG_MUTED)
+                con.print(Panel(panel_content, title="[bold]SuperBQA AI Solver[/bold]", border_style=ACCENT, padding=(1, 2)))
+                con.print()
+                _option('1', 'Tải bài thi ngay (Chuyển sang Hub 1 -> Download)')
+                _option('0', 'Quay lại Menu chính')
+                try:
+                    c = _prompt('Lựa chọn (0-1) [default 0]: ').strip() or '0'
+                except (EOFError, KeyboardInterrupt):
+                    return
+                if c == '1':
+                    self._menu_download_new()
                 return
 
             con = _menu_console()
@@ -1203,24 +1228,24 @@ class CTFInteractiveConsole:
                 d_targets = daemon_info.get("target_ids", "-")
                 d_active = ", ".join(daemon_info.get("active_ids", [])) or "preparing"
                 con.print()
-                st_text = Text("  🟢 SUPERBQA EATING ACTIVE ", style="bold green")
+                st_text = Text("  🟢 ACTIVE SOLVER RUNNING ", style=f"bold {SUCCESS}")
                 st_text.append(f"[PID: {d_pid}]  ·  Targets: {d_targets}  ·  Active: {d_active}", style=FG_MUTED)
                 con.print(st_text)
 
             cat_sessions = service.get_category_sessions()
             if cat_sessions:
                 sess_strs = [f"{cat} ({info.get('conversation_id', '')[:8]}...)" for cat, info in cat_sessions.items()]
-                con.print(f"  [dim]📁 Persistent Sessions: {', '.join(sess_strs)}[/dim]")
+                con.print(f"  [dim]📁 Category Sessions: {', '.join(sess_strs)}[/dim]")
 
             con.print()
             _option('1', 'BQA EATING · Solve specific challenges by ID (e.g. 1 or 1,3,5)')
             _option('2', 'SUPERBQA EATING · Auto-queue all eligible challenges')
-            _option('3', 'Live Radar · Monitor solving progress in real time')
-            _option('4', 'Worker log tail · Inspect subagent logs & live thoughts')
-            _option('5', 'Stop / Cancel · Terminate active solver workers')
-            _option('6', 'Distill playbook · Synthesize category methodologies')
-            _option('7', 'Help / Escalate · Route hard puzzle to Codex Astra')
-            _option('0', 'Back to main menu')
+            _option('3', 'Live Radar · Giám sát tiến độ giải trực tiếp theo thời gian thực')
+            _option('4', 'Worker Logs · Xem log chi tiết và suy luận của agent')
+            _option('5', 'Stop Workers · Dừng / Huỷ các solver workers đang chạy')
+            _option('6', 'Distill Playbook · Tổng hợp sổ tay kỹ thuật theo Category')
+            _option('7', 'Help / Escalate · Route hard puzzle to Codex Astra (ctf-ask)')
+            _option('0', 'Quay lại Menu chính')
 
             try:
                 act = _prompt('Choice (0-7) [default 1]: ').strip() or '1'
@@ -1230,22 +1255,22 @@ class CTFInteractiveConsole:
 
             if act_clean in ('0', 'q', 'back', 'exit'):
                 return
-            elif act_clean in ('1', 'bqa', 'eat', 'eating'):
+            elif act_clean in ('1', 'solve', 'target', 'bqa', 'eat', 'eating'):
                 try:
-                    ids = _prompt('Enter display ID for BQA EATING (e.g. 1 or 1,3,5): ').strip()
+                    ids = _prompt('Nhập Display ID bài cần giải (e.g. 1 hoặc 1,3,5): ').strip()
                 except (EOFError, KeyboardInterrupt):
                     return
                 if not ids:
                     continue
                 res = service.spawn_background(ids, workers=3)
                 if not res.get("success"):
-                    Logger.error(res.get("message", "BQA EATING startup failed."))
+                    Logger.error(res.get("message", "Solver startup failed."))
                     _pause()
                     continue
                 con.print()
-                con.print(f"  [bold green]✔ {res.get('message')}[/bold green]")
+                con.print(f"  [{SUCCESS}]✔ {res.get('message')}[/{SUCCESS}]")
                 continue
-            elif act_clean in ('2', 'superbqa', 'super', 'all', 'feast'):
+            elif act_clean in ('2', 'auto', 'all', 'superbqa', 'super', 'feast'):
                 target_jobs = [
                     job for job in jobs
                     if service.queue_eligibility(job).ready
@@ -1256,9 +1281,9 @@ class CTFInteractiveConsole:
                     continue
                 source_ids = ",".join(str(j.display_id) for j in target_jobs)
                 con.print()
-                con.print(f"  [bold yellow]Preparing SUPERBQA EATING on {len(target_jobs)} challenges ({source_ids}).[/bold yellow]")
+                con.print(f"  [{WARN}]Chuẩn bị tự động giải {len(target_jobs)} bài thi ({source_ids})...[/{WARN}]")
                 try:
-                    confirm = Confirm.ask('  Confirm execution?', default=True)
+                    confirm = Confirm.ask('  Xác nhận khởi chạy?', default=True)
                 except (EOFError, KeyboardInterrupt):
                     return
                 if not confirm:
@@ -1270,24 +1295,17 @@ class CTFInteractiveConsole:
                     per_category=True,
                 )
                 if not res.get("success"):
-                    Logger.error(res.get("message", "SUPERBQA EATING startup failed."))
+                    Logger.error(res.get("message", "Auto-solve startup failed."))
                     _pause()
                     continue
                 con.print()
                 con.print(Text(f"  ✔ {res.get('message')}", style=f"bold {_SOLVED_COLOR}"))
                 try:
-                    watch_now = _prompt('  Attach Live Radar now? [Y/n]: ').strip().lower()
+                    watch_now = _prompt('  Bật Live Radar theo dõi ngay? [Y/n]: ').strip().lower()
                 except (EOFError, KeyboardInterrupt):
                     return
                 if watch_now != 'n':
-                    con.print(Text("\n  Press Ctrl+C to detach.\n", style=FG_FAINT))
-                    try:
-                        with Live(_make_solver_radar_view(service), console=con, refresh_per_second=4) as live:
-                            while True:
-                                time.sleep(0.25)
-                                live.update(_make_solver_radar_view(service))
-                    except KeyboardInterrupt:
-                        con.print(Text("\n  Detached.\n", style=FG_MUTED))
+                    _run_live_radar(service, con)
                 _pause()
                 continue
             elif act_clean in ('3', 'radar', 'live', 'watch', 'active', 'agy', 'workers', 'tasks', 'running'):
@@ -1342,7 +1360,7 @@ class CTFInteractiveConsole:
                     Logger.warning('No categories available in this workspace.')
                     _pause()
                     continue
-                con.print("\n  [bold cyan]Available categories to distill:[/bold cyan]")
+                con.print(f"\n  [{ACCENT}]Available categories to distill:[/{ACCENT}]")
                 for idx, cname in enumerate(known_cats, 1):
                     con.print(f"    [{idx}] {cname}")
                 try:
@@ -1360,8 +1378,8 @@ class CTFInteractiveConsole:
                     con.print(f"\n  [dim]Distilling operational playbook for {c}...[/dim]")
                     res = service.distill_playbook(c)
                     if res.get("success"):
-                        con.print(f"  [bold green]✔ Playbook updated for {c}:[/bold green]")
-                        con.print(f"    📄 File: [cyan]{res.get('playbook_path')}[/cyan]")
+                        con.print(f"  [{SUCCESS}]✔ Playbook updated for {c}:[/{SUCCESS}]")
+                        con.print(f"    📄 File: [{INFO}]{res.get('playbook_path')}[/{INFO}]")
                         if res.get("main_conversation_id"):
                             con.print(f"    🧠 Master Session: [dim]{res.get('main_conversation_id')}[/dim]")
                     else:
@@ -1371,7 +1389,7 @@ class CTFInteractiveConsole:
             elif act_clean in ('7', 'help', 'h', 'ask', 'astra', 'ctf-ask'):
                 from .cli_commands import handle_ask
                 import argparse
-                con.print("\n  [bold cyan]Help: Escalate formal math/logic roadblock to Codex Astra (ctf-ask)[/bold cyan]")
+                con.print(f"\n  [{ACCENT}]Help: Escalate formal math/logic roadblock to Codex Astra (ctf-ask)[/{ACCENT}]")
                 try:
                     ws_input = _prompt('  Enter formal workspace path [Enter for ./math_workspace]: ').strip() or 'math_workspace'
                     ws_path = Path(self.workspace_path) / ws_input if not Path(ws_input).is_absolute() else Path(ws_input)
@@ -1462,10 +1480,28 @@ class CTFInteractiveConsole:
             if not c_in:
                 return
             if os.path.isfile(c_in):
-                with open(c_in, 'r', encoding='utf-8') as f:
-                    self.cookie = f.read().strip()
+                try:
+                    with open(c_in, 'r', encoding='utf-8') as f:
+                        raw_cookie = f.read().strip()
+                except Exception as e:
+                    Logger.error(f"Cannot read cookie file: {e}")
+                    _pause()
+                    return
             else:
-                self.cookie = c_in
+                raw_cookie = c_in
+            clean_c = sanitize_cookie_input(raw_cookie)
+            if not clean_c:
+                Logger.warning("Cookie provided is empty or invalid.")
+                _pause()
+                return
+            plat_url = None
+            try:
+                from .storage.workspace_repo import WorkspaceRepo
+                plat_url = WorkspaceRepo(self.workspace_path).resolve_platform_url()
+            except Exception:
+                pass
+            self.cookie = clean_c
+            AuthService.save_auth(self.workspace_path, url=plat_url, cookie=self.cookie, token=self.token)
             self._save_current_workspace()
             Logger.success('Cookie saved successfully for this workspace!')
             _pause()
@@ -1473,13 +1509,27 @@ class CTFInteractiveConsole:
             t_in = _prompt('Paste API/Bearer Token [Enter to cancel]: ').strip()
             if not t_in:
                 return
-            self.token = t_in
+            plat_url = None
+            try:
+                from .storage.workspace_repo import WorkspaceRepo
+                plat_url = WorkspaceRepo(self.workspace_path).resolve_platform_url()
+            except Exception:
+                pass
+            self.token = t_in.strip()
+            AuthService.save_auth(self.workspace_path, url=plat_url, cookie=self.cookie, token=self.token)
             self._save_current_workspace()
             Logger.success('Token saved successfully for this workspace!')
             _pause()
         elif ch == '3':
             self.cookie = None
             self.token = None
+            plat_url = None
+            try:
+                from .storage.workspace_repo import WorkspaceRepo
+                plat_url = WorkspaceRepo(self.workspace_path).resolve_platform_url()
+            except Exception:
+                pass
+            AuthService.delete_auth(self.workspace_path, url=plat_url)
             self._save_current_workspace()
             Logger.info('Credentials cleared.')
             _pause()
@@ -1520,13 +1570,18 @@ class CTFInteractiveConsole:
             branch = st.get("current_branch") or st.get("branch") or "-"
             dirty = st.get("dirty_files", 0)
             remote_ok = st.get("remote_configured", False)
-            dirty_style = "bold yellow" if dirty > 0 else "bold green"
-            remote_style = "bold green" if remote_ok else "dim"
+            dirty_style = WARN if dirty > 0 else SUCCESS
+            remote_style = SUCCESS if remote_ok else FG_FAINT
 
-            con.print(f"  📁 Workspace    : [bold cyan]{ws.name}[/bold cyan]")
-            con.print(f"  🌿 Active Branch: [bold]{branch}[/bold]")
-            con.print(f"  📝 Modified     : [{dirty_style}]{dirty} files changed[/{dirty_style}]")
-            con.print(f"  ☁️  Remote Repo  : [{remote_style}]{'Connected' if remote_ok else 'No remote configured'}[/{remote_style}]\n")
+            st_grid = Table.grid(padding=(0, 2))
+            st_grid.add_column("icon_label", style=f"bold {FG_BASE}")
+            st_grid.add_column("value")
+            st_grid.add_row("  📁 Workspace", Text(ws.name, style=f"bold {ACCENT}"))
+            st_grid.add_row("  🌿 Active Branch", Text(str(branch), style=f"bold {FG_BASE}"))
+            st_grid.add_row("  📝 Modified", Text(f"{dirty} files changed", style=f"bold {dirty_style}"))
+            st_grid.add_row("  ☁️  Remote Repo", Text("Connected" if remote_ok else "No remote configured", style=f"bold {remote_style}"))
+            con.print(st_grid)
+            con.print()
         except Exception as e:
             con.print(f"  [dim]Git status check: {e}[/dim]\n")
 
@@ -1569,14 +1624,14 @@ class CTFInteractiveConsole:
                 det = GitWorkflowService.workspace_detailed_status(ws)
                 large = det.get("large_files", [])
                 if large:
-                    con.print(f"\n  [bold red]⚠️ CẢNH BÁO: Phát hiện {len(large)} file > 50MB (nguy cơ bị GitHub reject):[/bold red]")
+                    con.print(f"\n  [{ERROR}]⚠️ CẢNH BÁO: Phát hiện {len(large)} file > 50MB (nguy cơ bị GitHub reject):[/{ERROR}]")
                     for fpath, size in large:
                         mb = size / (1024 * 1024)
                         rel_p = fpath.relative_to(ws) if fpath.is_relative_to(ws) else fpath
-                        con.print(f"    - [yellow]{rel_p}[/yellow] ({mb:.1f} MB)")
+                        con.print(f"    - [{WARN}]{rel_p}[/{WARN}] ({mb:.1f} MB)")
                     con.print("  [dim]Gợi ý: Thêm các file này vào .gitignore trước khi push.[/dim]")
                 else:
-                    con.print("\n  [bold green]✔ Anti-bloat check: Không có file nào > 50MB trong workspace.[/bold green]")
+                    con.print(f"\n  [{SUCCESS}]✔ Anti-bloat check: Không có file nào > 50MB trong workspace.[/{SUCCESS}]")
 
                 lines = det.get("changed_files", [])
                 if lines:
@@ -1597,7 +1652,7 @@ class CTFInteractiveConsole:
             _pause()
         elif act == '4':
             cur_remote = GitWorkflowService.get_remote_url(ws) or "(Chưa có)"
-            con.print(f"  Remote hiện tại: [cyan]{cur_remote}[/cyan]")
+            con.print(f"  Remote hiện tại: [{INFO}]{cur_remote}[/{INFO}]")
             new_url = _prompt("Nhập GitHub remote URL mới (Enter bỏ qua): ").strip()
             if new_url:
                 try:
@@ -1610,37 +1665,91 @@ class CTFInteractiveConsole:
     def _menu_theme(self):
         from .ui.theme import get_active_palette
         from .ui.palettes import PRESET_PALETTES
-        _section('Visual Theme Settings (Giao diện kịch tính)')
+        from rich.padding import Padding
+
+        _section('Visual Theme Settings (Giao Diện Tác Chiến)')
         con = _menu_console()
-
         cur = get_active_palette()
-        con.print(f"  Theme hiện tại: [bold]{cur.display_name}[/bold] [dim]({cur.name})[/dim]")
-        con.print(f"  [dim]{cur.description}[/dim]\n")
 
-        themes_list = list(PRESET_PALETTES.values())
-        for idx, pal in enumerate(themes_list, 1):
-            is_active = " [bold green]● active[/bold green]" if pal.name == cur.name else ""
-            con.print(f"  [{idx}] [bold]{pal.display_name}[/bold]{is_active}")
-            con.print(f"      [dim]{pal.description}[/dim]")
+        # 1. Active Theme Showcase Panel
+        showcase = Text()
+        showcase.append("Theme đang hoạt động: ", style=f"bold {FG_BASE}")
+        showcase.append(f"{cur.display_name} ", style=f"bold {cur.accent}")
+        showcase.append(f"({cur.name})\n", style=FG_MUTED)
+        showcase.append(f"{cur.description}\n\n", style=FG_BASE)
+        showcase.append_text(cur.full_spectrum_text())
 
-        _option('0', 'Quay lại')
+        con.print(Panel(
+            showcase,
+            title="[bold]🎨 LIVE SPECTRUM SHOWCASE[/bold]",
+            border_style=cur.accent,
+            padding=(1, 2),
+        ))
         con.print()
-        ch = _prompt(f'Chọn theme (1-{len(themes_list)}) [0 để quay lại]: ').strip()
-        if ch and ch.isdigit() and 1 <= int(ch) <= len(themes_list):
-            chosen = themes_list[int(ch) - 1]
-            _update_menu_theme(chosen.name)
-            try:
-                from .storage.global_config import update_global_config
 
-                def _save_theme(state: dict) -> dict:
-                    state["theme"] = chosen.name
-                    return state
+        # 2. Unique canonical presets (preserving exact ordering)
+        seen_names = set()
+        unique_themes = []
+        for pal in PRESET_PALETTES.values():
+            if pal.name not in seen_names:
+                unique_themes.append(pal)
+                seen_names.add(pal.name)
 
-                update_global_config(_save_theme)
-            except Exception as e:
-                Logger.warning(f"Không thể lưu cấu hình theme: {e}")
-            Logger.success(f"Đã chuyển giao diện sang: {chosen.display_name}!")
-            _pause()
+        # 3. Aligned Theme Table Grid (zero manual padding)
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column("key", justify="right", no_wrap=True)
+        grid.add_column("swatch", no_wrap=True)
+        grid.add_column("title", no_wrap=True)
+        grid.add_column("badge", no_wrap=True)
+        grid.add_column("desc")
+
+        for idx, pal in enumerate(unique_themes, 1):
+            is_active = pal.name == cur.name
+            key_text = Text(f"[{idx}]", style=f"bold {cur.accent}")
+            swatch_text = pal.color_ramp_text()
+            title_style = f"bold {cur.accent}" if is_active else FG_BASE
+            title_text = Text(pal.display_name, style=title_style)
+            badge_text = Text("● active", style=f"bold {SUCCESS}") if is_active else Text("")
+            desc_text = Text(pal.description, style=FG_MUTED)
+
+            grid.add_row(key_text, swatch_text, title_text, badge_text, desc_text)
+
+        # Option 0 (Quay lại) integrated cleanly into the same grid
+        grid.add_row(
+            Text("[0]", style=f"bold {FG_FAINT}"),
+            Text(""),
+            Text("Quay lại Menu chính", style=FG_MUTED),
+            Text(""),
+            Text("(Giữ nguyên dải màu hiện tại)", style=FG_FAINT),
+        )
+
+        con.print(Padding(grid, (0, 2)))
+        con.print()
+
+        ch = _prompt(f'Chọn dải màu (1-{len(unique_themes)}, tên theme) [0 để quay lại]: ').strip()
+        if ch:
+            chosen = None
+            if ch.isdigit() and 1 <= int(ch) <= len(unique_themes):
+                chosen = unique_themes[int(ch) - 1]
+            elif ch.lower() in PRESET_PALETTES:
+                chosen = PRESET_PALETTES[ch.lower()]
+            elif ch in ('0', 'q', 'exit', 'back'):
+                return
+
+            if chosen:
+                _update_menu_theme(chosen.name)
+                try:
+                    from .storage.global_config import update_global_config
+
+                    def _save_theme(state: dict) -> dict:
+                        state["theme"] = chosen.name
+                        return state
+
+                    update_global_config(_save_theme)
+                except Exception as e:
+                    Logger.warning(f"Không thể lưu cấu hình theme: {e}")
+                Logger.success(f"Đã kích hoạt dải màu: {chosen.display_name}!")
+                _pause()
 
 
 def _pause():

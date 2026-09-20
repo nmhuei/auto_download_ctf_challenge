@@ -299,7 +299,8 @@ class StorageArchiveCase(unittest.TestCase):
         real_run = subprocess.run
 
         def fake_run(args, **kw):
-            if args[:2] == ["git", "add"]:
+            cmd_name = Path(str(args[0])).name if args else ""
+            if cmd_name == "git" and len(args) > 1 and args[1] == "add":
                 return subprocess.CompletedProcess(args, 1, stdout="",
                                                    stderr="mock add boom")
             return real_run(args, **kw)
@@ -317,7 +318,8 @@ class StorageArchiveCase(unittest.TestCase):
         real_run = subprocess.run
 
         def fake_run(args, **kw):
-            if args[:1] == ["git"] and args[1] == "commit":
+            cmd_name = Path(str(args[0])).name if args else ""
+            if cmd_name == "git" and len(args) > 1 and args[1] == "commit":
                 return subprocess.CompletedProcess(
                     args, 1, stdout="", stderr="fatal: khác nothing to commit")
             return real_run(args, **kw)

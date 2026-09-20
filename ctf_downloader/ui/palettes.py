@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict
 
+from rich.text import Text
+
 
 @dataclass(frozen=True)
 class Palette:
@@ -107,6 +109,47 @@ class Palette:
             "radar.active": f"bold {self.warning}",
             "radar.solved": f"bold {self.success}",
         }
+
+    def color_ramp_text(self) -> Text:
+        """Visual color ramp swatch showing accent, accent_hi, success, warning, error, firstblood."""
+        t = Text()
+        t.append("■", style=self.accent)
+        t.append("■", style=self.accent_hi)
+        t.append("■", style=self.success)
+        t.append("■", style=self.warning)
+        t.append("■", style=self.error)
+        t.append("■", style=self.firstblood)
+        return t
+
+    def full_spectrum_text(self) -> Text:
+        """Full rich visual spectrum breakdown for showcase and headers."""
+        t = Text()
+        t.append("  Core Spectrum:     ", style="dim")
+        t.append("■■ ", style=self.accent)
+        t.append(f"Accent ({self.accent})  ", style=self.accent)
+        t.append("■■ ", style=self.accent_hi)
+        t.append(f"Glow ({self.accent_hi})  ", style=self.accent_hi)
+        t.append("■■ ", style=self.success)
+        t.append(f"Solved ({self.success})  ", style=self.success)
+        t.append("■■ ", style=self.warning)
+        t.append(f"Warn ({self.warning})  ", style=self.warning)
+        t.append("■■ ", style=self.error)
+        t.append(f"Alert ({self.error})\n", style=self.error)
+
+        t.append("  Category Spectrum: ", style="dim")
+        t.append("■ ", style=self.category_web)
+        t.append("Web  ", style=self.category_web)
+        t.append("■ ", style=self.category_crypto)
+        t.append("Crypto  ", style=self.category_crypto)
+        t.append("■ ", style=self.category_pwn)
+        t.append("Pwn  ", style=self.category_pwn)
+        t.append("■ ", style=self.category_rev)
+        t.append("Rev  ", style=self.category_rev)
+        t.append("■ ", style=self.category_forensics)
+        t.append("Forensics  ", style=self.category_forensics)
+        t.append("■ ", style=self.category_misc)
+        t.append("Misc", style=self.category_misc)
+        return t
 
 
 # ==============================================================================
@@ -255,3 +298,150 @@ PRESET_PALETTES: Dict[str, Palette] = {
     "amber": AMBER_PALETTE,
     "nord": NORD_PALETTE,
 }
+
+DRACULA_PALETTE = Palette(
+    name="dracula",
+    display_name="Dracula Midnight Vampire",
+    description="Gothic velvet slate with neon orchid, radioactive mint & blood orange",
+    bg="#0B0B12",
+    surface="#151522",
+    border="#342B4E",
+    text="#F8F8F2",
+    muted="#9580FF",
+    faint="#6272A4",
+    accent="#BD93F9",
+    accent_hi="#E2D9F3",
+    accent_deep="#6A4C93",
+    success="#50FA7B",
+    warning="#FFB86C",
+    error="#FF5555",
+    firstblood="#FF79C6",
+    selected_fg="#FFFFFF",
+    selected_bg="#2D1F47",
+    category_web="#8BE9FD",
+    category_crypto="#BD93F9",
+    category_pwn="#FFB86C",
+    category_rev="#FF79C6",
+    category_forensics="#50FA7B",
+    category_misc="#6272A4",
+)
+
+TOKYO_NIGHT_PALETTE = Palette(
+    name="tokyo",
+    display_name="Tokyo Night Stealth",
+    description="Deep midnight indigo, luminous wisteria purple, electric cyan & blossom",
+    bg="#0A0E1A",
+    surface="#121829",
+    border="#1F2A4A",
+    text="#C0CAF5",
+    muted="#7AA2F7",
+    faint="#565F89",
+    accent="#7DCFFF",
+    accent_hi="#B4F9F8",
+    accent_deep="#2AC3DE",
+    success="#9ECE6A",
+    warning="#E0AF68",
+    error="#F7768E",
+    firstblood="#BB9AF7",
+    selected_fg="#FFFFFF",
+    selected_bg="#1A2B4C",
+    category_web="#7DCFFF",
+    category_crypto="#BB9AF7",
+    category_pwn="#FF9E64",
+    category_rev="#9D7CD8",
+    category_forensics="#9ECE6A",
+    category_misc="#7AA2F7",
+)
+
+SYNTHWAVE_PALETTE = Palette(
+    name="synthwave",
+    display_name="Synthwave Sunset 1984",
+    description="Retrowave sunset magenta, laser violet, neon peach & solar gold",
+    bg="#0F051D",
+    surface="#1B0E33",
+    border="#501B6B",
+    text="#F9F5FF",
+    muted="#B388EB",
+    faint="#724E91",
+    accent="#FF71CE",
+    accent_hi="#FFAAE5",
+    accent_deep="#B9348B",
+    success="#01CDFE",
+    warning="#FF9B71",
+    error="#FF3864",
+    firstblood="#FE88F7",
+    selected_fg="#FFFFFF",
+    selected_bg="#3D0F47",
+    category_web="#01CDFE",
+    category_crypto="#B388EB",
+    category_pwn="#FF9B71",
+    category_rev="#FE88F7",
+    category_forensics="#05FFA1",
+    category_misc="#724E91",
+)
+
+MONOKAI_PRO_PALETTE = Palette(
+    name="monokai",
+    display_name="Monokai Pro Dark",
+    description="Elite code-auditor charcoal, vibrant solar yellow, radiant magenta & sky",
+    bg="#131316",
+    surface="#1C1C21",
+    border="#36353F",
+    text="#FCFCFA",
+    muted="#939293",
+    faint="#5B595C",
+    accent="#FFD866",
+    accent_hi="#FFF0A0",
+    accent_deep="#B89B38",
+    success="#A9DC76",
+    warning="#FC9867",
+    error="#FF6188",
+    firstblood="#AB9DF2",
+    selected_fg="#FFFFFF",
+    selected_bg="#38362B",
+    category_web="#78DCE8",
+    category_crypto="#AB9DF2",
+    category_pwn="#FC9867",
+    category_rev="#FF6188",
+    category_forensics="#A9DC76",
+    category_misc="#939293",
+)
+
+CRIMSON_PALETTE = Palette(
+    name="crimson",
+    display_name="Crimson Blood Moon",
+    description="Sith obsidian darkness, ember crimson, molten scarlet & hazard orange",
+    bg="#0D0405",
+    surface="#1A0A0C",
+    border="#471419",
+    text="#FEE8E8",
+    muted="#C4787D",
+    faint="#6E3B3E",
+    accent="#FF2A4D",
+    accent_hi="#FF7088",
+    accent_deep="#A8152D",
+    success="#4EBA6F",
+    warning="#FF8C42",
+    error="#E61C24",
+    firstblood="#FF0033",
+    selected_fg="#FFFFFF",
+    selected_bg="#420D12",
+    category_web="#FF2A4D",
+    category_crypto="#D473FF",
+    category_pwn="#FF8C42",
+    category_rev="#FF0033",
+    category_forensics="#4EBA6F",
+    category_misc="#C4787D",
+)
+
+# Register all palettes + convenience aliases
+PRESET_PALETTES.update({
+    "dracula": DRACULA_PALETTE,
+    "tokyo": TOKYO_NIGHT_PALETTE,
+    "tokyo_night": TOKYO_NIGHT_PALETTE,
+    "synthwave": SYNTHWAVE_PALETTE,
+    "monokai": MONOKAI_PRO_PALETTE,
+    "monokai_pro": MONOKAI_PRO_PALETTE,
+    "crimson": CRIMSON_PALETTE,
+    "sith": CRIMSON_PALETTE,
+})

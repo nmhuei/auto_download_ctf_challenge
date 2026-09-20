@@ -29,12 +29,14 @@ _UNDECLARED = ("", "generic", "unknown", "generic_html")
 class PlatformResolver:
     @staticmethod
     def for_workspace(repo, cookie: Optional[str] = None,
-                      token: Optional[str] = None) -> Tuple[object, BasePlatform, PlatformInfo]:
+                      token: Optional[str] = None,
+                      workspace_path: Optional[str | Path] = None) -> Tuple[object, BasePlatform, PlatformInfo]:
         """
         Args:
             repo: object WorkspaceRepo exposing `read_challenges()` và
                   `resolve_platform_url()`.
             cookie / token: auth tùy chọn, gắn vào session tạo mới.
+            workspace_path: đường dẫn workspace tùy chọn để đồng bộ schema.
         Returns:
             (session, platform_instance, PlatformInfo)
         Raises:
@@ -51,6 +53,16 @@ class PlatformResolver:
                 "Could not determine CTF platform URL from workspace.")
 
         session = create_session(cookie=cookie, token=token, base_url=url)
+
+        from ..platforms.schema_store import PlatformSchemaStore
+        ws_path = (
+            workspace_path
+            or getattr(repo, "root", None)
+            or getattr(repo, "path", None)
+            or getattr(repo, "workspace_path", None)
+            or getattr(repo, "workspace_dir", None)
+        )
+        PlatformSchemaStore.sync_to_registry(workspace_path=ws_path)
 
         declared = str(ctf_info.get("platform", "") or "").strip().lower()
         spec = None
@@ -81,5 +93,5 @@ class PlatformResolver:
             return session, platform, info
 
         # Không khai báo (hoặc khai báo lạ) -> pipeline recon 4 tầng
-        platform, info = detect_platform_info(url, session, cookie_hint=cookie)
+        platform, info = detect_platform_info(url, session, cookie_hint=cookie, workspace_path=ws_path)
         return session, platform, info

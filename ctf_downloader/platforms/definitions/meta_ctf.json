@@ -1,0 +1,46 @@
+{
+  "key": "metactf",
+  "label": "MetaCTF",
+  "throttle": 2.5,
+  "html_markers": [
+    "Powered by MetaCTF",
+    "meta name=\"generator\" content=\"MetaCTF\"",
+    "metactf-app"
+  ],
+  "cookie_hints": [
+    "metactf_session",
+    "mctf_token"
+  ],
+  "url_patterns": [
+    "/metactf"
+  ],
+  "endpoints": {
+    "auth_check": "/api/v1/user/me",
+    "challenges": "/api/v1/challenges",
+    "challenge_detail": "/api/v1/challenges/{id}",
+    "submit": "/api/v1/challenges/{id}/submit",
+    "scoreboard": "/api/v1/scoreboard"
+  },
+  "schema_mapping": {
+    "challenges_root": "data.challenges",
+    "id": "id",
+    "name": "title",
+    "category": "category",
+    "points": "points",
+    "description": "description",
+    "files": "files",
+    "solved": "solved",
+    "connection_info": "connection_info"
+  },
+  "submit_spec": {
+    "method": "POST",
+    "flag_param": "flag",
+    "content_type": "json",
+    "success_field": "data.correct",
+    "message_field": "message"
+  },
+  "supports_container": false,
+  "supports_scoreboard": true,
+  "source": "builtin",
+  "description": "Declarative schema definition for MetaCTF platforms."
+}

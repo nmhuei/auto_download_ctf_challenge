@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+from rich.padding import Padding
 from rich.cells import cell_len
 from rich import box
 
@@ -93,30 +94,27 @@ def render_hub_menu(
 
     # Action list (dynamic cell_len alignment, zero manual spacing)
     split_actions = []
-    has_hints = False
     for key, desc in actions:
         if " (" in desc and desc.endswith(")"):
             main_part, hint_part = desc.split(" (", 1)
             split_actions.append((key, main_part, f"({hint_part}"))
-            has_hints = True
         else:
             split_actions.append((key, desc, ""))
 
-    max_main_w = max(cell_len(main_part) for _, main_part, _ in split_actions) if has_hints else 0
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column("key", justify="right", no_wrap=True)
+    grid.add_column("main")
+    grid.add_column("hint")
 
     for key, main_part, hint in split_actions:
-        row = Text()
         key_style = f"bold {FG_FAINT}" if key == "0" else f"bold {ACCENT}"
-        row.append(f"  [{key}] ", style=key_style)
-
         main_style = FG_MUTED if key == "0" else FG_BASE
-        row.append(main_part, style=main_style)
-
-        if hint:
-            pad = " " * max(2, (max_main_w + 2) - cell_len(main_part))
-            row.append(pad)
-            row.append(hint, style=FG_MUTED)
-        con.print(row)
+        grid.add_row(
+            Text(f"[{key}]", style=key_style),
+            Text(main_part, style=main_style),
+            Text(hint, style=FG_MUTED) if hint else Text(""),
+        )
+    con.print(Padding(grid, (0, 2)))
 
     con.print()
     return _prompt(prompt_text)
@@ -129,6 +127,7 @@ def hub_workspace_targets(app: Any) -> None:
         ("2", "Clone / Download new CTF challenge files"),
         ("3", "Configure & save Cookie / Token for this event"),
         ("4", "Platform Doctor & connectivity verification"),
+        ("5", "Platform Schemas & Auto-Recon (Dò tìm & Quản lý Platform)"),
         ("0", "Back to Main Cockpit"),
     ]
 
@@ -154,6 +153,80 @@ def hub_workspace_targets(app: Any) -> None:
                 app._menu_platform_doctor()
             else:
                 _run_doctor_fallback(app)
+        elif choice == "5":
+            _menu_platform_manager(app)
+
+
+def _menu_platform_manager(app: Any) -> None:
+    """Sub-menu for Platform Schemas & Auto-Recon."""
+    actions = [
+        ("1", "List all registered platforms & schemas"),
+        ("2", "Auto-Recon: Probe new CTF platform URL"),
+        ("3", "View details of a platform schema"),
+        ("4", "Remove custom platform schema"),
+        ("0", "Back"),
+    ]
+    ws = getattr(app, "workspace_path", None)
+
+    while True:
+        choice = render_hub_menu(
+            title="Platform Schemas & Auto-Recon",
+            subtitle="Dò tìm & Quản lý Cấu trúc Nền tảng",
+            actions=actions,
+        )
+        if choice in ("0", ""):
+            break
+        elif choice == "1":
+            from ..cli_commands import handle_platform
+            args = type("Args", (), {"platform_action": "list", "workspace": ws})()
+            handle_platform(args)
+            _pause()
+        elif choice == "2":
+            target_url = _prompt("Nhập URL trang CTF cần dò tìm (vd: https://ctf.example.com): ")
+            if target_url and target_url != "0":
+                from ..cli_commands import handle_platform
+                save_choice = _prompt("Tự động lưu schema nếu tìm thấy? [y/N]: ").lower()
+                should_save = save_choice in ("y", "yes")
+                scope = "workspace" if ws else "global"
+                if should_save and ws:
+                    sc_in = _prompt("Lưu vào workspace hiện tại hay global? [w/g, mặc định: w]: ").lower()
+                    if sc_in == "g":
+                        scope = "global"
+                args = type("Args", (), {
+                    "platform_action": "probe",
+                    "url": target_url,
+                    "save": should_save,
+                    "scope": scope,
+                    "key": None,
+                    "label": None,
+                    "workspace": ws,
+                })()
+                handle_platform(args)
+            _pause()
+        elif choice == "3":
+            key = _prompt("Nhập platform key cần xem (vd: metactf, ctfd): ")
+            if key and key != "0":
+                from ..cli_commands import handle_platform
+                args = type("Args", (), {"platform_action": "show", "target": key, "workspace": ws})()
+                handle_platform(args)
+            _pause()
+        elif choice == "4":
+            key = _prompt("Nhập platform key cần xoá: ")
+            if key and key != "0":
+                from ..cli_commands import handle_platform
+                scope = "workspace" if ws else "global"
+                if ws:
+                    sc_in = _prompt("Xoá khỏi workspace hay global? [w/g, mặc định: w]: ").lower()
+                    if sc_in == "g":
+                        scope = "global"
+                args = type("Args", (), {
+                    "platform_action": "remove",
+                    "target": key,
+                    "scope": scope,
+                    "workspace": ws,
+                })()
+                handle_platform(args)
+            _pause()
 
 
 def _run_doctor_fallback(app: Any) -> None:
@@ -180,7 +253,7 @@ def challenge_action_card(app: Any, target: Dict[str, Any]) -> None:
         ("1", "View Description, Hints & Attachments"),
         ("2", "Dynamic Instance: Start / Stop / Extend container"),
         ("3", "Submit Flag for this challenge"),
-        ("4", "Dispatch SuperBQA AI Solver (AGYworker)"),
+        ("4", "Dispatch SuperBQA AI Solver (Tự động giải bài)"),
         ("0", "Back to Challenge List"),
     ]
 

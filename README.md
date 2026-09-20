@@ -162,6 +162,11 @@ Chạy `ctf <lệnh> --help` để xem đầy đủ tuỳ chọn của từng l�
 | `ctf config` | — |
 | `ctf bridge` | — |
 | `ctf ask` | `--dry-run` · `--effort` · `--model` · `--output` · `--preflight-only` · `--verify-only` · `--workspace` |
+| `ctf platform list` | `--workspace` |
+| `ctf platform show` | `--workspace` |
+| `ctf platform probe` | `--key` · `--label` · `--save` · `--scope` · `--workspace` |
+| `ctf platform add` | `--scope` · `--workspace` |
+| `ctf platform remove` | `--scope` · `--workspace` |
 <!-- END GENERATED CLI OPTIONS -->
 
 ## 4. Cây workspace output

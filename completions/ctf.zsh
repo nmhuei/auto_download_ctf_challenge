@@ -45,6 +45,7 @@ _ctf() {
                 'serve:Dashboard web read-only cho workspace'
                 'bridge:Quản lý Browser Extension Bridge (vượt Cloudflare)'
                 'ask:Chuyển tiếp bài toán hình thức sang chuyên gia Codex Astra'
+                'platform:Quản lý platform schemas và auto-recon'
             )
             # alias map về lệnh chuẩn
             local -a aliases=(
@@ -65,6 +66,8 @@ _ctf() {
                 'ext:alias of bridge'
                 'expert:alias of ask'
                 'astra:alias of ask'
+                'platforms:alias of platform'
+                'schema:alias of platform'
             )
             _describe -t commands 'command' cmds && return 0
             _describe -t commands 'alias' aliases && return 0
@@ -312,6 +315,17 @@ _ctf() {
                         '--preflight-only[chạy kiểm tra tiền kiểm sanitizer]' \
                         '--verify-only[xác minh độc lập candidate solution]:solution:_files' \
                         '--dry-run[validate preflight without executing model]'
+                    ;;
+                platform)
+                    _arguments \
+                        '1:action:(list show probe add remove)' \
+                        '2:target: ' \
+                        '--url[Target CTF platform URL to probe]:url: ' \
+                        '--save[Persist deduced candidate schema]' \
+                        '--scope[Storage scope: global or workspace]:scope:(global workspace)' \
+                        '--key[Override candidate platform identifier key]:key: ' \
+                        '--label[Override human-readable display label]:label: ' \
+                        '(-w --workspace)'{-w,--workspace}'[CTF workspace directory]:dir:_directories'
                     ;;
                 *)
                     _arguments $global_opts

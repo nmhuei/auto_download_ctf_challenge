@@ -116,7 +116,8 @@ def _match_html_markers(spec, html: str, low: str) -> bool:
 
 def detect_platform_info(base_url: str, session,
                          cookie_hint: Optional[str] = None,
-                         quiet: bool = False) -> Tuple[BasePlatform, PlatformInfo]:
+                         quiet: bool = False,
+                         workspace_path: Optional[str] = None) -> Tuple[BasePlatform, PlatformInfo]:
     """
     Dò tìm nền tảng CTF theo pipeline 4 tầng, trả về platform instance
     (tương thích hoàn toàn với chữ ký/cách dùng cũ) kèm PlatformInfo.
@@ -126,6 +127,12 @@ def detect_platform_info(base_url: str, session,
     surface tự render report riêng theo design system (vd ``ctf doctor``),
     tránh lẫn rainbow/default-style vào output PHOSPHOR.
     """
+    from .schema_store import PlatformSchemaStore
+    from .recon import PlatformReconEngine
+
+    # Đồng bộ các platform schema (builtin, global ~/.config, workspace .ctf) vào PLATFORMS registry
+    PlatformSchemaStore.sync_to_registry(workspace_path=workspace_path)
+
     parsed, origin, clean_base_url = parse_normalized(base_url)
     info = PlatformInfo(platform_type="unknown", base_url=clean_base_url)
 
@@ -148,7 +155,10 @@ def detect_platform_info(base_url: str, session,
 
     if html:
         low = html.lower()
-        for key in _MARKER_PRIORITY:
+        marker_candidates = list(_MARKER_PRIORITY) + [
+            k for k in PLATFORMS if k not in _MARKER_PRIORITY and PLATFORMS[k].html_markers
+        ]
+        for key in marker_candidates:
             if key not in PLATFORMS:
                 continue
             if _match_html_markers(PLATFORMS[key], html, low):
@@ -179,7 +189,10 @@ def detect_platform_info(base_url: str, session,
             cookie_names = set()
 
         matched_cookie = False
-        for key in _COOKIE_PRIORITY:
+        cookie_candidates = list(_COOKIE_PRIORITY) + [
+            k for k in PLATFORMS if k not in _COOKIE_PRIORITY and PLATFORMS[k].cookie_hints
+        ]
+        for key in cookie_candidates:
             if key not in PLATFORMS:
                 continue
             for hint in PLATFORMS[key].cookie_hints:
@@ -199,7 +212,10 @@ def detect_platform_info(base_url: str, session,
     # ------------- Tầng 3: Path probe + envelope (registry) ------------- #
     # Chạy đủ chuỗi probe (theo thứ tự rẻ -> chắc chắn): vừa xác nhận ứng
     # viên ở tầng 2, vừa làm giàu capabilities khi tầng 1 đã nhận diện xong.
-    for candidate in _PROBE_PRIORITY:
+    probe_candidates = list(_PROBE_PRIORITY) + [
+        k for k in PLATFORMS if k not in _PROBE_PRIORITY and PLATFORMS[k].probes
+    ]
+    for candidate in probe_candidates:
         spec = PLATFORMS.get(candidate)
         if spec is None:
             continue
@@ -213,7 +229,8 @@ def detect_platform_info(base_url: str, session,
                 ptype, confidence = candidate, "high"
             break
 
-    # ------------- Tầng 4: Fallback hành vi cũ ------------- #
+    # ------------- Tầng 4: Fallback hành vi cũ & Auto-Recon ------------- #
+    candidate_recon_schema = None
     if confidence != "high":
         # Hành vi cũ: Custom REST / Next.js (/api/challenges, /api/auth/me)
         recon_paths.append("/api/challenges")
@@ -242,6 +259,32 @@ def detect_platform_info(base_url: str, session,
             ptype, confidence = "gzctf", "medium"
             info.add_signal("URL chứa /games -> GZ::CTF (nhận diện qua URL, hành vi cũ)")
 
+        # Tầng 4b: Tự động Auto-Recon khám phá platform chưa biết
+        if confidence != "high" and ptype == "unknown":
+            recon_result = PlatformReconEngine.probe_url(clean_base_url, session=session)
+            if recon_result.candidate_schema and recon_result.confidence in ("high", "medium"):
+                candidate_recon_schema = recon_result.candidate_schema
+                from .registry import PlatformSpec
+                dyn_cls = PlatformSchemaStore.make_adapter_class(candidate_recon_schema)
+                dyn_spec = PlatformSpec(
+                    key=candidate_recon_schema.key,
+                    label=candidate_recon_schema.label,
+                    cls=dyn_cls,
+                    throttle=candidate_recon_schema.throttle,
+                    html_markers=tuple(candidate_recon_schema.html_markers),
+                    cookie_hints=tuple(candidate_recon_schema.cookie_hints),
+                    supports_container=candidate_recon_schema.supports_container,
+                    supports_scoreboard=candidate_recon_schema.supports_scoreboard,
+                )
+                object.__setattr__(dyn_spec, "source", "custom_schema") if hasattr(dyn_spec, "__dict__") else None
+                PLATFORMS[candidate_recon_schema.key] = dyn_spec
+                dyn_cls.spec = dyn_spec
+                ptype = candidate_recon_schema.key
+                confidence = recon_result.confidence
+                info.add_signal(f"Auto-Recon: Khám phá API platform '{candidate_recon_schema.label}'")
+                for sig in recon_result.signals:
+                    info.add_signal(f"Auto-Recon: {sig}")
+
     # ---------------- Kết luận + dựng platform ---------------- #
     if ptype == "unknown":
         info.add_signal("Fallback: mọi tầng nhận diện thất bại -> generic HTML scraper")
@@ -257,6 +300,9 @@ def detect_platform_info(base_url: str, session,
     if isinstance(platform_game_id, int):
         info.game_id = platform_game_id
     info.confidence = confidence
+    if candidate_recon_schema:
+        info.candidate_schema = candidate_recon_schema
+        platform.candidate_schema = candidate_recon_schema
 
     # setattr mềm: các class platform không cần khai báo sẵn thuộc tính info
     platform.info = info

@@ -95,20 +95,23 @@ def epoch_ms(value: Any) -> Optional[int]:
 # --------------------------------------------------------------------------- #
 # Tiện ích HTTP an toàn dùng chung (detector/probe đều gọi qua đây)
 # --------------------------------------------------------------------------- #
-def safe_get(session: Any, url: str, timeout: Optional[int] = None):
+def safe_get(session: Any, url: str, timeout: Optional[int] = None, headers: Optional[Dict[str, str]] = None):
     """GET an toàn: trả response hoặc None (mọi exception bị nuốt)."""
     if timeout is None:
         session_timeout = getattr(session, "_timeout", None) or getattr(session, "timeout", None)
         timeout = int(session_timeout) if isinstance(session_timeout, (int, float)) and session_timeout > 0 else 5
     try:
-        return session.get(url, timeout=timeout)
+        kwargs: Dict[str, Any] = {"timeout": timeout}
+        if headers:
+            kwargs["headers"] = headers
+        return session.get(url, **kwargs)
     except Exception:
         return None
 
 
-def safe_get_json(session: Any, url: str, statuses=(200,)):
+def safe_get_json(session: Any, url: str, statuses=(200,), headers: Optional[Dict[str, str]] = None):
     """GET và parse JSON. Trả (data|None, status_code|None)."""
-    resp = safe_get(session, url)
+    resp = safe_get(session, url, headers=headers)
     status = getattr(resp, "status_code", None)
     if resp is None or status not in statuses:
         return None, status

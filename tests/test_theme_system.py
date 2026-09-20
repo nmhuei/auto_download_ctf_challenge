@@ -55,3 +55,41 @@ def test_theme_menu_switch(tmp_path):
         from ctf_downloader.storage.global_config import update_global_config
         update_global_config(lambda s: s.pop("theme", None) or s)
         set_active_theme(None)
+
+
+def test_expanded_preset_palettes_available():
+    available = list_themes()
+    for expected in ("dracula", "tokyo", "synthwave", "monokai", "crimson"):
+        assert expected in available
+
+
+def test_palette_color_ramp_and_spectrum_text():
+    pal = PRESET_PALETTES["dracula"]
+    swatch = pal.color_ramp_text()
+    assert swatch is not None
+    assert "■" in swatch.plain
+
+    spectrum = pal.full_spectrum_text()
+    assert spectrum is not None
+    assert "Core Spectrum:" in spectrum.plain
+    assert "Category Spectrum:" in spectrum.plain
+    assert "Web" in spectrum.plain
+
+
+def test_theme_menu_switch_by_name(tmp_path):
+    ws = tmp_path / "test_ws"
+    ws.mkdir()
+    app = CTFInteractiveConsole(workspace_path=str(ws))
+
+    try:
+        inputs = iter(["dracula", ""])
+        with patch("ctf_downloader.interactive_menu._prompt", side_effect=lambda *args: next(inputs)):
+            app._menu_theme()
+
+        assert get_active_palette().name == "dracula"
+    finally:
+        set_active_theme("exodia")
+        from ctf_downloader.storage.global_config import update_global_config
+        update_global_config(lambda s: s.pop("theme", None) or s)
+        set_active_theme(None)
+

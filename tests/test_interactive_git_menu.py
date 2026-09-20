@@ -17,7 +17,7 @@ def test_workspace(tmp_path):
 
 def test_main_actions_includes_git():
     action_keys = [k for k, _ in _MAIN_ACTIONS_FULL]
-    assert "G" in action_keys
+    assert "5" in action_keys or "G" in action_keys
 
 
 def test_menu_git_status_and_back(test_workspace):

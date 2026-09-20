@@ -20,6 +20,8 @@ class FakeMenuConsole:
         for arg in args:
             if hasattr(arg, "plain"):
                 rendered.append(arg.plain)
+            elif hasattr(arg, "renderable"):
+                rendered.append(getattr(arg.renderable, "plain", str(arg.renderable)))
             elif hasattr(arg, "columns"):
                 for col in getattr(arg, "columns", []):
                     rendered.append(str(col.header))
@@ -532,3 +534,77 @@ def test_menu_solver_active_agy_workers_with_running_job(monkeypatch):
         assert "No active BQA workers running" not in output
         assert "Hackel" in output
         assert "recon" in output
+
+
+def test_menu_configure_auth_sanitization_and_clearing(monkeypatch):
+    """Verify _menu_configure_auth sanitizes cookie and calls AuthService.save_auth & delete_auth."""
+    from ctf_downloader.services.auth_service import AuthService
+
+    saved_calls = []
+    deleted_calls = []
+
+    monkeypatch.setattr(AuthService, "save_auth", lambda ws=None, url=None, cookie=None, token=None, **kw: saved_calls.append((ws, cookie, token)))
+    monkeypatch.setattr(AuthService, "delete_auth", lambda ws=None, url=None, **kw: deleted_calls.append(ws))
+    monkeypatch.setattr(im, "_pause", lambda: None)
+
+    with tempfile.TemporaryDirectory() as temp:
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = temp
+        app.cookie = app.token = None
+        app.config = {}
+
+        # 1. Set Cookie with leading/trailing junk and header name
+        con = FakeMenuConsole(inputs=["1", "Cookie: session=secret_cookie_val; path=/"])
+        monkeypatch.setattr(im, "_menu_console", lambda: con)
+        app._menu_configure_auth()
+
+        assert app.cookie == "session=secret_cookie_val; path=/"
+        assert len(saved_calls) == 1
+        assert saved_calls[0][1] == "session=secret_cookie_val; path=/"
+
+        # 2. Clear credentials (choice 3)
+        con = FakeMenuConsole(inputs=["3"])
+        monkeypatch.setattr(im, "_menu_console", lambda: con)
+        app._menu_configure_auth()
+
+        assert app.cookie is None
+        assert app.token is None
+        assert len(deleted_calls) == 1
+        assert deleted_calls[0] == temp
+
+
+def test_menu_header_auth_pointer(monkeypatch):
+    """Header warning must direct to [1] -> [3] when unauthenticated."""
+    with tempfile.TemporaryDirectory() as temp:
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = temp
+        app.cookie = app.token = None
+        app.config = {}
+        app._suppress_next_brand = True
+
+        con = FakeMenuConsole()
+        monkeypatch.setattr(im, "_menu_console", lambda: con)
+        app._print_header()
+
+        output = "\n".join(con.printed)
+        assert "! auth not configured · use [1] -> [3]" in output
+
+
+def test_menu_solver_empty_workspace_guidance(monkeypatch):
+    """When no challenges are downloaded, _menu_solver renders an informative guidance panel."""
+    monkeypatch.setattr(im, "_pause", lambda: None)
+    with tempfile.TemporaryDirectory() as temp:
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = temp
+        app.cookie = app.token = None
+        app.config = {}
+
+        # User chooses '0' to exit the guidance panel
+        con = FakeMenuConsole(inputs=["0"])
+        monkeypatch.setattr(im, "_menu_console", lambda: con)
+        app._menu_solver()
+
+        output = "\n".join(con.printed)
+        assert "Chưa có bài thi nào" in output
+        assert "Hub [1]" in output
+

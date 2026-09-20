@@ -31,6 +31,7 @@ class PlatformSpec:
     supports_container: bool = False
     supports_scoreboard: bool = False
     rules_via_api: bool = False
+    source: str = "builtin"
 
 
 # Registry toàn cục: key -> PlatformSpec
@@ -95,3 +96,9 @@ def display_label(key: str, max_len: int = 10) -> str:
 # KHÔNG xoá — nếu bỏ thì registry rỗng.
 # ---------------------------------------------------------------------------
 from . import asisctf, ctfd, custom_rest, generic_html, gzctf, noctf, rctf, tfcctf  # noqa: E402,F401
+
+try:
+    from .schema_store import PlatformSchemaStore
+    PlatformSchemaStore.sync_to_registry()
+except Exception:
+    pass

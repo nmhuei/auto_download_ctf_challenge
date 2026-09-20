@@ -18,6 +18,7 @@ from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test c
     handle_instance,
     handle_note,
     handle_open,
+    handle_platform,
     handle_pull,
     handle_rank,
     handle_register,
@@ -500,6 +501,36 @@ def build_unified_parser():
     ask_parser.add_argument('--dry-run', action='store_true',
                             help='Chạy preflight và in câu lệnh Codex mà không thực thi')
 
+    # 21. PLATFORM — quản lý platform schemas và auto-recon
+    plat_parser = subparsers.add_parser('platform', aliases=['platforms', 'schema'],
+                                        help='Quản lý cấu trúc platform CTF và chạy Auto-Recon')
+    plat_sub = plat_parser.add_subparsers(dest='platform_action')
+
+    plat_list = plat_sub.add_parser('list', help='Liệt kê các platform và schema đã đăng ký')
+    plat_list.add_argument('-w', '--workspace', default=None, help='Workspace CTF để đọc workspace-scoped schema')
+
+    plat_show = plat_sub.add_parser('show', help='Xem chi tiết schema của một platform')
+    plat_show.add_argument('target', help='Key của platform (vd: metactf, ctfd, gzctf)')
+    plat_show.add_argument('-w', '--workspace', default=None, help='Workspace CTF')
+
+    plat_probe = plat_sub.add_parser('probe', help='Tự động dò tìm API endpoints và suy luận schema từ target URL')
+    plat_probe.add_argument('url', help='URL trang CTF cần dò tìm')
+    plat_probe.add_argument('--save', action='store_true', help='Tự động lưu candidate schema vào kho')
+    plat_probe.add_argument('--scope', choices=['global', 'workspace'], default='global', help='Phạm vi lưu trữ (mặc định: global)')
+    plat_probe.add_argument('--key', default=None, help='Override unique key cho platform')
+    plat_probe.add_argument('--label', default=None, help='Override nhãn hiển thị cho platform')
+    plat_probe.add_argument('-w', '--workspace', default=None, help='Workspace CTF')
+
+    plat_add = plat_sub.add_parser('add', help='Thêm schema platform mới từ file JSON hoặc chuỗi JSON')
+    plat_add.add_argument('target', help='Đường dẫn file .json hoặc chuỗi JSON schema')
+    plat_add.add_argument('--scope', choices=['global', 'workspace'], default='global', help='Phạm vi lưu (global/workspace)')
+    plat_add.add_argument('-w', '--workspace', default=None, help='Workspace CTF')
+
+    plat_rm = plat_sub.add_parser('remove', aliases=['rm', 'delete'], help='Xoá custom schema khỏi kho')
+    plat_rm.add_argument('target', help='Key của schema cần xoá')
+    plat_rm.add_argument('--scope', choices=['global', 'workspace'], default='global', help='Phạm vi xoá')
+    plat_rm.add_argument('-w', '--workspace', default=None, help='Workspace CTF')
+
     return parser
 
 
@@ -757,6 +788,8 @@ def main():
         handle_bridge(args)
     elif cmd in ['ask', 'expert', 'astra']:
         handle_ask(args)
+    elif cmd in ['platform', 'platforms', 'schema']:
+        handle_platform(args)
     elif cmd in ['menu', 'ui', 'console']:
         launch_interactive_menu(workspace_path=args.workspace, cookie=args.cookie, token=args.token)
     else:
