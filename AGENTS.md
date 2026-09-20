@@ -9,3 +9,6 @@
    - Tuyệt đối không hardcode bất kỳ màu sắc, đường dẫn hoặc cấu hình tĩnh nào trực tiếp vào logic xử lý.
    - Tách nhỏ các module (chia nhỏ trách nhiệm, single responsibility).
    - Màu sắc và giao diện phải đi qua Theme system (`ctf_downloader/ui/theme.py`), hỗ trợ mở rộng theme (như Cyberpunk, Matrix Emerald, Amber Radar, ExOdia Cyan) mà không sửa đổi code lõi.
+4. **Full Autonomous Authority (Toàn quyền tự quyết & Tự động hóa)**:
+   - Agent có toàn quyền quyết định phương án thiết kế, tái cấu trúc và tối ưu hóa tốt nhất theo tiêu chí đơn giản, hiện đại, tiện dụng.
+   - Tự hành động xuyên suốt từ lập kế hoạch, refactor, kiểm thử thực tế, debug chi tiết đến hoàn thiện mà không cần dừng lại xin xác nhận hay chờ approve từ user.
