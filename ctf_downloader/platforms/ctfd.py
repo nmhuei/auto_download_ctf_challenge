@@ -599,9 +599,9 @@ class CTFdPlatform(BasePlatform):
 
         endpoints = (
             (f"{self.base_url}/api/v1/plugins/ctfd-whale/container", True,
-             {"params": {"challenge_id": challenge_id}}),
+             {"params": {"challenge_id": challenge_id}, "json": {}}),
             (f"{self.base_url}/plugins/ctfd-whale/container", True,
-             {"params": {"challenge_id": challenge_id}}),
+             {"params": {"challenge_id": challenge_id}, "json": {}}),
             (f"{self.base_url}/api/v1/containers", False,
              {"json": {"challenge_id": challenge_id}}),
         )
@@ -641,7 +641,7 @@ class CTFdPlatform(BasePlatform):
         for url in endpoints:
             try:
                 resp = self.session.delete(
-                    url, params={"challenge_id": challenge_id}, timeout=15)
+                    url, params={"challenge_id": challenge_id}, json={}, timeout=15)
             except CloudflareChallengeError as e:
                 return False, f"Cloudflare đang chặn stop instance: {e}"
             except Exception as e:
@@ -673,7 +673,7 @@ class CTFdPlatform(BasePlatform):
         for url in endpoints:
             try:
                 resp = self.session.patch(
-                    url, params={"challenge_id": challenge_id}, timeout=15)
+                    url, params={"challenge_id": challenge_id}, json={}, timeout=15)
             except CloudflareChallengeError as e:
                 return False, f"Cloudflare đang chặn extend instance: {e}"
             except Exception as e:

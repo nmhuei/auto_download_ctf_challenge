@@ -259,6 +259,7 @@ class PullService:
             custom_headers=config.custom_headers,
             timeout=config.timeout,
             base_url=config.url,
+            insecure=getattr(config, 'insecure', False),
         )
 
         # 1. Detect Platform
@@ -725,6 +726,7 @@ class PullService:
             custom_headers=config.custom_headers,
             timeout=config.timeout,
             base_url=config.url,
+            insecure=getattr(config, 'insecure', False),
         )
 
         # 1. Detect + Authenticate + Fetch (giống full pull)
@@ -967,7 +969,7 @@ class PullService:
             "output_dir": output_dir,
             "summary_file": summary_file,
             "total_files": sum(
-                sum(1 for f in res if f.get("success"))
+                sum(1 for f in res if (f.get("success") if isinstance(f, dict) else bool(f)))
                 for res in all_results.values()),
             "challenges_processed": len(all_results),
             "new": len(new_challs),
@@ -1183,7 +1185,7 @@ class PullService:
     # xem docstring ``sync_workspace`` cho cách gọi sau khi cli.py sẵn sàng.
     # ------------------------------------------------------------------ #
     @staticmethod
-    def sync_workspace(repo: Any, platform: Any) -> Dict[str, Any]:
+    def sync_workspace(repo: Any, platform: Any, apply_drift: bool = False) -> Dict[str, Any]:
         """Đồng bộ 2 chiều giữa workspace local và platform (backlog P2-1).
 
         Nguyên tắc: LOCAL STATE LÀ CHỦ. Với mỗi challenge đã có local, chỉ
@@ -1321,6 +1323,75 @@ class PullService:
         verdict = PullService.verify(repo, platform)
         drift = verdict["unsolved_locally_solved_remotely"]
 
+        applied_drift = 0
+        applied_by_me_cids = set()
+        if apply_drift and drift:
+            for d in drift:
+                mp = d.get("path")
+                if not mp:
+                    continue
+                if d.get("by_me"):
+                    applied_by_me_cids.add(str(d.get("id")))
+                target = "solved_by_me" if d.get("by_me") else "solved_by_team"
+                try:
+                    repo.update_status(
+                        mp, lambda st: {**st, "solve": target, "synced_at": now_str})
+                    repo.update_metadata(
+                        mp, lambda m: {**m, "solved_by_me": bool(d.get("by_me"))})
+                    applied_drift += 1
+                except OSError as exc:
+                    write_errors.append(f"apply-drift {mp}: {exc}")
+                except Exception as exc:
+                    write_errors.append(f"apply-drift {mp}: {type(exc).__name__}: {exc}")
+            if applied_drift > 0:
+                Logger.success(
+                    f"✅ Đã tự động cập nhật trạng thái solved từ server cho {applied_drift} challenge.")
+                verdict = PullService.verify(repo, platform)
+                drift = verdict["unsolved_locally_solved_remotely"]
+
+        # Cập nhật challenges.json nếu file đã có
+        if os.path.exists(repo.challenges_path):
+            try:
+                def _mut_challenges(data: dict) -> dict:
+                    data = dict(data or {})
+                    ch_list = data.get("challenges")
+                    if not isinstance(ch_list, list):
+                        return data
+                    server_map = {str(c.id): c for c in challenges}
+                    new_ch_list = []
+                    total_pts = 0
+                    for c_dict in ch_list:
+                        cid_str = str(c_dict.get("id"))
+                        sc = server_map.get(cid_str)
+                        if sc:
+                            c_dict["points"] = sc.points
+                            c_dict["solves_count"] = sc.solves_count
+                            c_dict["connection_info"] = sc.connection_info
+                            c_dict["submit_endpoint"] = sc.submit_endpoint
+                            if getattr(sc, "instance_info", None) and isinstance(sc.instance_info, dict):
+                                inst = dict(c_dict.get("instance_info") or {})
+                                for k, v in sc.instance_info.items():
+                                    if k not in PullService._LOCAL_INSTANCE_KEYS:
+                                        inst[k] = v
+                                c_dict["instance_info"] = inst
+                            if apply_drift:
+                                if getattr(sc, "solved_by_me", False) or (cid_str in applied_by_me_cids):
+                                    c_dict["solved_by_me"] = True
+                            elif getattr(sc, "solved_by_me", False):
+                                c_dict["solved_by_me"] = True
+                        try:
+                            total_pts += int(c_dict.get("points") or 0)
+                        except (ValueError, TypeError):
+                            pass
+                        new_ch_list.append(c_dict)
+                    data["challenges"] = new_ch_list
+                    data["total_points"] = total_pts
+                    return data
+
+                repo.mutate_challenges(_mut_challenges)
+            except Exception as exc:
+                Logger.debug(f"Không thể cập nhật challenges.json: {exc}")
+
         result = {
             # Partial persist/corrupt-local state is NOT a successful sync for
             # CLI/automation purposes. Keep detailed partial results so the
@@ -1370,8 +1441,8 @@ class PullService:
                       for d in drift]
             Logger.print_table("Drift — solved trên server, local chưa",
                                ["Challenge", "By", "Solvers"], d_rows)
-            Logger.warning("⚠️ KHÔNG tự đổi trạng thái — user quyết định qua "
-                           "'status set' hoặc submit flag.")
+            Logger.warning("⚠️ KHÔNG tự đổi trạng thái — dùng 'ctf sync --apply' để tự động cập nhật "
+                           "hoặc 'ctf status set <id> solved'.")
         return result
 
     @staticmethod

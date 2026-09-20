@@ -351,10 +351,10 @@ Nơi lưu archive tar.gz mặc định của
 Chỉ mục này được sinh tự động từ argparse; không sửa tay.
 .TP
 .B ctf pull
-\-\-allow\-private\-redirects \-\-category \-\-cookie \-\-exclude \-\-force \-\-git\-base \-\-git\-remote \-\-interactive \-\-no\-git \-\-no\-git\-push \-\-no\-template \-\-no\-third\-party \-\-output \-\-refresh\-meta \-\-threads \-\-timeout \-\-token \-\-update \-\-url \-\-verify\-downloads
+\-\-allow\-private\-redirects \-\-category \-\-cookie \-\-exclude \-\-force \-\-git\-base \-\-git\-remote \-\-insecure \-\-interactive \-\-no\-git \-\-no\-git\-push \-\-no\-template \-\-no\-third\-party \-\-output \-\-refresh\-meta \-\-threads \-\-timeout \-\-token \-\-update \-\-url \-\-verify\-downloads
 .TP
 .B ctf status
-\-\-category \-\-container \-\-label \-\-search \-\-solved \-\-solver \-\-unsolved \-\-watch \-\-workspace
+\-\-category \-\-container \-\-label \-\-search \-\-set \-\-solved \-\-solver \-\-unsolved \-\-watch \-\-workspace
 .TP
 .B ctf solve
 \-\-active \-\-attach \-\-bg \-\-cancel \-\-detach \-\-distill \-\-foreground \-\-ids \-\-logs \-\-new\-session \-\-reset\-sessions \-\-stale\-timeout \-\-status \-\-stop \-\-timeout \-\-workers \-\-workspace
@@ -387,7 +387,7 @@ Chỉ mục này được sinh tự động từ argparse; không sửa tay.
 \-\-cf\-clearance \-\-email \-\-password \-\-tempmail \-\-url \-\-username \-\-workspace
 .TP
 .B ctf doctor
-\-\-cookie \-\-runtime \-\-token \-\-url \-\-workspace
+\-\-cookie \-\-insecure \-\-runtime \-\-token \-\-url \-\-workspace
 .TP
 .B ctf menu
 \-\-cookie \-\-token \-\-workspace
@@ -399,7 +399,7 @@ Chỉ mục này được sinh tự động từ argparse; không sửa tay.
 \-\-git\-remote \-\-out \-\-yes
 .TP
 .B ctf sync
-\-\-verify \-\-workspace
+\-\-apply \-\-insecure \-\-pull \-\-pull\-status \-\-verify \-\-workspace
 .TP
 .B ctf history
 \-\-all \-\-clear \-\-limit \-\-prune \-\-tail \-\-workspace

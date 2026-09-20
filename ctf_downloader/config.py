@@ -38,10 +38,24 @@ class DownloaderConfig:
     categories: Optional[List[str]] = None
     exclude_categories: Optional[List[str]] = None
     custom_headers: Dict[str, str] = field(default_factory=dict)
+    insecure: bool = False
     
     def validate(self):
         if not self.url:
             raise ValueError("CTF platform URL is required.")
+        if os.environ.get("CTF_INSECURE") == "1":
+            self.insecure = True
+
+        # Auto-enable insecure for private IP addresses (RFC 1918 / loopback)
+        try:
+            parsed_host = urllib.parse.urlparse(self.url).hostname
+            if parsed_host:
+                import ipaddress
+                ip_obj = ipaddress.ip_address(parsed_host)
+                if ip_obj.is_private or ip_obj.is_loopback:
+                    self.insecure = True
+        except (ValueError, TypeError):
+            pass
         
         # Remove hash fragment
         self.url = self.url.split("#")[0].strip()

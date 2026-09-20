@@ -106,7 +106,7 @@ class SummaryGenerator:
             chall_pts = _points_value(chall.points)
             total_points += chall_pts if chall_pts is not None else 0
             chall_files = all_results.get(chall.id, [])
-            total_files += sum(1 for f in chall_files if f.get("success"))
+            total_files += sum(1 for f in chall_files if (f.get("success") if isinstance(f, dict) else bool(f)))
 
         # Build SUMMARY.md
         lines = []
@@ -154,7 +154,7 @@ class SummaryGenerator:
                 readme_rel = f"{dir_rel}/writeup/README.md"
                 
                 c_files = all_results.get(c.id, [])
-                succ_files = sum(1 for f in c_files if f.get("success"))
+                succ_files = sum(1 for f in c_files if (f.get("success") if isinstance(f, dict) else bool(f)))
                 files_str = f"{succ_files} file(s)" if succ_files > 0 else "-"
                 
                 solves_str = str(c.solves_count) if c.solves_count is not None else "-"

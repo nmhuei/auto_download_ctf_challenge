@@ -262,7 +262,12 @@ class WorkspaceRepo:
 
     def iter_challenges(self) -> Iterator[Path]:
         """Yield đường dẫn mọi metadata.json trong workspace (os.walk duy nhất)."""
-        for dirpath, _dirnames, filenames in os.walk(self.root):
+        for dirpath, dirnames, filenames in os.walk(self.root):
+            dirnames[:] = [
+                d for d in dirnames
+                if not d.startswith(".") and d not in ("node_modules", "__pycache__")
+                and not d.endswith(".dist-info") and not d.endswith(".egg-info")
+            ]
             if "metadata.json" in filenames:
                 yield Path(dirpath) / "metadata.json"
 

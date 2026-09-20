@@ -17,6 +17,7 @@ def create_session(
     impersonate: str = "chrome",
     use_browser_impersonation: bool = False,
     cloudflare_fallback: bool = True,
+    insecure: bool = False,
 ) -> requests.Session:
     """Tạo session đã cấu hình headers/cookies/retry — mọi module phải đi qua đây."""
     return _http_create_session(
@@ -28,6 +29,7 @@ def create_session(
         impersonate=impersonate,
         use_browser_impersonation=use_browser_impersonation,
         cloudflare_fallback=cloudflare_fallback,
+        insecure=insecure,
     )
 
 
@@ -40,7 +42,12 @@ def thread_local_sessions(master: requests.Session) -> Iterator[Callable[[], req
     def get() -> requests.Session:
         sess = getattr(local, 'session', None)
         if sess is None:
-            sess = create_session(base_url=getattr(master, '_credential_origin', None))
+            master_insecure = not getattr(master, 'verify', True)
+            sess = create_session(
+                base_url=getattr(master, '_credential_origin', None),
+                insecure=master_insecure,
+            )
+            sess.verify = getattr(master, 'verify', True)
             sess.headers.update(master.headers)
             sess.cookies.update(master.cookies)
             # If the main-thread platform probe already detected Cloudflare,

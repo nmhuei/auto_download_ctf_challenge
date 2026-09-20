@@ -68,7 +68,7 @@ class _PhosphorHelpParser(argparse.ArgumentParser):
         COMMANDS = [
             ('pull', 'Tải đề + attachment từ platform, dựng workspace'),
             ('status', 'Bảng tổng quan workspace hiện tại'),
-            ('solve', 'Kích hoạt SuperBQA phân tích tự động (tối đa 3 luồng)'),
+            ('solve', 'Kích hoạt SuperBQA'),
             ('workspaces', 'Quét mọi workspace CTF trên máy'),
             ('sync', 'Đồng bộ metadata động workspace ↔ platform'),
             ('instance', 'Quản lý container động của challenge'),
@@ -122,6 +122,14 @@ class _PhosphorHelpParser(argparse.ArgumentParser):
         ))
 
 
+class _ExplicitWorkspaceAction(argparse.Action):
+    """Store a workspace value while preserving whether ``-w`` was supplied."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        setattr(namespace, "workspace_explicit", True)
+
+
 def build_unified_parser():
     from .storage.global_config import resolve_workspace_root
     workspace_root = resolve_workspace_root()
@@ -167,6 +175,8 @@ def build_unified_parser():
                              help='Tên remote dùng push (default: origin)')
     pull_parser.add_argument('--no-git-push', action='store_true',
                              help='Tạo/commit branch nhưng không tự push sau pull')
+    pull_parser.add_argument('-k', '--insecure', action='store_true',
+                             help='Bỏ qua xác minh SSL/TLS certificate (dùng cho CTF server LAN/self-signed)')
     pull_parser.add_argument('-i', '--interactive', action='store_true', help='Launch interactive download wizard')
 
     # 2. STATUS / TREE / LS / DASHBOARD
@@ -185,6 +195,9 @@ def build_unified_parser():
                                help='Hiện tiến độ SuperBQA worker của challenge')
     status_parser.add_argument('--watch', action='store_true',
                                help='Tự refresh khi dùng --solver')
+    status_parser.add_argument('--set', dest='set_solve', nargs=2, metavar=('TARGET', 'STATE'),
+                               help='Đặt trạng thái solve cho challenge: solved/working/unsolved')
+    status_parser.add_argument('args_extra', nargs='*', help=argparse.SUPPRESS)
 
     solve_parser = subparsers.add_parser('solve', aliases=['solver', 'bqa', 'eating'],
                                          help='BQA EATING: Analyze and auto-solve CTF challenges in parallel')
@@ -331,6 +344,8 @@ def build_unified_parser():
     doctor_parser.add_argument(
         '--runtime', action='store_true',
         help='Chỉ kiểm local runtime/dependency/tool/fallback; không cần -u')
+    doctor_parser.add_argument('-k', '--insecure', action='store_true',
+                               help='Bỏ qua xác minh SSL/TLS certificate (dùng cho CTF server LAN/self-signed)')
 
     # 8. MENU / UI / INTERACTIVE
     menu_parser = subparsers.add_parser('menu', aliases=['ui', 'console'], help='Launch full interactive CTF suite dashboard')
@@ -355,10 +370,21 @@ def build_unified_parser():
 
     # 11. SYNC — đồng bộ metadata 2 chiều workspace <-> platform (P2-1)
     sync_parser = subparsers.add_parser('sync', aliases=['resync'],
-                                        help='Đồng bộ metadata động (points/solves/connection) workspace ↔ platform; không đụng status/flag/file')
-    sync_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
+                                         help='Đồng bộ metadata động (points/solves/connection) workspace ↔ platform; không đụng status/flag/file')
+    sync_parser.set_defaults(workspace_explicit=False)
+    sync_parser.add_argument('workspace_ref', nargs='?', metavar='EVENT',
+                             help='Tên workspace hoặc tên giải trong workspace-root')
+    sync_parser.add_argument('-w', '--workspace', default='.', action=_ExplicitWorkspaceAction,
+                             help='CTF workspace directory (default: current dir)')
     sync_parser.add_argument('--verify', action='store_true',
                              help='Chạy thêm verify: liệt kê challenge solved trên server nhưng local chưa (drift)')
+    sync_parser.add_argument('-a', '--apply', '--pull-status', action='store_true',
+                             dest='apply_drift',
+                             help='Tự động áp dụng trạng thái solved từ server vào local (giải quyết drift)')
+    sync_parser.add_argument('--pull', action='store_true',
+                             help='Tải thêm các challenge MỚI trên server về workspace')
+    sync_parser.add_argument('-k', '--insecure', action='store_true',
+                             help='Bỏ qua xác minh SSL/TLS certificate (dùng cho CTF server LAN/self-signed)')
 
     # 12. HISTORY — lịch sử submit từ submit_history.json
     hist_parser = subparsers.add_parser('history', aliases=['log'],
@@ -557,6 +583,8 @@ def _skip_bqa_recovery(argv) -> bool:
     subcommand = next((arg for arg in argv if not arg.startswith("-")), None)
     if subcommand in {"submit", "hoard"}:
         return True
+    if subcommand in {"sync", "resync"} and "--pull" not in argv:
+        return True
     if subcommand is not None and subcommand not in {"pull", "download", "clone", "instance", "sync"}:
         return True
     return False
@@ -640,6 +668,29 @@ def main():
 
     parser = build_unified_parser()
     args = parser.parse_args()
+
+    if getattr(args, 'insecure', False):
+        os.environ["CTF_INSECURE"] = "1"
+
+    if args.subcommand in ['sync', 'resync']:
+        if args.workspace_ref and args.workspace_explicit:
+            parser.error('sync chỉ nhận một trong EVENT hoặc -w/--workspace')
+        if args.workspace_ref:
+            from .storage.workspace_locator import (
+                WorkspaceReferenceError, resolve_workspace_reference,
+            )
+            try:
+                args.workspace = resolve_workspace_reference(args.workspace_ref)
+            except WorkspaceReferenceError as exc:
+                parser.error(str(exc))
+        elif not getattr(args, 'workspace_explicit', False):
+            from .storage.global_config import load_global_config
+            ws_path = Path(args.workspace or '.').resolve()
+            if not (ws_path / "challenges.json").exists() and not (ws_path / ".ctf").exists():
+                cfg = load_global_config()
+                def_ws = cfg.get("default_workspace")
+                if def_ws and Path(def_ws).is_dir() and ((Path(def_ws) / "challenges.json").exists() or (Path(def_ws) / ".ctf").exists()):
+                    args.workspace = str(Path(def_ws).resolve())
 
     if args.interactive:
         launch_interactive_menu(workspace_path=args.workspace)

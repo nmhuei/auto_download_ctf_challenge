@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import socket
 import threading
@@ -549,6 +550,7 @@ class CloudflareAdaptiveSession(requests.Session):
                         secure=bool(cookie.secure),
                     )
 
+                browser.verify = getattr(self, "verify", True)
                 self._cf_browser_session = browser
                 self._cf_active = True
                 try:
@@ -612,6 +614,7 @@ class CloudflareAdaptiveSession(requests.Session):
                 if not HAS_CURL_CFFI or curl_requests is None:
                     return None, False
                 browser = curl_requests.Session(impersonate=self._cf_impersonate)
+                browser.verify = getattr(self, "verify", True)
                 self._cf_foreign_sessions[target] = browser
             return browser, False
 
@@ -859,6 +862,7 @@ def create_session(
     use_browser_impersonation: bool = False,
     cloudflare_fallback: bool = True,
     base_url: Optional[str] = None,
+    insecure: bool = False,
 ) -> Any:
     """Create the toolkit HTTP session with adaptive Cloudflare fallback."""
     if use_browser_impersonation and (not HAS_CURL_CFFI or curl_requests is None):
@@ -875,6 +879,24 @@ def create_session(
         cloudflare_fallback=(True if use_browser_impersonation
                              else cloudflare_fallback),
     )
+    insecure = bool(insecure or os.environ.get("CTF_INSECURE") == "1")
+    if not insecure and base_url:
+        try:
+            parsed_host = urlparse(str(base_url)).hostname
+            if parsed_host:
+                import ipaddress
+                ip_obj = ipaddress.ip_address(parsed_host)
+                if ip_obj.is_private or ip_obj.is_loopback:
+                    insecure = True
+        except (ValueError, TypeError):
+            pass
+    if insecure:
+        session.verify = False
+        try:
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        except Exception:
+            pass
     retry_strategy = Retry(
         total=retries,
         other=0,

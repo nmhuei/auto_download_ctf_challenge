@@ -45,8 +45,8 @@ _ctf() {
     local opts=""
     case "$cmd" in
         bridge)      opts="status start stop token" ;;
-        pull)        opts="-u --url -c --cookie -t --token -o --output -j --threads -C --category -E --exclude --no-third-party --no-template -f --force --verify-downloads --allow-private-redirects --update --refresh-meta --timeout --no-git --git-base --git-remote --no-git-push -i --interactive" ;;
-        status)      opts="-w --workspace -u --unsolved -s --solved -C --category --container --label --search --solver --watch" ;;
+        pull)        opts="-u --url -c --cookie -t --token -o --output -j --threads -C --category -E --exclude --no-third-party --no-template -f --force --verify-downloads --allow-private-redirects --update --refresh-meta --timeout --no-git --git-base --git-remote --no-git-push -k --insecure -i --interactive" ;;
+        status)      opts="-w --workspace -u --unsolved -s --solved -C --category --container --label --search --solver --watch --set" ;;
         solve)       opts="-w --workspace --ids --workers --timeout --stale-timeout --detach --bg --foreground --status --active --stop --cancel --logs --attach --watch --new-session --reset-sessions --distill" ;;
         note)        opts="-w --workspace --remove" ;;
         tag)         opts="-r --remove -w --workspace" ;;
@@ -57,10 +57,10 @@ _ctf() {
         rank)        opts="-w --workspace -u --url -c --cookie -t --token -n --top --no-docs" ;;
         watch)       opts="-w --workspace --once --no-scoreboard --start --end -c --cookie -t --token" ;;
         register)    opts="-u --url --email --tempmail --username --password --cf-clearance -w --workspace" ;;
-        doctor)      opts="-u --url -w --workspace -c --cookie -t --token --runtime" ;;
+        doctor)      opts="-u --url -w --workspace -c --cookie -t --token --runtime -k --insecure" ;;
         menu)        opts="-w --workspace -c --cookie -t --token" ;;
         storage)     opts="-d --base-dir --threshold-mb archive" ;;
-        sync)        opts="-w --workspace --verify" ;;
+        sync)        opts="-w --workspace --verify -a --apply --pull-status --pull -k --insecure" ;;
         history)     opts="-w --workspace --all --tail --limit --prune --clear" ;;
         open)        opts="-w --workspace" ;;
         git)         opts="init status push finish end merge -d --dir -w --workspace --remote-url --remote --base --no-push --import-existing --keep-remote -m --message" ;;

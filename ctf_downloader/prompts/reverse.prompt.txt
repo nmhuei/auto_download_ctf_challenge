@@ -1,0 +1,16 @@
+Challenge: {{challenge_name}} (Reverse Engineering & Algorithm Recovery)
+Workspace: Current working directory.
+Target Directory: {{target_directory}}
+Boundary: Strictly confined to this challenge directory. DO NOT search, list, or navigate outside (never scan /home, ~, Desktop, Downloads, or parent directories).
+Immediate Action: Read ./challenge/README.md and ./challenge/NOTE.md first to understand the challenge. Inspect files in ./challenge/.
+Hard Roadblocks: If blocked on a difficult mathematical, cryptographic, reverse-engineering, SAT/SMT, or state reachability subproblem, abstract it into a minimal formal instance and use the `ctf-ask` skill with deterministic local verification.
+{{dynamic_context}}
+
+Instructions:
+1. Identify the verification routine, dispatch table, or transformation layers.
+2. Deconstruct custom VM opcodes, S-boxes, or cyclic modular operations.
+3. Formulate the algebraic or logic inverse of the check routine.
+4. Write standalone decoders/emulators in script/ and document findings in script/analysis.md.
+5. If a candidate flag is found, save it to flag.txt.
+
+Protocol: Emit '@@CTF_PROGRESS@@ {"phase": "<phase>", "message": "<brief>"}' (phases: recon, modeling, local_verify).

@@ -92,6 +92,7 @@ _ctf() {
                         '--git-base[base branch nhận merge]:branch:' \
                         '--git-remote[tên remote dùng push]:remote:' \
                         '--no-git-push[tạo/commit branch nhưng không auto push]' \
+                        '(-k --insecure)'{-k,--insecure}'[bỏ qua xác minh SSL/TLS certificate]' \
                         '(-i --interactive)'{-i,--interactive}'[launch interactive download wizard]'
                     ;;
                 status|tree|ls|dashboard)
@@ -104,7 +105,8 @@ _ctf() {
                         '--label[chỉ hiện challenge mang label này]:label:' \
                         '--search[tìm từ khoá trong tên + note]:keyword:' \
                         '--solver[hiện tiến độ Agy worker của challenge]' \
-                        '--watch[tự refresh khi dùng --solver]'
+                        '--watch[tự refresh khi dùng --solver]' \
+                        '--set[đặt trạng thái solve cho challenge]:target:state:(solved working unsolved)'
                     ;;
                 solve|solver|bqa|eating)
                     _arguments \
@@ -222,7 +224,8 @@ _ctf() {
                         '(-w --workspace)'{-w,--workspace}'[workspace lấy auth từ auth map]:dir:_directories' \
                         '(-c --cookie)'{-c,--cookie}'[cookie string or path]:cookie:_files' \
                         '(-t --token)'{-t,--token}'[API token or Bearer token]:token' \
-                        '--runtime[chỉ kiểm local runtime/dependency/tool; không cần URL]'
+                        '--runtime[chỉ kiểm local runtime/dependency/tool; không cần URL]' \
+                        '(-k --insecure)'{-k,--insecure}'[bỏ qua xác minh SSL/TLS certificate]'
                     ;;
                 menu|ui|console)
                     _arguments \
@@ -247,7 +250,10 @@ _ctf() {
                 sync|resync)
                     _arguments \
                         '(-w --workspace)'{-w,--workspace}'[CTF workspace directory]:dir:_directories' \
-                        '--verify[chạy thêm verify drift solved server/local]'
+                        '--verify[chạy thêm verify drift solved server/local]' \
+                        '(-a --apply --pull-status)'{-a,--apply,--pull-status}'[tự động áp dụng trạng thái solved từ server vào local]' \
+                        '--pull[tải thêm các challenge mới trên server về workspace]' \
+                        '(-k --insecure)'{-k,--insecure}'[bỏ qua xác minh SSL/TLS certificate]'
                     ;;
                 history|log)
                     _arguments \

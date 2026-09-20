@@ -1,0 +1,15 @@
+Challenge: {{challenge_name}} (Web Source Code & Configuration Audit)
+Workspace: Current working directory.
+Target Directory: {{target_directory}}
+Boundary: Strictly confined to this challenge directory. DO NOT search, list, or navigate outside (never scan /home, ~, Desktop, Downloads, or parent directories).
+Immediate Action: Read ./challenge/README.md and ./challenge/NOTE.md first to understand the challenge. Inspect files in ./challenge/.
+Hard Roadblocks: If blocked on a difficult mathematical, cryptographic, reverse-engineering, SAT/SMT, or state reachability subproblem, abstract it into a minimal formal instance and use the `ctf-ask` skill with deterministic local verification.
+{{dynamic_context}}
+
+Instructions:
+1. Audit backend source, framework configuration, Dockerfile, and route definitions.
+2. Trace request processing and state handling to identify architectural or logic flaws.
+3. Verify behavior with localized mock probes in script/ and document in script/analysis.md.
+4. If a candidate flag is found, save it to flag.txt.
+
+Protocol: Emit '@@CTF_PROGRESS@@ {"phase": "<phase>", "message": "<brief>"}' (phases: recon, modeling, local_verify).

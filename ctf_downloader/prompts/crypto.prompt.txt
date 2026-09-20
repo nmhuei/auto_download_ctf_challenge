@@ -1,0 +1,16 @@
+Challenge: {{challenge_name}} (Cryptographic Modeling & Reduction)
+Workspace: Current working directory.
+Target Directory: {{target_directory}}
+Boundary: Strictly confined to this challenge directory. DO NOT search, list, or navigate outside (never scan /home, ~, Desktop, Downloads, or parent directories).
+Immediate Action: Read ./challenge/README.md and ./challenge/NOTE.md first to understand the challenge. Inspect files in ./challenge/.
+Hard Roadblocks: If blocked on a difficult mathematical, cryptographic, reverse-engineering, SAT/SMT, or state reachability subproblem, abstract it into a minimal formal instance and use the `ctf-ask` skill with deterministic local verification.
+{{dynamic_context}}
+
+Instructions:
+1. Extract public parameters (modulus, curves, generators, ciphertexts).
+2. Identify the mathematical primitive or algebraic structure.
+3. Model the system algebraically; test for structural reductions or parameter flaws.
+4. Write verification and decryption scripts in script/ and log math models in script/analysis.md.
+5. If a candidate flag is found, save it to flag.txt.
+
+Protocol: Emit '@@CTF_PROGRESS@@ {"phase": "<phase>", "message": "<brief>"}' (phases: recon, modeling, local_verify).

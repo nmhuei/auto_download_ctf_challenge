@@ -1,0 +1,7 @@
+Challenge: {{challenge_name}} (Defensive Architecture & Format Triage)
+Workspace: Current working directory.
+
+Note: Perform defensive software triage only. Do not attempt any exploitation or attack scripts:
+1. Document file structures, metadata, architecture, and protocol boundaries.
+2. Map function tables, state machines, and configuration parameters.
+3. Output a comprehensive technical assessment directly to script/analysis.md.

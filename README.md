@@ -134,8 +134,8 @@ Chạy `ctf <lệnh> --help` để xem đầy đủ tuỳ chọn của từng l�
 
 | Lệnh | Long options |
 | --- | --- |
-| `ctf pull` | `--allow-private-redirects` · `--category` · `--cookie` · `--exclude` · `--force` · `--git-base` · `--git-remote` · `--interactive` · `--no-git` · `--no-git-push` · `--no-template` · `--no-third-party` · `--output` · `--refresh-meta` · `--threads` · `--timeout` · `--token` · `--update` · `--url` · `--verify-downloads` |
-| `ctf status` | `--category` · `--container` · `--label` · `--search` · `--solved` · `--solver` · `--unsolved` · `--watch` · `--workspace` |
+| `ctf pull` | `--allow-private-redirects` · `--category` · `--cookie` · `--exclude` · `--force` · `--git-base` · `--git-remote` · `--insecure` · `--interactive` · `--no-git` · `--no-git-push` · `--no-template` · `--no-third-party` · `--output` · `--refresh-meta` · `--threads` · `--timeout` · `--token` · `--update` · `--url` · `--verify-downloads` |
+| `ctf status` | `--category` · `--container` · `--label` · `--search` · `--set` · `--solved` · `--solver` · `--unsolved` · `--watch` · `--workspace` |
 | `ctf solve` | `--active` · `--attach` · `--bg` · `--cancel` · `--detach` · `--distill` · `--foreground` · `--ids` · `--logs` · `--new-session` · `--reset-sessions` · `--stale-timeout` · `--status` · `--stop` · `--timeout` · `--workers` · `--workspace` |
 | `ctf note` | `--remove` · `--workspace` |
 | `ctf tag` | `--remove` · `--workspace` |
@@ -146,11 +146,11 @@ Chạy `ctf <lệnh> --help` để xem đầy đủ tuỳ chọn của từng l�
 | `ctf rank` | `--cookie` · `--no-docs` · `--token` · `--top` · `--url` · `--workspace` |
 | `ctf watch` | `--cookie` · `--end` · `--no-scoreboard` · `--once` · `--start` · `--token` · `--workspace` |
 | `ctf register` | `--cf-clearance` · `--email` · `--password` · `--tempmail` · `--url` · `--username` · `--workspace` |
-| `ctf doctor` | `--cookie` · `--runtime` · `--token` · `--url` · `--workspace` |
+| `ctf doctor` | `--cookie` · `--insecure` · `--runtime` · `--token` · `--url` · `--workspace` |
 | `ctf menu` | `--cookie` · `--token` · `--workspace` |
 | `ctf storage` | `--base-dir` · `--threshold-mb` |
 | `ctf storage archive` | `--git-remote` · `--out` · `--yes` |
-| `ctf sync` | `--verify` · `--workspace` |
+| `ctf sync` | `--apply` · `--insecure` · `--pull` · `--pull-status` · `--verify` · `--workspace` |
 | `ctf history` | `--all` · `--clear` · `--limit` · `--prune` · `--tail` · `--workspace` |
 | `ctf sniper` | `--poll` · `--retry-wrong` · `--start-at` · `--workspace` |
 | `ctf serve` | `--port` · `--workspace` |

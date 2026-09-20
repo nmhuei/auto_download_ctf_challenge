@@ -485,5 +485,65 @@ class AttrTTLCacheTest(SyncTestBase):
         self.assertTrue(st["synced_at"], "có solver mới → phải stamp synced_at")
 
 
+class TestSyncApplyDrift(SyncTestBase):
+    """sync_workspace với apply_drift=True áp dụng drift vào status và challenges.json."""
+
+    def test_apply_drift_updates_status_and_challenges_json(self):
+        plat = FakePlatform(
+            [make_chall(cid, n, c, p) for cid, n, c, p in SEED_CHALLENGES],
+            attr_map={
+                4: SolveAttribution(by_team=True, solver_names=["alice", "bob"]),
+                1: SolveAttribution(by_me=True, solver_names=["me"]),
+            })
+        self.repo.write_challenges({
+            "challenges": [
+                {"id": 1, "name": "Alpha", "points": 100, "solved_by_me": False},
+                {"id": 2, "name": "Beta", "points": 200, "solved_by_me": True},
+                {"id": 4, "name": "Epsilon", "points": 150, "solved_by_me": False},
+            ],
+            "total_points": 450,
+        })
+
+        result = PullService.sync_workspace(self.repo, plat, apply_drift=True)
+        self.assertTrue(result["ok"])
+
+        # Alpha(1) được giải bởi me -> solve: solved_by_me
+        alpha_st = self.repo.read_status(self.meta_path_of(1))
+        self.assertEqual(alpha_st["solve"], "solved_by_me")
+        alpha_meta = self.repo.read_metadata(self.meta_path_of(1))
+        self.assertTrue(alpha_meta.get("solved_by_me"))
+
+        # Epsilon(4) được giải bởi team -> solve: solved_by_team
+        eps_st = self.repo.read_status(self.meta_path_of(4))
+        self.assertEqual(eps_st["solve"], "solved_by_team")
+
+        # challenges.json được cập nhật
+        c_data = self.repo.read_challenges()
+        c_map = {c["id"]: c for c in c_data.get("challenges", [])}
+        self.assertTrue(c_map[1]["solved_by_me"])
+
+
+class TestStatusSetSolve(SyncTestBase):
+    """StatusService.set_solve thay đổi trạng thái thủ công."""
+
+    def test_set_solve_by_id_and_name(self):
+        from ctf_downloader.services.status_service import StatusService
+
+        # Đặt 4 thành solved
+        self.assertTrue(StatusService.set_solve(self.repo, 4, "solved"))
+        st4 = self.repo.read_status(self.meta_path_of(4))
+        self.assertEqual(st4["solve"], "solved_by_me")
+        meta4 = self.repo.read_metadata(self.meta_path_of(4))
+        self.assertTrue(meta4.get("solved_by_me"))
+
+        # Đặt lại thành unsolved
+        self.assertTrue(StatusService.set_solve(self.repo, "Epsilon", "unsolved"))
+        st4 = self.repo.read_status(self.meta_path_of(4))
+        self.assertEqual(st4["solve"], "unsolved")
+        meta4 = self.repo.read_metadata(self.meta_path_of(4))
+        self.assertFalse(meta4.get("solved_by_me"))
+
+
 if __name__ == "__main__":
     unittest.main()
+

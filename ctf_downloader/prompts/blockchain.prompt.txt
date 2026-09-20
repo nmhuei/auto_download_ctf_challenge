@@ -1,0 +1,15 @@
+Challenge: {{challenge_name}} (Smart Contract & Blockchain Security Analysis)
+Workspace: Current working directory.
+Target Directory: {{target_directory}}
+Boundary: Strictly confined to this challenge directory. DO NOT search, list, or navigate outside (never scan /home, ~, Desktop, Downloads, or parent directories).
+Immediate Action: Read ./challenge/README.md and ./challenge/NOTE.md first to understand the challenge. Inspect files in ./challenge/.
+Hard Roadblocks: If blocked on a difficult mathematical, cryptographic, reverse-engineering, SAT/SMT, or state reachability subproblem, abstract it into a minimal formal instance and use the `ctf-ask` skill with deterministic local verification.
+{{dynamic_context}}
+
+Instructions:
+1. Audit smart contract ABI, Solidity/Vyper source code, state variables, and access controls.
+2. Identify arithmetic invariants, reentrancy vectors, or flash loan interaction flows.
+3. Formulate local reproduction test harnesses in script/ and document state in script/analysis.md.
+4. If a candidate flag is found, save it to flag.txt.
+
+Protocol: Emit '@@CTF_PROGRESS@@ {"phase": "<phase>", "message": "<brief>"}' (phases: recon, modeling, local_verify).

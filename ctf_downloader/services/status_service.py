@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import sys
+import time
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -457,6 +458,70 @@ class StatusService:
         except Exception as e:
             Logger.warning(f"Không thể cập nhật tags: {e}")
             return False, rejected
+
+    @classmethod
+    def set_solve(cls, repo: WorkspaceRepo, target: Any, state: str) -> bool:
+        """Ghi nhận trạng thái solve thủ công cho một challenge.
+
+        state: 'solved', 'unsolved', 'working', 'solved_by_me', 'solved_by_team'
+        """
+        try:
+            meta_path, meta = cls.resolve_challenge(repo, target)
+        except ChallengeNotFoundError as e:
+            Logger.error(str(e))
+            return False
+        except AmbiguousChallengeError as e:
+            Logger.error(str(e))
+            cls._print_matches(e.matches)
+            return False
+
+        name = meta.get('name', target)
+        cid = meta.get('id')
+        state_low = (state or "").strip().lower()
+        mapping = {
+            "solved": "solved_by_me",
+            "solved_by_me": "solved_by_me",
+            "me": "solved_by_me",
+            "team": "solved_by_team",
+            "solved_by_team": "solved_by_team",
+            "working": "working",
+            "unsolved": "unsolved",
+            "none": "unsolved",
+        }
+        canonical = mapping.get(state_low)
+        if not canonical:
+            Logger.error(f"Trạng thái không hợp lệ: '{state}'. Chọn một trong: {', '.join(sorted(set(mapping.keys())))}")
+            return False
+
+        now_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        def _st_mut(st: dict) -> dict:
+            st["solve"] = canonical
+            st["synced_at"] = now_str
+            return st
+
+        try:
+            repo.update_status(meta_path, _st_mut)
+            is_by_me = (canonical == "solved_by_me")
+            repo.update_metadata(meta_path, lambda m: {**m, "solved_by_me": is_by_me})
+
+            # Cập nhật challenges.json nếu có
+            if os.path.exists(repo.challenges_path):
+                def _c_mut(data: dict) -> dict:
+                    data = dict(data or {})
+                    for c in data.get("challenges", []):
+                        if str(c.get("id")) == str(cid):
+                            c["solved_by_me"] = is_by_me
+                    return data
+                repo.mutate_challenges(_c_mut)
+
+            Logger.success(
+                f"✔ Đã đặt trạng thái [bold][info]{escape(str(name))}[/info][/bold] -> [bold]{canonical}[/bold].",
+                markup=True)
+            return True
+        except Exception as exc:
+            Logger.error(f"Lỗi khi đặt trạng thái cho '{name}': {exc}")
+            return False
 
     @staticmethod
     def _print_matches(matches: List[dict]) -> None:
