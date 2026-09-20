@@ -924,11 +924,12 @@ class CTFInteractiveConsole:
             cookie=self.cookie,
             token=self.token
         )
-        ok, msg = sub.submit_single_flag(
+        res = sub.submit_single_flag(
             challenge_id=target.get('id'),
             challenge_name=target.get('name'),
             flag_value=flag_str
         )
+        ok = res[0] if isinstance(res, (tuple, list)) and len(res) >= 1 else bool(res)
         if ok:
             try:
                 from .services.git_workflow import GitWorkflowService
