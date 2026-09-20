@@ -56,55 +56,49 @@ WARN = WARNING
 SEL_FG = SELECTED_FG
 SEL_BG = SELECTED_BG
 
-DEFAULT_STYLES: dict[str, str] = {
-    # New semantic token family.
-    "bg": f"on {BG}",
-    "surface": f"on {SURFACE}",
-    "border": BORDER,
-    "text": TEXT,
-    "muted": MUTED,
-    "faint": FAINT,
-    "cyan": CYAN,
-    "selected": f"bold {SELECTED_FG} on {SELECTED_BG}",
-    "category.web": CATEGORY_WEB,
-    "category.crypto": CATEGORY_CRYPTO,
-    "category.pwn": CATEGORY_PWN,
-    "category.rev": CATEGORY_REV,
-    "category.forensics": CATEGORY_FORENSICS,
-    "category.misc": CATEGORY_MISC,
+from .palettes import EXODIA_PALETTE, PRESET_PALETTES, Palette
 
-    # Existing UI token names mapped onto the semantic palette.
-    "fg.base": FG_BASE,
-    "fg.muted": FG_MUTED,
-    "fg.faint": FG_FAINT,
-    "accent": ACCENT,
-    "accent.hi": ACCENT_HI,
-    "accent.deep": ACCENT_DEEP,
-    "info": INFO,
-    "solved": SOLVED,
-    "firstblood": FIRSTBLOOD,
-    "error": ERROR,
-    "warn": WARN,
-    "success": SUCCESS,
-    "warning": WARNING,
-    "hint": INFO,
-    "path": INFO,
-    "literal": INFO,
-    "title": f"bold {ACCENT}",
-    "div_line": BORDER,
-    "hi_fg": ACCENT,
-    "unsolved": FG_FAINT,
-    "sel": f"bold {SEL_FG} on {SEL_BG}",
-    "done": f"strike {FG_MUTED}",
-    "dim": "dim",
-}
+_CURRENT_PALETTE: Palette = EXODIA_PALETTE
+
+DEFAULT_STYLES: dict[str, str] = EXODIA_PALETTE.to_rich_styles()
 
 
-def load_theme(path: str | Path | None) -> Theme:
-    """Build a Rich Theme, optionally overridden by a TOML file."""
-    styles = dict(DEFAULT_STYLES)
-    if path is not None:
-        with open(path, "rb") as fh:
+def get_active_palette() -> Palette:
+    """Get current active palette, checking CTF_THEME env var first."""
+    import os
+    env_theme = os.environ.get("CTF_THEME", "").strip().lower()
+    if env_theme and env_theme in PRESET_PALETTES:
+        return PRESET_PALETTES[env_theme]
+    return _CURRENT_PALETTE
+
+
+def set_active_theme(name: str) -> bool:
+    """Set active theme palette by preset name."""
+    global _CURRENT_PALETTE
+    key = name.strip().lower()
+    if key in PRESET_PALETTES:
+        _CURRENT_PALETTE = PRESET_PALETTES[key]
+        return True
+    return False
+
+
+def list_themes() -> dict[str, str]:
+    """Return dictionary of available theme names and their display labels."""
+    return {k: p.display_name for k, p in PRESET_PALETTES.items()}
+
+
+def load_theme(path_or_name: str | Path | None = None) -> Theme:
+    """Build a Rich Theme from preset name, active palette, or TOML file path."""
+    import os
+
+    palette = get_active_palette()
+    if isinstance(path_or_name, str) and path_or_name.lower() in PRESET_PALETTES:
+        palette = PRESET_PALETTES[path_or_name.lower()]
+        return Theme(palette.to_rich_styles())
+
+    styles = palette.to_rich_styles()
+    if path_or_name is not None and (isinstance(path_or_name, Path) or (isinstance(path_or_name, str) and os.path.isfile(str(path_or_name)))):
+        with open(path_or_name, "rb") as fh:
             data = tomllib.load(fh)
         overrides = data.get("styles", data)
         if isinstance(overrides, dict):
@@ -116,6 +110,7 @@ def load_theme(path: str | Path | None) -> Theme:
 
 __all__ = [
     "DEFAULT_STYLES", "load_theme",
+    "get_active_palette", "set_active_theme", "list_themes",
     "BG", "SURFACE", "BORDER",
     "TEXT", "MUTED", "FAINT",
     "CYAN", "CYAN_HI", "CYAN_DEEP",

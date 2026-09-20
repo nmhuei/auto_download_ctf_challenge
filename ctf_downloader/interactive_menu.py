@@ -55,6 +55,7 @@ _MAIN_ACTIONS_FULL = (
     ('8', 'Scan & summarize all CTF workspaces on machine'),
     ('9', 'Configure & save Cookie / Token for this event'),
     ('G', 'Git Sync & Remote Backup (Kho vũ khí GitHub)'),
+    ('T', 'Switch Visual Theme (Cyberpunk / Matrix / Amber / Nord)'),
     ('S', 'SUPERBQA EATING'),
     ('0', 'Exit'),
 )
@@ -70,6 +71,7 @@ _MAIN_ACTIONS_COMPACT = (
     ('8', 'Summarize local workspaces'),
     ('9', 'Configure Cookie / Token'),
     ('G', 'Git Sync & Remote Backup'),
+    ('T', 'Switch Visual Theme'),
     ('S', 'SUPERBQA EATING'),
     ('0', 'Exit'),
 )
@@ -119,6 +121,15 @@ def _menu_console():
         from rich.console import Console
         _MENU_CON = Console(stderr=True, theme=load_theme(None))
     return _MENU_CON
+
+
+def _update_menu_theme(name: str):
+    """Switch active theme for interactive console."""
+    global _MENU_CON
+    from .ui.theme import set_active_theme, load_theme
+    set_active_theme(name)
+    from rich.console import Console
+    _MENU_CON = Console(stderr=True, theme=load_theme(name))
 
 
 def _section(title: str):
@@ -416,9 +427,9 @@ class CTFInteractiveConsole:
                     else:
                         _option(key, label)
 
-                prompt_msg = 'Select action (0-9, G, S): '
+                prompt_msg = 'Select action (0-9, G, T, S): '
                 if self._last_action:
-                    prompt_msg = f'Select action (0-9, G, S) [default {self._last_action}]: '
+                    prompt_msg = f'Select action (0-9, G, T, S) [default {self._last_action}]: '
                 raw_choice = _prompt(prompt_msg).strip()
                 choice = raw_choice.strip(" []().")
                 if not choice and self._last_action:
@@ -438,9 +449,10 @@ class CTFInteractiveConsole:
                     '8': '8', 'scan': '8', 'summary': '8',
                     '9': '9', 'auth': '9', 'cookie': '9', 'token': '9', 'config': '9',
                     'g': 'G', 'git': 'G', 'sync': 'G', 'push': 'G', 'backup': 'G',
+                    't': 'T', 'theme': 'T', 'color': 'T', 'colors': 'T', 'style': 'T',
                     's': 'S', 'solve': 'S', 'solver': 'S', 'bqa': 'S', 'eating': 'S', 'eat': 'S',
                 }
-                canonical = key_map.get(choice_lower, choice.upper() if choice.upper() in ('S', 'G') else choice)
+                canonical = key_map.get(choice_lower, choice.upper() if choice.upper() in ('S', 'G', 'T') else choice)
 
                 if canonical == '0':
                     _menu_console().print(
@@ -467,13 +479,15 @@ class CTFInteractiveConsole:
                     self._menu_configure_auth()
                 elif canonical == 'G':
                     self._menu_git()
+                elif canonical == 'T':
+                    self._menu_theme()
                 elif canonical == 'S':
                     self._menu_solver()
                 else:
-                    Logger.warning('Invalid selection. Please choose an option from 0 to 9 (or G, S).')
+                    Logger.warning('Invalid selection. Please choose an option from 0 to 9 (or G, T, S).')
                 # Ghi nhớ hành động gần nhất để vòng sau đánh dấu ❯ (§S1.1);
                 # input lạ ('x', '99') không được tính là action.
-                if canonical in ('1', '2', '3', '4', '5', '6', '7', '8', '9', 'G', 'S'):
+                if canonical in ('1', '2', '3', '4', '5', '6', '7', '8', '9', 'G', 'T', 'S'):
                     self._last_action = canonical
             except (EOFError, KeyboardInterrupt):
                 _menu_console().print(
@@ -1404,22 +1418,21 @@ class CTFInteractiveConsole:
                 Logger.error(f"Lỗi khi sync Git: {e}")
             _pause()
         elif act == '3':
-            # Scan large files
-            large = GitWorkflowService.scan_large_files(ws, threshold_mb=50)
-            if large:
-                con.print(f"\n  [bold red]⚠️ CẢNH BÁO: Phát hiện {len(large)} file > 50MB (nguy cơ bị GitHub reject):[/bold red]")
-                for fpath, size in large:
-                    mb = size / (1024 * 1024)
-                    rel_p = fpath.relative_to(ws) if fpath.is_relative_to(ws) else fpath
-                    con.print(f"    - [yellow]{rel_p}[/yellow] ({mb:.1f} MB)")
-                con.print("  [dim]Gợi ý: Thêm các file này vào .gitignore trước khi push.[/dim]")
-            else:
-                con.print("\n  [bold green]✔ Anti-bloat check: Không có file nào > 50MB trong workspace.[/bold green]")
-
-            # Detailed git status
+            # Detailed status & Large files via service
             try:
-                proc = subprocess.run(["git", "status", "-s", "--", str(ws)], cwd=str(repo_root), capture_output=True, text=True)
-                lines = proc.stdout.strip().splitlines()
+                det = GitWorkflowService.workspace_detailed_status(ws)
+                large = det.get("large_files", [])
+                if large:
+                    con.print(f"\n  [bold red]⚠️ CẢNH BÁO: Phát hiện {len(large)} file > 50MB (nguy cơ bị GitHub reject):[/bold red]")
+                    for fpath, size in large:
+                        mb = size / (1024 * 1024)
+                        rel_p = fpath.relative_to(ws) if fpath.is_relative_to(ws) else fpath
+                        con.print(f"    - [yellow]{rel_p}[/yellow] ({mb:.1f} MB)")
+                    con.print("  [dim]Gợi ý: Thêm các file này vào .gitignore trước khi push.[/dim]")
+                else:
+                    con.print("\n  [bold green]✔ Anti-bloat check: Không có file nào > 50MB trong workspace.[/bold green]")
+
+                lines = det.get("changed_files", [])
                 if lines:
                     con.print(f"\n  [bold]Danh sách thay đổi trong {ws.name}:[/bold]")
                     for line in lines[:15]:
@@ -1428,28 +1441,54 @@ class CTFInteractiveConsole:
                         con.print(f"    ... và {len(lines) - 15} files khác")
                 else:
                     con.print("\n  [dim]Workspace hoàn toàn sạch sẽ (no unstaged changes).[/dim]")
-            except Exception:
-                pass
+
+                ahead = det.get("ahead", 0)
+                behind = det.get("behind", 0)
+                if ahead > 0 or behind > 0:
+                    con.print(f"\n  [dim]Sync status: {ahead} ahead, {behind} behind remote.[/dim]")
+            except Exception as e:
+                Logger.error(f"Lỗi kiểm tra status: {e}")
             _pause()
         elif act == '4':
-            cur_remote = "None"
-            try:
-                r_proc = subprocess.run(["git", "remote", "get-url", "origin"], cwd=str(repo_root), capture_output=True, text=True)
-                if r_proc.returncode == 0 and r_proc.stdout.strip():
-                    cur_remote = r_proc.stdout.strip()
-            except Exception:
-                pass
+            cur_remote = GitWorkflowService.get_remote_url(ws) or "(Chưa có)"
             con.print(f"  Remote hiện tại: [cyan]{cur_remote}[/cyan]")
             new_url = _prompt("Nhập GitHub remote URL mới (Enter bỏ qua): ").strip()
             if new_url:
                 try:
-                    if cur_remote != "None":
-                        subprocess.run(["git", "remote", "set-url", "origin", new_url], cwd=str(repo_root), check=True)
-                    else:
-                        subprocess.run(["git", "remote", "add", "origin", new_url], cwd=str(repo_root), check=True)
+                    GitWorkflowService.set_remote_url(ws, new_url)
                     Logger.success(f"Đã cập nhật remote 'origin' -> {new_url}")
                 except Exception as e:
                     Logger.error(f"Lỗi cập nhật remote: {e}")
+            _pause()
+
+    def _menu_theme(self):
+        from .ui.theme import get_active_palette
+        from .ui.palettes import PRESET_PALETTES
+        _section('Visual Theme Settings (Giao diện kịch tính)')
+        con = _menu_console()
+
+        cur = get_active_palette()
+        con.print(f"  Theme hiện tại: [bold]{cur.display_name}[/bold] [dim]({cur.name})[/dim]")
+        con.print(f"  [dim]{cur.description}[/dim]\n")
+
+        themes_list = list(PRESET_PALETTES.values())
+        for idx, pal in enumerate(themes_list, 1):
+            is_active = " [bold green]● active[/bold green]" if pal.name == cur.name else ""
+            con.print(f"  [{idx}] [bold]{pal.display_name}[/bold]{is_active}")
+            con.print(f"      [dim]{pal.description}[/dim]")
+
+        _option('0', 'Quay lại')
+        con.print()
+        ch = _prompt(f'Chọn theme (1-{len(themes_list)}) [0 để quay lại]: ').strip()
+        if ch and ch.isdigit() and 1 <= int(ch) <= len(themes_list):
+            chosen = themes_list[int(ch) - 1]
+            _update_menu_theme(chosen.name)
+            try:
+                from .storage.global_config import update_global_config
+                update_global_config({"theme": chosen.name})
+            except Exception:
+                pass
+            Logger.success(f"Đã chuyển giao diện sang: {chosen.display_name}!")
             _pause()
 
 

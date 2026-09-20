@@ -703,6 +703,80 @@ class GitWorkflowService:
         }
 
     @classmethod
+    def get_remote_url(
+        cls,
+        workspace: str | os.PathLike,
+        remote: str = DEFAULT_REMOTE,
+    ) -> str | None:
+        ws = Path(workspace).expanduser().resolve()
+        repo = cls.find_repo_root(ws)
+        if not repo:
+            return None
+        res = cls._run(repo, ["remote", "get-url", remote], check=False)
+        return res.stdout.strip() if res.returncode == 0 and res.stdout.strip() else None
+
+    @classmethod
+    def set_remote_url(
+        cls,
+        workspace: str | os.PathLike,
+        remote_url: str,
+        remote: str = DEFAULT_REMOTE,
+    ) -> None:
+        ws = Path(workspace).expanduser().resolve()
+        repo = cls.find_repo_root(ws)
+        if not repo:
+            raise GitWorkflowError(f"Không tìm thấy Git repo chứa workspace {ws}.")
+        existing = cls.get_remote_url(ws, remote=remote)
+        if existing is not None:
+            cls._run(repo, ["remote", "set-url", remote, remote_url])
+        else:
+            cls._run(repo, ["remote", "add", remote, remote_url])
+
+    @classmethod
+    def workspace_detailed_status(
+        cls,
+        workspace: str | os.PathLike,
+        threshold_mb: int = 50,
+    ) -> dict[str, Any]:
+        """Comprehensive status: files changed, large files list, ahead/behind, branch alignment."""
+        ws = Path(workspace).expanduser().resolve()
+        repo = cls.find_repo_root(ws)
+        if not repo:
+            raise GitWorkflowError(f"Không tìm thấy Git repo chứa workspace {ws}.")
+
+        base_st = cls.status(ws)
+        rel = cls._workspace_rel(repo, ws) if ws != repo else Path(".")
+        proc = cls._run(
+            repo,
+            ["status", "-s", "--", rel.as_posix()],
+            check=False,
+        )
+        file_lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+        large_files = cls.scan_large_files(ws, threshold_mb=threshold_mb)
+
+        ahead, behind = 0, 0
+        current = base_st.get("current_branch")
+        remote_name = base_st.get("remote") or cls.DEFAULT_REMOTE
+        if cls._remote_tracking_exists(repo, remote_name, current):
+            rev_proc = cls._run(
+                repo,
+                ["rev-list", "--left-right", "--count", f"{current}...{remote_name}/{current}"],
+                check=False,
+            )
+            if rev_proc.returncode == 0:
+                parts = rev_proc.stdout.strip().split()
+                if len(parts) == 2:
+                    ahead, behind = int(parts[0]), int(parts[1])
+
+        return {
+            **base_st,
+            "changed_files": file_lines,
+            "large_files": large_files,
+            "ahead": ahead,
+            "behind": behind,
+        }
+
+    @classmethod
     def status(cls, workspace: str | os.PathLike) -> dict[str, Any]:
         ws = Path(workspace).expanduser().resolve()
         repo = cls.find_repo_root(ws)
