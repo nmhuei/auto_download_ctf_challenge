@@ -363,17 +363,53 @@ class GitWorkflowService:
         return cls._run(repo, ["branch", "--show-current"]).stdout.strip()
 
     @classmethod
-    def _assert_clean(cls, repo: Path, action: str) -> None:
-        status = cls._run(
-            repo, ["status", "--porcelain", "--untracked-files=all"]
-        ).stdout.strip()
+    def _assert_clean(
+        cls,
+        repo: Path,
+        action: str,
+        *,
+        scoped_path: Path | None = None,
+    ) -> None:
+        args = ["status", "--porcelain", "--untracked-files=all"]
+        if scoped_path:
+            args += ["--", scoped_path.as_posix()]
+        status = cls._run(repo, args).stdout.strip()
         if status:
             preview = "\n".join(status.splitlines()[:12])
+            scope_desc = f" trong {scoped_path}" if scoped_path else ""
             raise GitWorkflowError(
-                f"Không thể {action}: Git working tree còn thay đổi chưa commit.\n"
+                f"Không thể {action}: Git working tree{scope_desc} còn thay đổi chưa commit.\n"
                 f"{preview}\n"
-                "Hãy commit/stash phần ngoài workspace trước."
+                "Hãy commit/stash phần thay đổi trước."
             )
+
+    @classmethod
+    def scan_large_files(
+        cls,
+        workspace: str | os.PathLike,
+        threshold_mb: int = 50,
+    ) -> list[tuple[Path, int]]:
+        """Scan workspace for files exceeding threshold_mb (default 50MB)."""
+        ws = Path(workspace).expanduser().resolve()
+        threshold_bytes = threshold_mb * 1024 * 1024
+        large_files: list[tuple[Path, int]] = []
+        if not ws.exists():
+            return large_files
+
+        for root, dirs, files in os.walk(ws):
+            dirs[:] = [
+                d for d in dirs
+                if d not in {".git", "__pycache__", ".venv", "venv", "node_modules"}
+            ]
+            for file in files:
+                fpath = Path(root) / file
+                try:
+                    size = fpath.stat().st_size
+                    if size >= threshold_bytes:
+                        large_files.append((fpath, size))
+                except (OSError, FileNotFoundError):
+                    pass
+        return large_files
 
     @classmethod
     def _workspace_rel(cls, repo: Path, workspace: Path) -> Path:
@@ -527,6 +563,7 @@ class GitWorkflowService:
         message: str | None = None,
         push: bool = True,
         remote: str | None = None,
+        scoped_only: bool = False,
     ) -> dict[str, Any]:
         """Commit workspace/repo and push its branch."""
         ws = Path(workspace).expanduser().resolve()
@@ -537,9 +574,9 @@ class GitWorkflowService:
             )
 
         meta = cls._load_meta(ws)
-        if not meta:
+        if not meta or scoped_only:
             current = cls._current_branch(repo)
-            remote_name = str(remote or cls.DEFAULT_REMOTE)
+            remote_name = str(remote or (meta.get("remote") if meta else None) or cls.DEFAULT_REMOTE)
             if ws == repo:
                 cls._run(repo, ["add", "-A"])
                 committed = cls._commit(
@@ -554,6 +591,9 @@ class GitWorkflowService:
                     message or f"ctf({ws.name}): checkpoint",
                     pathspec=rel.as_posix(),
                 )
+            if meta:
+                meta["last_checkpoint_at"] = cls._now_iso()
+                cls._write_meta(ws, meta)
             pushed = False
             remote_configured = cls._remote_exists(repo, remote_name)
             if push and remote_configured:
@@ -601,6 +641,65 @@ class GitWorkflowService:
             "committed": committed,
             "pushed": pushed,
             "remote": remote_name if remote_configured else None,
+        }
+
+    @classmethod
+    def safe_sync(
+        cls,
+        workspace: str | os.PathLike,
+        *,
+        remote: str | None = None,
+    ) -> dict[str, Any]:
+        """Perform 2-way safe sync: pull with rebase, then push current branch."""
+        ws = Path(workspace).expanduser().resolve()
+        repo = cls.find_repo_root(ws)
+        if repo is None:
+            raise GitWorkflowError(f"Không tìm thấy Git repo chứa workspace {ws}.")
+
+        meta = cls._load_meta(ws)
+        current = cls._current_branch(repo)
+        branch = str(meta.get("branch") or current)
+        remote_name = str(remote or meta.get("remote") or cls.DEFAULT_REMOTE)
+
+        if not cls._remote_exists(repo, remote_name):
+            raise GitWorkflowError(f"Remote '{remote_name}' không tồn tại trong repo.")
+
+        # Pull rebase from remote branch
+        rebased = False
+        if cls._remote_branch_exists(repo, remote_name, branch):
+            pull_res = cls._run(
+                repo,
+                ["pull", "--rebase", remote_name, branch],
+                check=False,
+            )
+            if pull_res.returncode != 0:
+                cls._run(repo, ["rebase", "--abort"], check=False)
+                detail = (pull_res.stderr or pull_res.stdout).strip()
+                raise GitWorkflowError(
+                    f"Sync thất bại khi rebase với {remote_name}/{branch}: {detail}"
+                )
+            rebased = True
+
+        # Push to remote branch
+        push_res = cls._run(
+            repo,
+            ["push", "-u", remote_name, branch],
+            check=False,
+        )
+        if push_res.returncode != 0:
+            detail = (push_res.stderr or push_res.stdout).strip()
+            raise GitWorkflowError(
+                f"Sync thất bại khi push lên {remote_name}/{branch}: {detail}"
+            )
+
+        return {
+            "success": True,
+            "repo_root": str(repo),
+            "workspace": str(ws),
+            "branch": branch,
+            "remote": remote_name,
+            "rebased": rebased,
+            "pushed": True,
         }
 
     @classmethod
