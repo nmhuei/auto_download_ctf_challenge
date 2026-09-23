@@ -31,9 +31,12 @@ def _get_rank_console() -> Console:
     """Return a Rich console with the current active theme palette."""
     from ..ui.theme import load_theme, get_active_palette
     try:
-        return Console(theme=load_theme(get_active_palette().name))
+        active_palette = get_active_palette().name
+        if hasattr(_rank_console, "push_theme"):
+            _rank_console.push_theme(load_theme(active_palette), inherit=False)
     except Exception:
-        return _rank_console
+        pass
+    return _rank_console
 
 #: Glyph vị trí top-3 thay huy chương emoji (spec §6: không emoji).
 _TOP3_GLYPH = "◆"

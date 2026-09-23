@@ -57,12 +57,12 @@ SWITCHER_TITLE_W = 30
 SWITCHER_PLATFORM_W = 8
 
 _MAIN_ACTIONS_RAW = (
-    ('1', '🎯', 'Workspace & Targets', '(Switch active event / Clone CTF / Auth)'),
-    ('2', '⚔️', 'Challenge Operations', '(Tree View / Action Card / Instances)'),
-    ('3', '🚩', 'Flag Submission Lab', '(Submit single / Auto-submit hoarded flags)'),
-    ('4', '⚡', 'SuperBQA AI Solver', '(Autonomous AGYworker agents / Live Radar)'),
-    ('5', '🏆', 'Live Scoreboard & Rank', '(Real-time standings / Points gap / Sync)'),
-    ('0', '🚪', 'Exit', ''),
+    ('1', '🎯', 'Đổi giải CTF & Auth', ''),
+    ('2', '🚩', 'Nộp Flag & Kho cờ', ''),
+    ('3', '⚡', 'AI Solver SuperBQA', ''),
+    ('4', '🏆', 'Live Scoreboard & Rank', ''),
+    ('5', '🌐', 'Quản lý Container', ''),
+    ('0', '🚪', 'Thoát', ''),
 )
 
 from rich.cells import cell_len as _cell_len
@@ -376,13 +376,42 @@ class CTFInteractiveConsole:
     # Render-only helpers (PHOSPHOR FIELD KIT) — logic wizard không đổi.
     # ------------------------------------------------------------------
 
-    def _print_header(self):
-        """Render one compact menu identity + workspace state block.
+    def _render_radar_dashboard(self, con):
+        """Hiển thị tổng quan tiến độ giải và bảng trạng thái bài thi thời gian thực."""
+        if not self.workspace_path or not os.path.exists(self.workspace_path):
+            return
+        from .services.solver_service import SolverService
+        from .cli_commands import _solver_table, _make_solver_overview_panel
+        try:
+            service = SolverService(self.workspace_path)
+            jobs = list(service.scan())
+            if not jobs:
+                return
+            con.print()
+            con.print(_make_solver_overview_panel(service, jobs=jobs))
+            con.print(_solver_table(service, jobs=jobs, animate=False))
 
-        The full splash owns branding on the first frame, so the immediate
-        duplicate AppHeader is suppressed once. Routine auth success, full
-        paths and user/team IDs stay hidden; only actionable warnings remain.
-        """
+            daemon_info = service.get_daemon_status()
+            if daemon_info.get("is_running"):
+                d_pid = daemon_info.get("daemon_pid")
+                d_targets = daemon_info.get("target_ids", "-")
+                d_active = ", ".join(daemon_info.get("active_ids", [])) or "preparing"
+                con.print()
+                st_text = Text("  🟢 ACTIVE SOLVER RUNNING ", style=f"bold {SUCCESS}")
+                st_text.append(f"[PID: {d_pid}]  ·  Targets: {d_targets}  ·  Active: {d_active}", style=FG_MUTED)
+                con.print(st_text)
+
+            cat_sessions = service.get_category_sessions()
+            if cat_sessions:
+                sess_strs = [f"{cat} ({info.get('conversation_id', '')[:8]}...)" for cat, info in cat_sessions.items()]
+                sess_text = Text("  📁 Category Sessions: ", style=FG_MUTED)
+                sess_text.append(", ".join(sess_strs), style=FG_MUTED)
+                con.print(sess_text)
+        except Exception as e:
+            Logger.debug(f"Radar dashboard rendering note: {e}")
+
+    def _print_header(self):
+        """Render menu identity, workspace stats, and full live radar dashboard."""
         con = _menu_console()
         if bool(getattr(self, "_suppress_next_brand", False)):
             self._suppress_next_brand = False
@@ -422,12 +451,15 @@ class CTFInteractiveConsole:
         else:
             ctx.append("  ")
             ctx.append(ws_name or self.workspace_path, style=INFO)
-            ctx.append(" · no challenges", style=FG_MUTED)
+            ctx.append(" · no challenges · use [1] to clone / download CTF", style=FG_MUTED)
 
         if not (self.cookie or self.token):
             ctx.append("\n  ")
             ctx.append("! auth not configured · use [1] -> [3] to configure credentials", style=WARN)
         con.print(ctx)
+
+        if total > 0:
+            self._render_radar_dashboard(con)
 
     def run(self):
         while True:
@@ -439,14 +471,32 @@ class CTFInteractiveConsole:
                 self._print_header()
 
                 _section('Actions')
-                for key, label in _main_menu_actions(_menu_console().width):
-                    # §S1.1: option là hành động gần nhất → dòng ❯ reverse;
-                    # option thường giữ _option() nguyên trạng.
-                    if key == self._last_action:
-                        _menu_console().print(
-                            selected_row(f'[{key}] {label}', selected=True))
+                grid = Table.grid(padding=(0, 1))
+                grid.add_column("key", justify="right", no_wrap=True)
+                grid.add_column("title")
+                grid.add_column("badge")
+
+                for key, icon, title, _ in _MAIN_ACTIONS_RAW:
+                    is_active = (key == self._last_action)
+                    is_exit = (key == "0")
+
+                    if is_exit:
+                        key_style = f"bold {FG_FAINT}"
+                        title_style = FG_MUTED
+                    elif is_active:
+                        key_style = f"bold {ACCENT}"
+                        title_style = f"bold {ACCENT}"
                     else:
-                        _option(key, label)
+                        key_style = f"bold {ACCENT}"
+                        title_style = FG_BASE
+
+                    badge_text = Text("● active", style=SUCCESS) if is_active else Text("")
+                    grid.add_row(
+                        Text(f"[{key}]", style=key_style),
+                        Text(f"{icon} {title}", style=title_style),
+                        badge_text,
+                    )
+                _menu_console().print(Padding(grid, (0, 2)))
 
                 prompt_msg = 'Select action (1-5, 0 [T=Theme]): '
                 if self._last_action:
@@ -456,20 +506,34 @@ class CTFInteractiveConsole:
                 if not choice and self._last_action:
                     choice = self._last_action
 
-                # Map alias/shortcuts to canonical action keys
                 choice_lower = choice.lower()
+
+                # Lối tắt mở trực tiếp Action Card: "c <id>", "card <id>", "info <id>"
+                if choice_lower.startswith(('info ', 'card ', 'c ')):
+                    query = choice.split(' ', 1)[1].strip()
+                    dash = CTFDashboard(self.workspace_path)
+                    target, err = _resolve_challenge_selection(dash.local_challenges, query)
+                    if target:
+                        challenge_action_card(self, target)
+                        continue
+                    else:
+                        Logger.error(err or f'Challenge not found: {query}')
+                        _pause()
+                        continue
+
+                # Map alias/shortcuts to canonical action keys
                 key_map = {
                     '0': '0', 'q': '0', 'quit': '0', 'exit': '0', 'thoat': '0',
                     '1': '1', 'workspace': '1', 'ws': '1', 'target': '1',
-                    '2': '2', 'chall': '2', 'challenge': '2', 'tree': '2', 'ls': '2',
-                    '3': '3', 'flag': '3', 'submit': '3', 'nop': '3',
-                    '4': '4', 'solve': '4', 'solver': '4', 'bqa': '4', 'eating': '4',
-                    '5': '5', 'rank': '5', 'ranking': '5', 'scoreboard': '5', 'board': '5', 'bxh': '5',
+                    '2': '2', 'flag': '2', 'submit': '2', 'nop': '2',
+                    '3': '3', 'solve': '3', 'solver': '3', 'bqa': '3', 'eating': '3',
+                    '4': '4', 'rank': '4', 'ranking': '4', 'scoreboard': '4', 'board': '4', 'bxh': '4',
+                    '5': '5', 'instance': '5', 'container': '5', 'dock': '5', 'docker': '5',
                     'g': 'G', 'git': 'G', 'sync': 'G', 'push': 'G', 'backup': 'G',
                     't': 'T', 'theme': 'T', 'color': 'T', 'colors': 'T', 'style': 'T',
-                    's': 'S',
+                    's': '3',
                 }
-                canonical = key_map.get(choice_lower, choice.upper() if choice.upper() in ('S', 'G', 'T') else choice)
+                canonical = key_map.get(choice_lower, choice.upper() if choice.upper() in ('G', 'T') else choice)
 
                 if canonical == '0':
                     _menu_console().print(
@@ -479,13 +543,13 @@ class CTFInteractiveConsole:
                 elif canonical == '1':
                     hub_workspace_targets(self)
                 elif canonical == '2':
-                    hub_challenge_operations(self)
-                elif canonical == '3':
                     hub_flag_submission(self)
-                elif canonical == '4':
+                elif canonical == '3':
                     self._menu_solver()
-                elif canonical == '5':
+                elif canonical == '4':
                     self._menu_ranking()
+                elif canonical == '5':
+                    self._menu_container_manager()
                 elif canonical == 'G':
                     con = _menu_console()
                     con.print()

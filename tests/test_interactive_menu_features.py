@@ -77,7 +77,7 @@ def test_main_menu_enter_selects_last_action(monkeypatch):
         app.workspace_path = str(ws)
         app.cookie = app.token = None
         app.config = {}
-        app._last_action = "4"
+        app._last_action = "3"
 
         called = []
         monkeypatch.setattr(app, "_menu_solver", lambda: called.append("solver"))
@@ -87,7 +87,7 @@ def test_main_menu_enter_selects_last_action(monkeypatch):
 
 
 def test_main_menu_aliases_and_cleaning(monkeypatch):
-    con = FakeMenuConsole(inputs=[" [4] ", " q "])
+    con = FakeMenuConsole(inputs=[" [3] ", " q "])
     monkeypatch.setattr(im, "_menu_console", lambda: con)
 
     with tempfile.TemporaryDirectory() as temp:
@@ -103,7 +103,7 @@ def test_main_menu_aliases_and_cleaning(monkeypatch):
         app.run()
 
         assert "solver" in called
-        assert app._last_action == "4"
+        assert app._last_action == "3"
 
 
 def test_menu_view_challenge_detail_lists_and_selects_by_index(monkeypatch):
@@ -610,9 +610,9 @@ def test_menu_solver_empty_workspace_guidance(monkeypatch):
         assert "Hub [1]" in output
 
 
-def test_main_menu_action_5_invokes_ranking(monkeypatch):
-    """Option 5 in main menu invokes _menu_ranking."""
-    con = FakeMenuConsole(inputs=["5", "0"])
+def test_main_menu_action_4_invokes_ranking(monkeypatch):
+    """Option 4 in main menu invokes _menu_ranking."""
+    con = FakeMenuConsole(inputs=["4", "0"])
     monkeypatch.setattr(im, "_menu_console", lambda: con)
 
     with tempfile.TemporaryDirectory() as temp:
@@ -628,6 +628,27 @@ def test_main_menu_action_5_invokes_ranking(monkeypatch):
         app.run()
 
         assert len(ranking_called) == 1
+        assert app._last_action == "4"
+
+
+def test_main_menu_action_5_invokes_container_manager(monkeypatch):
+    """Option 5 in main menu invokes _menu_container_manager."""
+    con = FakeMenuConsole(inputs=["5", "0"])
+    monkeypatch.setattr(im, "_menu_console", lambda: con)
+
+    with tempfile.TemporaryDirectory() as temp:
+        ws = create_dummy_workspace(temp)
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = str(ws)
+        app.cookie = app.token = None
+        app.config = {}
+        app._last_action = None
+
+        container_called = []
+        monkeypatch.setattr(app, "_menu_container_manager", lambda: container_called.append(True))
+        app.run()
+
+        assert len(container_called) == 1
         assert app._last_action == "5"
 
 
