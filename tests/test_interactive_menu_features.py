@@ -608,3 +608,83 @@ def test_menu_solver_empty_workspace_guidance(monkeypatch):
         assert "Chưa có bài thi nào" in output
         assert "Hub [1]" in output
 
+
+def test_main_menu_action_5_invokes_ranking(monkeypatch):
+    """Option 5 in main menu invokes _menu_ranking."""
+    con = FakeMenuConsole(inputs=["5", "0"])
+    monkeypatch.setattr(im, "_menu_console", lambda: con)
+
+    with tempfile.TemporaryDirectory() as temp:
+        ws = create_dummy_workspace(temp)
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = str(ws)
+        app.cookie = app.token = None
+        app.config = {}
+        app._last_action = None
+
+        ranking_called = []
+        monkeypatch.setattr(app, "_menu_ranking", lambda: ranking_called.append(True))
+        app.run()
+
+        assert len(ranking_called) == 1
+        assert app._last_action == "5"
+
+
+def test_menu_ranking_displays_and_exits(monkeypatch):
+    """_menu_ranking fetches standings and prints menu options, exiting on 0."""
+    monkeypatch.setattr(im, "_pause", lambda: None)
+    con = FakeMenuConsole(inputs=["0"])
+    monkeypatch.setattr(im, "_menu_console", lambda: con)
+
+    class DummyRankService:
+        def __init__(self, *args, **kwargs):
+            self.top_n = None
+
+        def display_and_update(self, top_n=15, update_docs=True):
+            self.top_n = top_n
+            return {"standings": [{"pos": 1, "team": "PWNers", "score": 1337}]}
+
+    svc_calls = []
+
+    def mock_rank_ctor(*args, **kwargs):
+        svc = DummyRankService(*args, **kwargs)
+        svc_calls.append(svc)
+        return svc
+
+    monkeypatch.setattr("ctf_downloader.services.rank_service.RankService", mock_rank_ctor)
+
+    with tempfile.TemporaryDirectory() as temp:
+        ws = create_dummy_workspace(temp)
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = str(ws)
+        app.cookie = "dummy_cookie"
+        app.token = "dummy_token"
+        app.config = {}
+
+        app._menu_ranking()
+
+        assert len(svc_calls) == 1
+        assert svc_calls[0].top_n == 15
+        output = "\n".join(con.printed)
+        assert "LIVE SCOREBOARD & RANKING" in output.upper()
+
+
+def test_prompt_challenge_selection_helper(monkeypatch):
+    """_prompt_challenge_selection properly prints challenges and resolves selection."""
+    con = FakeMenuConsole(inputs=["1"])
+    monkeypatch.setattr(im, "_menu_console", lambda: con)
+
+    with tempfile.TemporaryDirectory() as temp:
+        ws = create_dummy_workspace(temp)
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = str(ws)
+
+        challs = [
+            {"id": 101, "name": "Web Challenge", "category": "Web", "points": 100},
+            {"id": 102, "name": "Crypto Challenge", "category": "Crypto", "points": 200},
+        ]
+        target = app._prompt_challenge_selection(challs)
+        assert target is not None
+        assert target["id"] == 101
+
+

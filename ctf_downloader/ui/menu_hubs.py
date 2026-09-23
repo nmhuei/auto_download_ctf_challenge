@@ -127,7 +127,6 @@ def hub_workspace_targets(app: Any) -> None:
         ("2", "Clone / Download new CTF challenge files"),
         ("3", "Configure & save Cookie / Token for this event"),
         ("4", "Platform Doctor & connectivity verification"),
-        ("5", "Platform Schemas & Auto-Recon (Dò tìm & Quản lý Platform)"),
         ("0", "Back to Main Cockpit"),
     ]
 
@@ -153,80 +152,6 @@ def hub_workspace_targets(app: Any) -> None:
                 app._menu_platform_doctor()
             else:
                 _run_doctor_fallback(app)
-        elif choice == "5":
-            _menu_platform_manager(app)
-
-
-def _menu_platform_manager(app: Any) -> None:
-    """Sub-menu for Platform Schemas & Auto-Recon."""
-    actions = [
-        ("1", "List all registered platforms & schemas"),
-        ("2", "Auto-Recon: Probe new CTF platform URL"),
-        ("3", "View details of a platform schema"),
-        ("4", "Remove custom platform schema"),
-        ("0", "Back"),
-    ]
-    ws = getattr(app, "workspace_path", None)
-
-    while True:
-        choice = render_hub_menu(
-            title="Platform Schemas & Auto-Recon",
-            subtitle="Dò tìm & Quản lý Cấu trúc Nền tảng",
-            actions=actions,
-        )
-        if choice in ("0", ""):
-            break
-        elif choice == "1":
-            from ..cli_commands import handle_platform
-            args = type("Args", (), {"platform_action": "list", "workspace": ws})()
-            handle_platform(args)
-            _pause()
-        elif choice == "2":
-            target_url = _prompt("Nhập URL trang CTF cần dò tìm (vd: https://ctf.example.com): ")
-            if target_url and target_url != "0":
-                from ..cli_commands import handle_platform
-                save_choice = _prompt("Tự động lưu schema nếu tìm thấy? [y/N]: ").lower()
-                should_save = save_choice in ("y", "yes")
-                scope = "workspace" if ws else "global"
-                if should_save and ws:
-                    sc_in = _prompt("Lưu vào workspace hiện tại hay global? [w/g, mặc định: w]: ").lower()
-                    if sc_in == "g":
-                        scope = "global"
-                args = type("Args", (), {
-                    "platform_action": "probe",
-                    "url": target_url,
-                    "save": should_save,
-                    "scope": scope,
-                    "key": None,
-                    "label": None,
-                    "workspace": ws,
-                })()
-                handle_platform(args)
-            _pause()
-        elif choice == "3":
-            key = _prompt("Nhập platform key cần xem (vd: metactf, ctfd): ")
-            if key and key != "0":
-                from ..cli_commands import handle_platform
-                args = type("Args", (), {"platform_action": "show", "target": key, "workspace": ws})()
-                handle_platform(args)
-            _pause()
-        elif choice == "4":
-            key = _prompt("Nhập platform key cần xoá: ")
-            if key and key != "0":
-                from ..cli_commands import handle_platform
-                scope = "workspace" if ws else "global"
-                if ws:
-                    sc_in = _prompt("Xoá khỏi workspace hay global? [w/g, mặc định: w]: ").lower()
-                    if sc_in == "g":
-                        scope = "global"
-                args = type("Args", (), {
-                    "platform_action": "remove",
-                    "target": key,
-                    "scope": scope,
-                    "workspace": ws,
-                })()
-                handle_platform(args)
-            _pause()
 
 
 def _run_doctor_fallback(app: Any) -> None:

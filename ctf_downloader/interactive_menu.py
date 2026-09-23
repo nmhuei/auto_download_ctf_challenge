@@ -59,7 +59,7 @@ _MAIN_ACTIONS_RAW = (
     ('2', '⚔️', 'Challenge Operations', '(Tree View / Action Card / Instances)'),
     ('3', '🚩', 'Flag Submission Lab', '(Submit single / Auto-submit hoarded flags)'),
     ('4', '⚡', 'SuperBQA AI Solver', '(Autonomous AGYworker agents / Live Radar)'),
-    ('5', '🛠️', 'System & Arsenal', '(Git safe sync / Push backup / Switch theme)'),
+    ('5', '🏆', 'Live Scoreboard & Rank', '(Real-time standings / Points gap / Sync)'),
     ('0', '🚪', 'Exit', ''),
 )
 
@@ -441,9 +441,9 @@ class CTFInteractiveConsole:
                     else:
                         _option(key, label)
 
-                prompt_msg = 'Select action (1-5, 0 [G=Git, T=Theme]): '
+                prompt_msg = 'Select action (1-5, 0 [T=Theme]): '
                 if self._last_action:
-                    prompt_msg = f'Select action (1-5, 0 [G=Git, T=Theme]) [default {self._last_action}]: '
+                    prompt_msg = f'Select action (1-5, 0 [T=Theme]) [default {self._last_action}]: '
                 raw_choice = _prompt(prompt_msg).strip()
                 choice = raw_choice.strip(" []().")
                 if not choice and self._last_action:
@@ -457,7 +457,7 @@ class CTFInteractiveConsole:
                     '2': '2', 'chall': '2', 'challenge': '2', 'tree': '2', 'ls': '2',
                     '3': '3', 'flag': '3', 'submit': '3', 'nop': '3',
                     '4': '4', 'solve': '4', 'solver': '4', 'bqa': '4', 'eating': '4',
-                    '5': '5', 'system': '5', 'arsenal': '5', 'sys': '5',
+                    '5': '5', 'rank': '5', 'ranking': '5', 'scoreboard': '5', 'board': '5', 'bxh': '5', 'system': '5', 'arsenal': '5', 'sys': '5',
                     'g': 'G', 'git': 'G', 'sync': 'G', 'push': 'G', 'backup': 'G',
                     't': 'T', 'theme': 'T', 'color': 'T', 'colors': 'T', 'style': 'T',
                     's': 'S',
@@ -478,7 +478,7 @@ class CTFInteractiveConsole:
                 elif canonical == '4':
                     self._menu_solver()
                 elif canonical == '5':
-                    hub_system_arsenal(self)
+                    self._menu_ranking()
                 elif canonical == 'G':
                     self._menu_git()
                 elif canonical == 'T':
@@ -713,15 +713,12 @@ class CTFInteractiveConsole:
             dash.render_tree()
         _pause()
 
-    def _menu_view_challenge_detail(self):
-        dash = CTFDashboard(self.workspace_path)
-        challs = dash.local_challenges
-        _section('Challenge Lookup & Details')
-        if not challs:
-            Logger.warning('No challenges found in current workspace.')
-            _pause()
-            return
-
+    def _prompt_challenge_selection(
+        self,
+        challs: list[dict],
+        prompt_suffix: str = "or enter ID/Name [0 to return]",
+    ) -> Optional[dict]:
+        """Hiển thị danh sách challenges và cho phép người dùng chọn challenge theo index/id/name."""
         con = _menu_console()
         for idx, c in enumerate(challs, 1):
             name = fit_cells(str(c.get('name') or 'Unknown'), 28, pad=True)
@@ -744,89 +741,31 @@ class CTFInteractiveConsole:
             con.print(row)
 
         con.print()
-        q = _prompt(f'Select challenge (1-{len(challs)}), or enter ID/Name [0 to return]: ').strip()
+        q = _prompt(f'Select challenge (1-{len(challs)}), {prompt_suffix}: ').strip()
         target, err = _resolve_challenge_selection(challs, q)
         if not target:
             if err:
                 Logger.error(err)
                 _pause()
+            return None
+        return target
+
+    def _menu_view_challenge_detail(self):
+        dash = CTFDashboard(self.workspace_path)
+        challs = dash.local_challenges
+        _section('Challenge Lookup & Details')
+        if not challs:
+            Logger.warning('No challenges found in current workspace.')
+            _pause()
             return
 
-        ws_root = os.path.abspath(self.workspace_path)
-        raw_folder = str(target.get('_folder') or '')
-        if raw_folder:
-            abs_folder = os.path.abspath(raw_folder if os.path.isabs(raw_folder) else os.path.join(ws_root, raw_folder))
-            folder = abs_folder if os.path.isdir(abs_folder) else ''
-        else:
-            folder = ''
+        target = self._prompt_challenge_selection(challs)
+        if not target:
+            return
 
-        con.print()
-        # §S1.3: candidate khớp đầu tiên đánh dấu ❯ + reverse highlight.
-        head = selected_row(str(target.get('name') or 'Unknown'), selected=True)
-        head.append(f"  ID: {target.get('id')}  ", style=FG_FAINT)
-        if target.get('solved_by_me'):
-            head.append('✔ SOLVED', style='solved')
-        else:
-            head.append('· UNSOLVED', style=FG_FAINT)
-        con.print(head)
+        self._view_challenge_detail_for(target, pause=False)
 
-        meta = Text('  Category: ')
-        meta.append(str(target.get('category') or 'Other'), style=FG_BASE)
-        meta.append('  ·  ', style=FG_FAINT)
-        meta.append(f"{target.get('points', '-')} pts", style=FG_MUTED)
-        meta.append('  ·  ', style=FG_FAINT)
-        meta.append(f"{target.get('solves_count', '-')} solves", style=FG_MUTED)
-        con.print(meta)
-
-        rel_loc = target.get('_rel_folder') or folder or '(not downloaded)'
-        loc = Text('  Local directory: ')
-        loc.append(str(rel_loc), style=INFO)
-        con.print(loc)
-        if target.get('connection_info'):
-            ci = Text('  Connection: ')
-            ci.append(str(target.get('connection_info')), style=INFO)
-            con.print(ci)
-
-        if folder and os.path.isdir(folder):
-            att_dir = os.path.join(folder, 'challenge')
-            if os.path.isdir(att_dir):
-                try:
-                    files = [f for f in sorted(os.listdir(att_dir)) if not f.startswith('.') and f not in ('README.md', 'NOTE.md', 'metadata.json')]
-                    if files:
-                        con.print(Text(f"  Attachments ({len(files)} files): {', '.join(files)}", style=INFO))
-                except OSError as e:
-                    Logger.warning(f"Cannot read challenge/ directory: {e}")
-
-            readme_candidates = [
-                os.path.join(folder, 'challenge', 'README.md'),
-                os.path.join(folder, 'README.md'),
-            ]
-            for rp in readme_candidates:
-                if os.path.isfile(rp):
-                    try:
-                        with open(rp, 'r', encoding='utf-8', errors='replace') as rf:
-                            con.print(Text('\n  Challenge Description (README.md):', style=f'bold {FG_FAINT}'))
-                            con.print(rf.read()[:2000])
-                        break
-                    except (OSError, UnicodeError) as e:
-                        Logger.warning(f"Cannot read README.md ({rp}): {e}")
-
-            note_candidates = [
-                os.path.join(folder, 'challenge', 'NOTE.md'),
-                os.path.join(folder, 'NOTE.md'),
-            ]
-            for np in note_candidates:
-                if os.path.isfile(np):
-                    try:
-                        with open(np, 'r', encoding='utf-8', errors='replace') as nf:
-                            con.print(Text('\n  Notes / Triage (NOTE.md):', style=f'bold {FG_FAINT}'))
-                            con.print(nf.read()[:1000])
-                        break
-                    except (OSError, UnicodeError) as e:
-                        Logger.warning(f"Cannot read NOTE.md ({np}): {e}")
-        else:
-            con.print(Text('  (Challenge does not have a valid local directory)', style=FG_MUTED))
-
+        con = _menu_console()
         while True:
             con.print()
             con.print('  Actions for this challenge:', style=FG_MUTED)
@@ -845,7 +784,7 @@ class CTFInteractiveConsole:
             else:
                 break
 
-    def _view_challenge_detail_for(self, target: dict):
+    def _view_challenge_detail_for(self, target: dict, pause: bool = True):
         ws_root = os.path.abspath(self.workspace_path)
         raw_folder = str(target.get('_folder') or '')
         if raw_folder:
@@ -920,7 +859,8 @@ class CTFInteractiveConsole:
                         Logger.warning(f"Cannot read NOTE.md ({np}): {e}")
         else:
             con.print(Text('  (Challenge does not have a valid local directory)', style=FG_MUTED))
-        _pause()
+        if pause:
+            _pause()
 
     def _menu_select_and_open_card(self):
         dash = CTFDashboard(self.workspace_path)
@@ -931,34 +871,8 @@ class CTFInteractiveConsole:
             _pause()
             return
 
-        con = _menu_console()
-        for idx, c in enumerate(challs, 1):
-            name = fit_cells(str(c.get('name') or 'Unknown'), 28, pad=True)
-            cat = fit_cells(str(c.get('category') or 'Other'), 12, pad=True)
-            pts = f"{c.get('points', '-'):>4} pts"
-            cid = str(c.get('id', ''))
-            is_solved = bool(c.get('solved_by_me'))
-
-            row = Text('  ')
-            row.append(f'[{idx:>2}]', style=ACCENT)
-            row.append(f' {name} ', style=FG_BASE)
-            row.append(f'{cat} ', style=FG_MUTED)
-            row.append(f'{pts} ', style=FG_MUTED)
-            if is_solved:
-                row.append('✔ SOLVED', style='solved')
-            else:
-                row.append('· Unsolved', style=FG_FAINT)
-            if cid:
-                row.append(f' (ID: {cid})', style=FG_FAINT)
-            con.print(row)
-
-        con.print()
-        q = _prompt(f'Select challenge (1-{len(challs)}), or enter ID/Name [0 to return]: ').strip()
-        target, err = _resolve_challenge_selection(challs, q)
+        target = self._prompt_challenge_selection(challs)
         if not target:
-            if err:
-                Logger.error(err)
-                _pause()
             return
         challenge_action_card(self, target)
 
@@ -976,6 +890,17 @@ class CTFInteractiveConsole:
 
     def _launch_solver_for_target(self, target):
         return self._run_solver_for_target(target)
+
+    def _menu_platform_doctor(self):
+        """Platform Doctor & connectivity verification."""
+        from .services.health_service import HealthService
+        con = _menu_console()
+        con.print(Text("\n  Checking platform health...", style=INFO))
+        try:
+            HealthService.check_workspace(self.workspace_path)
+        except Exception as e:
+            Logger.error(f"Doctor failed: {e}")
+        _pause()
 
     def _menu_container_manager(self):
         try:
@@ -1039,30 +964,8 @@ class CTFInteractiveConsole:
             _pause()
             return
 
-        con = _menu_console()
-        for idx, c in enumerate(challs, 1):
-            name = fit_cells(str(c.get('name') or 'Unknown'), 28, pad=True)
-            cat = fit_cells(str(c.get('category') or 'Other'), 12, pad=True)
-            pts = f"{c.get('points', '-'):>4} pts"
-            cid = str(c.get('id', ''))
-            is_solved = bool(c.get('solved_by_me'))
-            row = Text('  ')
-            row.append(f'[{idx:>2}]', style=ACCENT)
-            row.append(f' {name} ', style=FG_BASE)
-            row.append(f'{cat} ', style=FG_MUTED)
-            row.append(f'{pts} ', style=FG_MUTED)
-            row.append('✔ SOLVED' if is_solved else '· Unsolved', style='solved' if is_solved else FG_FAINT)
-            if cid:
-                row.append(f' (ID: {cid})', style=FG_FAINT)
-            con.print(row)
-
-        con.print()
-        q = _prompt(f'Select challenge to submit flag (1-{len(challs)}), or enter ID/Name [0 to cancel]: ').strip()
-        target, err = _resolve_challenge_selection(challs, q)
+        target = self._prompt_challenge_selection(challs, prompt_suffix="or enter ID/Name [0 to cancel]")
         if not target:
-            if err:
-                Logger.error(err)
-                _pause()
             return
 
         self._submit_flag_for_target(target)
@@ -1421,6 +1324,50 @@ class CTFInteractiveConsole:
                 Logger.warning('Invalid selection. Please choose an option from 0 to 7.')
                 _pause()
                 continue
+
+    def _menu_ranking(self):
+        """🏆 Live Scoreboard & Rank — bảng xếp hạng trực tiếp từ platform."""
+        _section('Live Scoreboard & Ranking (Bảng Xếp Hạng & Tiến Độ)')
+        con = _menu_console()
+        if not self.workspace_path or not os.path.exists(self.workspace_path):
+            Logger.warning("Chưa có workspace hợp lệ để lấy ranking.")
+            _pause()
+            return
+
+        top_n = 15
+        while True:
+            con.print()
+            try:
+                from .services.rank_service import RankService
+                plat_url = None
+                try:
+                    from .storage.workspace_repo import WorkspaceRepo
+                    plat_url = WorkspaceRepo(self.workspace_path).resolve_platform_url()
+                except Exception:
+                    pass
+                svc = RankService(
+                    workspace_path=self.workspace_path,
+                    url=plat_url,
+                    cookie=self.cookie,
+                    token=self.token,
+                )
+                svc.display_and_update(top_n=top_n, update_docs=True)
+            except Exception as e:
+                Logger.error(f"Lỗi khi lấy scoreboard: {e}")
+
+            con.print()
+            _option('1', 'Làm mới bảng xếp hạng (Refresh)')
+            _option('2', f'Thay đổi số đội hiển thị (Hiện tại: top {top_n})')
+            _option('0', 'Quay lại Menu chính')
+            ch = _prompt('Lựa chọn (0-2) [default 0]: ').strip() or '0'
+            if ch in ('0', 'q', 'back', 'exit'):
+                break
+            elif ch == '1':
+                continue
+            elif ch == '2':
+                new_n = _prompt('Nhập số đội hiển thị (mặc định 15): ').strip()
+                if new_n.isdigit() and int(new_n) > 0:
+                    top_n = int(new_n)
 
     def _menu_auto_submit(self):
         _section('Auto-Scan & Submit Solved Flags in Workspace')
