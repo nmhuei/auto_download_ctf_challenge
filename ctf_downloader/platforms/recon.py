@@ -266,6 +266,10 @@ class PlatformReconEngine:
         if origin != clean_base_url.rstrip("/"):
             probe_roots.append(origin)
 
+        def _resolve_candidate_path(path: str, root: str) -> str:
+            full = f"{root.rstrip('/')}{path if path.startswith('/') else ('/' + path)}"
+            return urllib.parse.urlparse(full).path or "/"
+
         # 2a. Challenges
         sample_challenge: Optional[Dict[str, Any]] = None
         challenges_root_path = "data.challenges"
@@ -279,8 +283,7 @@ class PlatformReconEngine:
                 if status == 200 and data is not None:
                     root_p, items = cls._find_challenges_root(data)
                     if items:
-                        # Store path relative to clean_base_url
-                        resolved_path = ch_path if root_url == clean_base_url.rstrip("/") else f"{root_url.replace(clean_base_url.rstrip('/'), '')}{ch_path}"
+                        resolved_path = _resolve_candidate_path(ch_path, root_url)
                         result.endpoints_found["challenges"] = resolved_path
                         challenges_root_path = root_p if root_p is not None else ""
                         sample_challenge = items[0]
@@ -289,7 +292,7 @@ class PlatformReconEngine:
                         )
                         break
                 elif status in (401, 403) and not result.endpoints_found.get("challenges"):
-                    resolved_path = ch_path if root_url == clean_base_url.rstrip("/") else f"{root_url.replace(clean_base_url.rstrip('/'), '')}{ch_path}"
+                    resolved_path = _resolve_candidate_path(ch_path, root_url)
                     result.endpoints_found["challenges"] = resolved_path
                     result.signals.append(f"Ứng viên endpoint challenges (yêu cầu auth): {resolved_path}")
             if sample_challenge:
@@ -303,12 +306,12 @@ class PlatformReconEngine:
                 if status in (200, 401, 403):
                     result.signals.append(f"Probe {au_path} -> HTTP {status}")
                 if status == 200 and data is not None:
-                    resolved_path = au_path if root_url == clean_base_url.rstrip("/") else f"{root_url.replace(clean_base_url.rstrip('/'), '')}{au_path}"
+                    resolved_path = _resolve_candidate_path(au_path, root_url)
                     result.endpoints_found["auth_check"] = resolved_path
                     result.signals.append(f"Xác nhận endpoint auth: {resolved_path}")
                     break
                 elif status in (401, 403) and not result.endpoints_found.get("auth_check"):
-                    resolved_path = au_path if root_url == clean_base_url.rstrip("/") else f"{root_url.replace(clean_base_url.rstrip('/'), '')}{au_path}"
+                    resolved_path = _resolve_candidate_path(au_path, root_url)
                     result.endpoints_found["auth_check"] = resolved_path
             if result.endpoints_found.get("auth_check") and status == 200:
                 break
@@ -319,7 +322,7 @@ class PlatformReconEngine:
                 test_url = f"{root_url}{sc_path}"
                 data, status = safe_get_json(sess, test_url, statuses=(200, 401, 403))
                 if status == 200 and data is not None:
-                    resolved_path = sc_path if root_url == clean_base_url.rstrip("/") else f"{root_url.replace(clean_base_url.rstrip('/'), '')}{sc_path}"
+                    resolved_path = _resolve_candidate_path(sc_path, root_url)
                     result.endpoints_found["scoreboard"] = resolved_path
                     result.signals.append(f"Xác nhận endpoint scoreboard: {resolved_path}")
                     break

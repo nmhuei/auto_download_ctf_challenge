@@ -1576,11 +1576,11 @@ class CTFInteractiveConsole:
             st_grid = Table.grid(padding=(0, 2))
             st_grid.add_column("icon_label", style=f"bold {FG_BASE}")
             st_grid.add_column("value")
-            st_grid.add_row("  📁 Workspace", Text(ws.name, style=f"bold {ACCENT}"))
-            st_grid.add_row("  🌿 Active Branch", Text(str(branch), style=f"bold {FG_BASE}"))
-            st_grid.add_row("  📝 Modified", Text(f"{dirty} files changed", style=f"bold {dirty_style}"))
-            st_grid.add_row("  ☁️  Remote Repo", Text("Connected" if remote_ok else "No remote configured", style=f"bold {remote_style}"))
-            con.print(st_grid)
+            st_grid.add_row("📁 Workspace", Text(ws.name, style=f"bold {ACCENT}"))
+            st_grid.add_row("🌿 Active Branch", Text(str(branch), style=f"bold {FG_BASE}"))
+            st_grid.add_row("📝 Modified", Text(f"{dirty} files changed", style=f"bold {dirty_style}"))
+            st_grid.add_row("☁️  Remote Repo", Text("Connected" if remote_ok else "No remote configured", style=f"bold {remote_style}"))
+            con.print(Padding(st_grid, (0, 2)))
             con.print()
         except Exception as e:
             con.print(f"  [dim]Git status check: {e}[/dim]\n")
@@ -1705,22 +1705,22 @@ class CTFInteractiveConsole:
 
         for idx, pal in enumerate(unique_themes, 1):
             is_active = pal.name == cur.name
-            key_text = Text(f"[{idx}]", style=f"bold {cur.accent}")
+            key_text = Text(f"[{idx}]", style="bold accent")
             swatch_text = pal.color_ramp_text()
-            title_style = f"bold {cur.accent}" if is_active else FG_BASE
+            title_style = "bold accent" if is_active else "fg.base"
             title_text = Text(pal.display_name, style=title_style)
-            badge_text = Text("● active", style=f"bold {SUCCESS}") if is_active else Text("")
-            desc_text = Text(pal.description, style=FG_MUTED)
+            badge_text = Text("● active", style="bold success") if is_active else Text("")
+            desc_text = Text(pal.description, style="fg.muted")
 
             grid.add_row(key_text, swatch_text, title_text, badge_text, desc_text)
 
         # Option 0 (Quay lại) integrated cleanly into the same grid
         grid.add_row(
-            Text("[0]", style=f"bold {FG_FAINT}"),
+            Text("[0]", style="bold fg.faint"),
             Text(""),
-            Text("Quay lại Menu chính", style=FG_MUTED),
+            Text("Quay lại Menu chính", style="fg.muted"),
             Text(""),
-            Text("(Giữ nguyên dải màu hiện tại)", style=FG_FAINT),
+            Text("(Giữ nguyên dải màu hiện tại)", style="fg.faint"),
         )
 
         con.print(Padding(grid, (0, 2)))

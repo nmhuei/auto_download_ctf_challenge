@@ -37,6 +37,15 @@ class PlatformEndpoints:
     instance_stop: Optional[str] = None        # e.g. "/api/container/stop"
     instance_renew: Optional[str] = None       # e.g. "/api/container/renew"
 
+    def __post_init__(self):
+        for field_name in (
+            "auth_check", "challenges", "challenge_detail", "submit",
+            "scoreboard", "instance_spawn", "instance_stop", "instance_renew",
+        ):
+            val = getattr(self, field_name, None)
+            if val is not None:
+                setattr(self, field_name, str(val).strip())
+
     def to_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
@@ -55,6 +64,14 @@ class PlatformSchemaMapping:
     connection_info: str = "connection_info"
     solves_count: str = "solves_count"
 
+    def __post_init__(self):
+        for field_name in (
+            "challenges_root", "id", "name", "category", "points",
+            "description", "files", "solved", "connection_info", "solves_count",
+        ):
+            val = getattr(self, field_name, "")
+            setattr(self, field_name, str(val).strip() if val is not None else "")
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -68,6 +85,16 @@ class PlatformSubmitSpec:
     content_type: str = "json"                 # "json" or "form"
     success_field: str = "success"             # "success", "status:success", "data.status == 200"
     message_field: str = "message"
+
+    def __post_init__(self):
+        m = str(self.method or "POST").strip().upper()
+        self.method = m if m in ("POST", "PUT", "PATCH", "GET") else "POST"
+        self.flag_param = str(self.flag_param or "flag").strip()
+        self.id_param = str(self.id_param).strip() if self.id_param is not None else None
+        ct = str(self.content_type or "json").strip().lower()
+        self.content_type = ct if ct in ("json", "form") else "json"
+        self.success_field = str(self.success_field or "success").strip()
+        self.message_field = str(self.message_field or "message").strip()
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -100,6 +127,24 @@ class PlatformSchema:
                 self.throttle = max(0.1, min(60.0, th))
         except (ValueError, TypeError):
             self.throttle = 3.0
+
+        clean_markers = []
+        for m in self.html_markers:
+            m_str = str(m).strip()
+            if not m_str:
+                continue
+            if m_str.startswith("regex:"):
+                pat = m_str[len("regex:"):]
+                if len(pat) > 256:
+                    continue
+                try:
+                    re.compile(pat)
+                    clean_markers.append(m_str)
+                except re.error:
+                    continue
+            else:
+                clean_markers.append(m_str)
+        self.html_markers = clean_markers
 
     def to_dict(self) -> Dict[str, Any]:
         return {

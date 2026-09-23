@@ -167,17 +167,17 @@ class RegisterService:
             return COMMIT_UNPERSISTED
         return COMMIT_OK
 
-    def _set_auth_entry(self, key: str, entry: Dict[str, Any]) -> None:
-        """Merge auth entry vào global config NGUYÊN TỬ qua khóa flock
-        (trước đây load-stale-save — cửa sổ RMW gây lost update với process
-        khác). Không re-check rate limit: attempt của chính mình đã được
-        commit ngay sau register rồi.
+    def _set_auth_entry(self, key: str, entry: Dict[str, Any], extra_key: Optional[str] = None) -> None:
+        """Merge auth entry vào global config NGUYÊN TỬ qua khóa flock.
 
-        Review c18-2 (LOW): OSError từ storage KHÔNG lan qua run() — account
-        ĐÃ tạo phía server nên credentials (đã in) là tài sản quan trọng
-        nhất; lỗi persist auth chỉ cần log rõ để user backup thủ công."""
+        Hỗ trợ dual-key (cả đường dẫn workspace và platform URL chuẩn hoá)
+        để không bị mất cấu hình khi di chuyển thư mục workspace.
+        """
         def _mut(fresh: Dict[str, Any]) -> Dict[str, Any]:
-            fresh.setdefault("auth", {})[key] = entry
+            auth_map = fresh.setdefault("auth", {})
+            auth_map[key] = entry
+            if extra_key and extra_key != key:
+                auth_map[extra_key] = entry
             return fresh
 
         try:
@@ -539,11 +539,13 @@ class RegisterService:
             # Keep it for recovery/login refresh instead of discarding it.
             auth_entry["team_token"] = team_token
 
-        # Hunt-c18 BUG-2: auth map merge NGUYÊN TỬ qua updater (đọc-mutate-
-        # ghi trong khóa) thay vì load-stale-save; attempt đã commit ở bước
-        # trên nên không ghi đè timestamp lần nữa.
+        # Hunt-c18 BUG-2 & Dual-key: auth map merge NGUYÊN TỬ qua updater
+        # Đảm bảo lưu song song cả workspace path và URL để truy cập bền vững.
         key = self._auth_key(workspace, url)
-        self._set_auth_entry(key, auth_entry)
+        ws_key = os.path.abspath(workspace) if (workspace and os.path.isdir(os.path.abspath(workspace))) else None
+        url_key = str(url).rstrip('/') if url else None
+        extra_key = url_key if (ws_key and key == ws_key and url_key) else (ws_key if (url_key and key == url_key and ws_key) else None)
+        self._set_auth_entry(key, auth_entry, extra_key=extra_key)
 
         saved_as = ("workspace " + key) if workspace and \
             os.path.isdir(os.path.abspath(workspace)) else f"URL {key}"

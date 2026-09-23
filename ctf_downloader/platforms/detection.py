@@ -104,10 +104,14 @@ def _match_html_markers(spec, html: str, low: str) -> bool:
     """Khớp một marker của spec trên HTML. Marker tiền tố 'regex:' là mẫu regex."""
     for marker in spec.html_markers:
         if marker.startswith("regex:"):
+            pat = marker[len("regex:"):]
+            if len(pat) > 256:
+                continue
             try:
-                if re.search(marker[len("regex:"):], html):
+                # Search on bounded HTML sample (max 64KB) to prevent ReDoS
+                if re.search(pat, html[:65536]):
                     return True
-            except re.error:
+            except (re.error, Exception):
                 continue
         elif marker.lower() in low:
             return True

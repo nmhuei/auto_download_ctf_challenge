@@ -38,10 +38,16 @@ def test_load_theme_by_name():
     assert "category.web" in theme_matrix.styles
 
 
-def test_theme_menu_switch(tmp_path):
+def test_theme_menu_switch(tmp_path, monkeypatch):
     ws = tmp_path / "test_ws"
     ws.mkdir()
     app = CTFInteractiveConsole(workspace_path=str(ws))
+
+    fake_config = {}
+    monkeypatch.setattr(
+        "ctf_downloader.storage.global_config.update_global_config",
+        lambda mut: fake_config.update(mut(dict(fake_config))) or fake_config,
+    )
 
     try:
         # Test selecting theme 2 (Cyberpunk), then pausing ""
@@ -50,10 +56,8 @@ def test_theme_menu_switch(tmp_path):
             app._menu_theme()
 
         assert get_active_palette().name == "cyberpunk"
+        assert fake_config.get("theme") == "cyberpunk"
     finally:
-        set_active_theme("exodia")
-        from ctf_downloader.storage.global_config import update_global_config
-        update_global_config(lambda s: s.pop("theme", None) or s)
         set_active_theme(None)
 
 
@@ -76,10 +80,16 @@ def test_palette_color_ramp_and_spectrum_text():
     assert "Web" in spectrum.plain
 
 
-def test_theme_menu_switch_by_name(tmp_path):
+def test_theme_menu_switch_by_name(tmp_path, monkeypatch):
     ws = tmp_path / "test_ws"
     ws.mkdir()
     app = CTFInteractiveConsole(workspace_path=str(ws))
+
+    fake_config = {}
+    monkeypatch.setattr(
+        "ctf_downloader.storage.global_config.update_global_config",
+        lambda mut: fake_config.update(mut(dict(fake_config))) or fake_config,
+    )
 
     try:
         inputs = iter(["dracula", ""])
@@ -87,9 +97,7 @@ def test_theme_menu_switch_by_name(tmp_path):
             app._menu_theme()
 
         assert get_active_palette().name == "dracula"
+        assert fake_config.get("theme") == "dracula"
     finally:
-        set_active_theme("exodia")
-        from ctf_downloader.storage.global_config import update_global_config
-        update_global_config(lambda s: s.pop("theme", None) or s)
         set_active_theme(None)
 

@@ -131,7 +131,9 @@ class PlatformSchemaStore:
         from .registry import PLATFORMS
 
         clean_key = cls.validate_key(key)
-        if scope == "workspace" and workspace_path:
+        if scope == "workspace":
+            if not workspace_path:
+                raise ValueError("workspace_path is required when deleting from workspace scope")
             target_dir = cls.get_workspace_dir(workspace_path)
         else:
             target_dir = cls.get_global_dir()

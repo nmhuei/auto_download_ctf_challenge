@@ -510,6 +510,45 @@ class TestPlatformSchemaStoreSecurityAndHardening(unittest.TestCase):
         PlatformSchemaStore.sync_to_registry(workspace_path=self.ws_path)
         self.assertNotIn("stale_to_purge", PLATFORMS)
 
+    def test_delete_workspace_scope_without_workspace_raises(self):
+        with self.assertRaises(ValueError):
+            PlatformSchemaStore.delete("any_key", scope="workspace", workspace_path=None)
+
+    def test_schema_validation_and_type_coercion(self):
+        # Pass non-string endpoints & specs
+        endpoints = PlatformEndpoints(challenges=12345, submit="/api/submit")
+        self.assertEqual(endpoints.challenges, "12345")
+        self.assertEqual(endpoints.submit, "/api/submit")
+
+        mapping = PlatformSchemaMapping(challenges_root=999)
+        self.assertEqual(mapping.challenges_root, "999")
+
+        # Invalid regex marker should be filtered out
+        schema = PlatformSchema(
+            key="regex_safe",
+            label="Regex Safe",
+            html_markers=["valid_marker", "regex:[a-z]+", "regex:([unclosed"],
+        )
+        self.assertIn("valid_marker", schema.html_markers)
+        self.assertIn("regex:[a-z]+", schema.html_markers)
+        self.assertNotIn("regex:([unclosed", schema.html_markers)
+
+    def test_register_service_dual_key_auth_persistence(self):
+        from ctf_downloader.services.register_service import RegisterService
+        service = RegisterService()
+        fake_cfg = {}
+        service._update_cfg = lambda mut: fake_cfg.update(mut(dict(fake_cfg))) or fake_cfg
+
+        # Call _set_auth_entry with dual keys
+        entry = {"username": "alice", "cookie": "session=abc"}
+        service._set_auth_entry(str(self.ws_path), entry, extra_key="https://ctf.example.org")
+
+        auth_map = fake_cfg.get("auth", {})
+        self.assertIn(str(self.ws_path), auth_map)
+        self.assertIn("https://ctf.example.org", auth_map)
+        self.assertEqual(auth_map[str(self.ws_path)]["username"], "alice")
+        self.assertEqual(auth_map["https://ctf.example.org"]["cookie"], "session=abc")
+
 
 if __name__ == "__main__":
     unittest.main()

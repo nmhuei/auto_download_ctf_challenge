@@ -13,7 +13,8 @@ Hợp nhất logic cũ của InstanceManager._init_platform (if/elif + hardcode
 Trả về `(session, platform, info)` để caller tái dùng session/info.
 """
 
-from typing import Optional, Tuple
+from pathlib import Path
+from typing import Optional, Tuple, Union
 
 from ..platforms.base import BasePlatform
 from ..platforms.capabilities import PlatformInfo

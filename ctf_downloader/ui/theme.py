@@ -81,15 +81,47 @@ def get_active_palette() -> Palette:
     return EXODIA_PALETTE
 
 
+def _sync_module_tokens(palette: Palette) -> None:
+    """Synchronize module-level color constants with the given palette."""
+    g = globals()
+    g["ACCENT"] = palette.accent
+    g["ACCENT_HI"] = palette.accent_hi
+    g["ACCENT_DEEP"] = palette.accent_deep
+    g["SUCCESS"] = palette.success
+    g["SOLVED"] = palette.success
+    g["WARNING"] = palette.warning
+    g["WARN"] = palette.warning
+    g["ERROR"] = palette.error
+    g["FIRSTBLOOD"] = palette.firstblood
+    g["TEXT"] = palette.text
+    g["FG_BASE"] = palette.text
+    g["MUTED"] = palette.muted
+    g["FG_MUTED"] = palette.muted
+    g["FAINT"] = palette.faint
+    g["FG_FAINT"] = palette.faint
+    g["BORDER"] = palette.border
+    g["SURFACE"] = palette.surface
+    g["BG"] = palette.bg
+    g["INFO"] = palette.accent
+    g["CATEGORY_WEB"] = palette.category_web
+    g["CATEGORY_CRYPTO"] = palette.category_crypto
+    g["CATEGORY_PWN"] = palette.category_pwn
+    g["CATEGORY_REV"] = palette.category_rev
+    g["CATEGORY_FORENSICS"] = palette.category_forensics
+    g["CATEGORY_MISC"] = palette.category_misc
+
+
 def set_active_theme(name: str | None) -> bool:
     """Set active theme palette by preset name (None resets to global/default)."""
     global _CURRENT_PALETTE
     if name is None:
         _CURRENT_PALETTE = None
+        _sync_module_tokens(get_active_palette())
         return True
     key = name.strip().lower()
     if key in PRESET_PALETTES:
         _CURRENT_PALETTE = PRESET_PALETTES[key]
+        _sync_module_tokens(_CURRENT_PALETTE)
         return True
     return False
 
@@ -134,3 +166,6 @@ __all__ = [
     "ACCENT", "ACCENT_HI", "ACCENT_DEEP",
     "INFO", "SOLVED", "WARN", "SEL_FG", "SEL_BG",
 ]
+
+# Initialize module tokens to active palette on import
+_sync_module_tokens(get_active_palette())

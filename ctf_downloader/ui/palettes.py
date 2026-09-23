@@ -52,6 +52,18 @@ class Palette:
     category_forensics: str
     category_misc: str
 
+    @property
+    def fg_base(self) -> str:
+        return self.text
+
+    @property
+    def fg_muted(self) -> str:
+        return self.muted
+
+    @property
+    def fg_faint(self) -> str:
+        return self.faint
+
     def to_rich_styles(self) -> Dict[str, str]:
         """Convert palette tokens into standard Rich style mappings."""
         return {
