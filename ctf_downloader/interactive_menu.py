@@ -474,33 +474,28 @@ class CTFInteractiveConsole:
                 grid = Table.grid(padding=(0, 1))
                 grid.add_column("key", justify="right", no_wrap=True)
                 grid.add_column("title")
-                grid.add_column("badge")
 
                 for key, icon, title, _ in _MAIN_ACTIONS_RAW:
                     is_active = (key == self._last_action)
                     is_exit = (key == "0")
 
                     if is_exit:
-                        key_style = f"bold {FG_FAINT}"
-                        title_style = FG_MUTED
+                        key_style = "menu.exit"
+                        title_style = "fg.muted"
                     elif is_active:
-                        key_style = f"bold {ACCENT}"
-                        title_style = f"bold {ACCENT}"
+                        key_style = "menu.active"
+                        title_style = "menu.active"
                     else:
-                        key_style = f"bold {ACCENT}"
-                        title_style = FG_BASE
+                        key_style = "menu.key"
+                        title_style = "fg.base"
 
-                    badge_text = Text("● active", style=SUCCESS) if is_active else Text("")
                     grid.add_row(
                         Text(f"[{key}]", style=key_style),
                         Text(f"{icon} {title}", style=title_style),
-                        badge_text,
                     )
                 _menu_console().print(Padding(grid, (0, 2)))
 
                 prompt_msg = 'Select action (1-5, 0 [T=Theme]): '
-                if self._last_action:
-                    prompt_msg = f'Select action (1-5, 0 [T=Theme]) [default {self._last_action}]: '
                 raw_choice = _prompt(prompt_msg).strip()
                 choice = raw_choice.strip(" []().")
                 if not choice and self._last_action:

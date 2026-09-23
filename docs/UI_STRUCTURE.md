@@ -146,5 +146,6 @@ Khi gõ `info <id>` hoặc chọn bài trong Hub Nộp cờ:
 2. **Căn lề tự động bằng Rich Table.grid**:
    - Mọi danh sách thao tác, danh sách bài thi phải dùng `Table.grid(padding=(0, 1))` bọc bởi `Padding(grid, (0, 2))`.
    - Cột key luôn là `[Key]` (`bold ACCENT`), nhãn thoát `[0]` luôn ở cuối (`bold FG_FAINT`).
+   - Mục đang active/chọn gần nhất: được highlight toàn bộ bằng màu xanh lá (`bold SUCCESS`), không gắn thêm text `● active` hay `[default ...]` ở prompt để giữ giao diện tối giản, thanh lịch.
 3. **Dynamic Console Theme Recoloring**:
    - Mọi console thứ cấp (như `RankService._rank_console`) phải được cập nhật qua theme stack (`push_theme(..., inherit=False)`) khi người dùng đổi theme.

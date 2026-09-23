@@ -120,6 +120,9 @@ class Palette:
             "chrome.section": f"bold {self.faint}",
             "radar.active": f"bold {self.warning}",
             "radar.solved": f"bold {self.success}",
+            "menu.active": f"bold {self.success}",
+            "menu.key": f"bold {self.accent}",
+            "menu.exit": f"bold {self.faint}",
         }
 
     def color_ramp_text(self) -> Text:

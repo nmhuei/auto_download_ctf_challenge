@@ -84,6 +84,10 @@ def test_main_menu_enter_selects_last_action(monkeypatch):
         app.run()
 
         assert "solver" in called
+        full_output = "\n".join(con.printed)
+        assert "● active" not in full_output
+        assert "[default" not in full_output
+        assert "Select action (1-5, 0 [T=Theme]):" in full_output
 
 
 def test_main_menu_aliases_and_cleaning(monkeypatch):

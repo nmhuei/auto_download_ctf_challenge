@@ -33,7 +33,7 @@ always_on: true
 - **Đồng bộ bố cục (Layout Consistency)**: Toàn bộ các menu, sub-hub, settings hoặc bảng hiển thị phải tuân thủ layout thống nhất của Cockpit:
   - Header / Panel định danh: Sử dụng `app_header` hoặc `Panel(..., border_style=ACCENT)` có tiêu đề rõ ràng, icon đại diện, subtitle/description xúc tích.
   - Danh sách thao tác: Sử dụng Rich `Table.grid(padding=(0, 1))` bọc ngoài bởi `Padding(grid, (0, 2))`. Tuyệt đối không dùng string padding thủ công (như `" " * 15`, `\t` hay cột dummy `Text("  ")`).
-  - Cột chuẩn trong Grid: `[Key]` (phím số/chữ in hoa, `bold ACCENT`), `[Swatch]` (dải màu nếu là theme/color preview), `[Title]` (`FG_BASE` hoặc `bold ACCENT` nếu active), `[Badge]` (`● active` màu `SUCCESS`), `[Description]` (`FG_MUTED`).
+  - Cột chuẩn trong Grid: `[Key]` (phím số/chữ in hoa, `bold ACCENT` hoặc `menu.active` nếu active), `[Swatch]` (dải màu nếu là theme/color preview), `[Title]` (`FG_BASE` hoặc `menu.active` nếu active). Mục đang active được highlight toàn bộ bằng màu xanh lá (`menu.active`), tuyệt đối không in text rườm rà như `● active` hay `[default ...]` ở prompt để giữ giao diện tối giản, trực chiến.
   - Tùy chọn thoát/quay lại: Luôn tích hợp `[0]` thẳng vào bảng/grid, định dạng `bold FG_FAINT`, nhãn `Quay lại Menu chính` (`FG_MUTED`), không in rời rạc hay lệch lề.
 - **Dải màu trực quan (Color Ramps & Visual Swatches)**:
   - Khi hiển thị theme hay bảng màu, luôn render các dải màu trực quan `[■■■■■■]` bằng mã màu thực tế của palette để người dùng preview trước khi chọn.
