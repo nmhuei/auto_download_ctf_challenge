@@ -57,6 +57,7 @@ class AuthService:
         workspace: str,
         cookie_arg: Optional[str] = None,
         token_arg: Optional[str] = None,
+        allow_burp_fallback: bool = True,
     ) -> Tuple[Optional[str], Optional[str]]:
         """Trả về (cookie, token) cho workspace.
 
@@ -64,14 +65,34 @@ class AuthService:
         > tra key URL chính xác của workspace (entry do register lưu khi
         --workspace không phải dir thật — R1/R3).
         Nếu cookie_arg trỏ tới file thật thì đọc nội dung file làm cookie.
+        Nếu cookie_arg='burp' hoặc allow_burp_fallback=True: trích xuất cookie từ Burp Suite MCP.
         """
         if cookie_arg:
+            if str(cookie_arg).strip().lower() in ("burp", "auto-burp"):
+                from .burp_service import BurpService
+                burp = BurpService()
+                if burp.is_mcp_available(timeout=0.4):
+                    burp_cookie = burp.get_cookie_header(workspace, timeout=2.0)
+                    if burp_cookie:
+                        return burp_cookie, token_arg
             return AuthService.resolve_cookie_arg(cookie_arg), token_arg
 
         cfg = load_global_config()
         saved = AuthService.lookup_auth_entry(workspace, cfg.get('auth', {}))
-        if saved is not None:
+        if saved is not None and (saved.get('cookie') or saved.get('token')):
             return saved.get('cookie'), token_arg or saved.get('token')
+
+        if allow_burp_fallback:
+            try:
+                from .burp_service import BurpService
+                burp = BurpService()
+                if burp.is_mcp_available(timeout=0.4):
+                    burp_cookie = burp.get_cookie_header(workspace, timeout=2.0)
+                    if burp_cookie:
+                        return burp_cookie, token_arg
+            except Exception:
+                pass
+
         return None, token_arg
 
     @classmethod

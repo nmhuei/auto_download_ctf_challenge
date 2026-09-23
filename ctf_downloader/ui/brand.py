@@ -15,6 +15,20 @@ from rich.text import Text
 from .widgets import gradient
 
 BRAND_NAME = "UCS_ExOdia"
+
+
+def get_brand_name() -> str:
+    """Return active brand name matching current palette (e.g. UCS_Cyberpunk, UCS_ExOdia)."""
+    global BRAND_NAME
+    try:
+        from .theme import get_active_palette
+        pal = get_active_palette()
+        if pal.name == "exodia":
+            return "UCS_ExOdia"
+        return f"UCS_{pal.name.capitalize()}"
+    except Exception:
+        return BRAND_NAME
+
 OPERATIONS: tuple[str, ...] = (
     "detect",
     "pull",
@@ -55,6 +69,34 @@ OPERATION_RAMPS: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...] =
     ((0xC0, 0x84, 0xFC), (0xE8, 0x79, 0xF9)),
     ((0xE8, 0x79, 0xF9), (0xFB, 0xBF, 0x24)),
 )
+DEFAULT_OPERATION_RAMPS = OPERATION_RAMPS
+
+
+def hex_to_rgb(hex_str: str) -> tuple[int, int, int]:
+    """Convert a hex color string to an (R, G, B) tuple."""
+    h = str(hex_str).lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+def build_operation_ramps(palette: Any) -> tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...]:
+    """Dynamically construct harmonious 8-stage spectral transition from palette."""
+    colors = [
+        hex_to_rgb(palette.accent_deep),
+        hex_to_rgb(palette.accent),
+        hex_to_rgb(palette.accent_hi),
+        hex_to_rgb(palette.category_web),
+        hex_to_rgb(palette.category_crypto),
+        hex_to_rgb(palette.category_rev),
+        hex_to_rgb(palette.category_pwn),
+        hex_to_rgb(palette.warning),
+        hex_to_rgb(palette.firstblood),
+    ]
+    ramps = []
+    for i in range(8):
+        ramps.append((colors[i], colors[i + 1]))
+    return tuple(ramps)
 
 
 def _style(rgb: tuple[int, int, int]) -> str:
@@ -141,7 +183,7 @@ def compact_brand(width: int | None = None, *, command: str = "", version: str =
     cols = terminal_width(width)
     out = Text()
 
-    left = Text(BRAND_NAME, style=f"bold {_style(LOGO_START)}")
+    left = Text(get_brand_name(), style=f"bold {_style(LOGO_START)}")
     if command:
         left.append(" // ", style="dim")
         left.append(command, style="bold")
@@ -181,7 +223,7 @@ def full_brand(width: int | None = None, *, version: str = "") -> Text:
         out.append("\n")
 
     footer = Text()
-    footer.append(BRAND_NAME, style=f"bold {_style(LOGO_MID)}")
+    footer.append(get_brand_name(), style=f"bold {_style(LOGO_MID)}")
     if version:
         footer.append(f"  {version}", style="dim")
     footer.append("   ", style="dim")
@@ -204,6 +246,8 @@ __all__ = [
     "FULL_LOGO_WIDTH",
     "WIDE_THRESHOLD",
     "OPERATION_RAMPS",
+    "hex_to_rgb",
+    "build_operation_ramps",
     "operation_rail",
     "compact_brand",
     "full_brand",

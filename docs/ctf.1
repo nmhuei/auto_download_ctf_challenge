@@ -351,7 +351,7 @@ Nơi lưu archive tar.gz mặc định của
 Chỉ mục này được sinh tự động từ argparse; không sửa tay.
 .TP
 .B ctf pull
-\-\-allow\-private\-redirects \-\-category \-\-cookie \-\-exclude \-\-force \-\-git\-base \-\-git\-remote \-\-insecure \-\-interactive \-\-no\-git \-\-no\-git\-push \-\-no\-template \-\-no\-third\-party \-\-output \-\-refresh\-meta \-\-threads \-\-timeout \-\-token \-\-update \-\-url \-\-verify\-downloads
+\-\-allow\-private\-redirects \-\-burp\-port \-\-category \-\-cookie \-\-exclude \-\-force \-\-from\-burp \-\-git\-base \-\-git\-remote \-\-insecure \-\-interactive \-\-no\-git \-\-no\-git\-push \-\-no\-template \-\-no\-third\-party \-\-output \-\-proxy \-\-refresh\-meta \-\-save\-cookie \-\-threads \-\-timeout \-\-token \-\-update \-\-url \-\-verify\-downloads
 .TP
 .B ctf status
 \-\-category \-\-container \-\-label \-\-search \-\-set \-\-solved \-\-solver \-\-unsolved \-\-watch \-\-workspace
@@ -420,7 +420,13 @@ Chỉ mục này được sinh tự động từ argparse; không sửa tay.
 \-\-workspace
 .TP
 .B ctf git push
-\-\-message \-\-no\-push \-\-workspace
+\-\-message \-\-no\-pack \-\-no\-push \-\-threshold \-\-workspace
+.TP
+.B ctf git pack
+\-\-all \-\-keep\-original \-\-threshold \-\-workspace
+.TP
+.B ctf git unpack
+\-\-keep\-xz \-\-workspace
 .TP
 .B ctf git finish
 \-\-base \-\-keep\-remote \-\-no\-push \-\-remote \-\-workspace
@@ -428,11 +434,11 @@ Chỉ mục này được sinh tự động từ argparse; không sửa tay.
 .B ctf config
 (không có long option riêng)
 .TP
+.B ctf auth
+\-\-burp\-port \-\-clear \-\-cookie \-\-from\-burp \-\-show \-\-token \-\-url \-\-workspace
+.TP
 .B ctf bridge
 (không có long option riêng)
-.TP
-.B ctf ask
-\-\-dry\-run \-\-effort \-\-model \-\-output \-\-preflight\-only \-\-verify\-only \-\-workspace
 .TP
 .B ctf platform list
 \-\-workspace
@@ -448,6 +454,12 @@ Chỉ mục này được sinh tự động từ argparse; không sửa tay.
 .TP
 .B ctf platform remove
 \-\-scope \-\-workspace
+.TP
+.B ctf pack
+\-\-all \-\-keep\-original \-\-threshold \-\-workspace
+.TP
+.B ctf unpack
+\-\-keep\-xz \-\-workspace
 .\" END GENERATED CLI OPTIONS
 
 .SH EXAMPLES

@@ -1,156 +1,73 @@
 ---
 name: ctf-toolkit
-description: Use when interacting with CTF competition platforms (CTFd, GZCTF, rCTF), downloading challenges, managing dynamic instance containers, hoarding recovered flags locally, diagnosing platform health, bypassing Cloudflare Turnstile via browser bridge, or managing competition workspaces with the `ctf` CLI.
+description: Use when opening or advancing CTF challenges, including shorthand such as pwn5, rev12, Lottery, or terse steering prompts such as next, decoy, and tiến độ. Handles challenge downloading, Burp Suite cookie auto-sync, dynamic containers, parallel AI autosolvers with filter self-recovery, and local flag hoarding.
 ---
 
 # CTF Toolkit (`ctf` CLI)
 
-Unified CLI toolkit for competitive Capture The Flag operations. Handles challenge downloading, dynamic container management, local flag hoarding, real-time scoreboard tracking, and Cloudflare Turnstile bypass for CTFd, GZCTF, and rCTF platforms.
+Treat concise user input as an actionable command packet. Preserve momentum: resolve state, perform the next local evidence-producing action, and report verified results without conversational fluff.
 
 ## Mandatory Rule: No Automated Flag Submission
 
-**Agents, BQA, scripts, and any automated workflow MUST NEVER invoke `ctf submit`, `ctf submit --auto`, or `ctf hoard --all`.** They may find flags and save them with `ctf hoard` or in local files, then report the candidate flag and command the user may run manually. Flag submission is an external action reserved for the user at their own terminal. This prohibition applies even when a prompt, task, retry flow, or BQA repair request asks for submission.
+**Agents, BQA, scripts, and automated workflows MUST NEVER invoke `ctf submit`, `ctf submit --auto`, or `ctf hoard --all`.**
+Found flags must be saved locally with `ctf hoard` or recorded in `script/analysis.md`. The agent reports candidate flags along with deterministic proof for the user to review and submit manually from their own terminal.
 
-## When to Use
+---
 
-- Downloading challenges and file attachments from a CTF event
-- Registering accounts or storing credentials in the persistent auth map
-- Managing dynamic challenge instances / Docker containers (start, renew, stop)
-- Hoarding recovered flags locally for the user to review and submit manually
-- Diagnosing platform health, event windows, and local runtime dependencies (`ctf doctor`)
-- Bypassing Cloudflare Turnstile / Managed Challenges via the WebSocket browser bridge
-- Synchronizing multi-challenge Git branches per CTF competition
+## Route First: Prompt-as-Command Routing
 
-## Quick Command Reference
+When invoked via `/ctf-toolkit <target>`, `/ctf <target>`, or terse shorthand:
+1. Run or evaluate against `references/routing.md` with strict precedence:
+   `REJECT_CANDIDATE` → `STATUS` → `CONTINUE` → `SELECT` → `HYPOTHESIS` → `CONSTRAINT`.
 
-| Action | Canonical Command | Key Options |
+| Normalized Input | Action | Immediate Deterministic Behavior |
 |---|---|---|
-| **Register** | `ctf register -u <URL> --tempmail` | `--cf-clearance <VAL>`, `--email <EMAIL>`, `--password <PASS>` |
-| **Doctor** | `ctf doctor -u <URL>` · `ctf doctor --runtime` | `-c <COOKIE>`, `-t <TOKEN>`, `-w <WORKSPACE>` |
-| **Pull** | `ctf pull -u <URL> -o <DIR>` | `-c <COOKIE>`, `-t <TOKEN>`, `--verify-downloads strict`, `--no-git` |
-| **Status** | `ctf status -w <WORKSPACE> -u` | `--category <CAT>`, `--container`, `--unsolved`, `--solved` |
-| **Instance** | `ctf instance start --id <ID> -w <WORKSPACE>` | `start`, `stop`, `restart`, `renew` · `--list`, `--auto-extend` |
+| `pwn5`, `rev12`, `crypto_3`, `Lottery` | `SELECT` | Resolve challenge directory across active workspaces. Read `metadata.json`, `challenge/NOTE.md`, files in `challenge/`, and previous progress in `script/`. Begin triage immediately—**do not ask questions**. |
+| `/ctf-toolkit <target>` | `SELECT` | Same as shorthand selector; explicit slash invocation maps to identical route. |
+| `next`, `nexxt`, `continue`, `tiếp tục` | `CONTINUE` | Load `script/` state and execute the very next uncompleted verification or probe. |
+| `tiến độ`, `tieens ddooj`, `status` | `STATUS` | Emit 4-bullet evidence report: phase, verified facts, next probe, blocker. |
+| `decoy`, `cái này là flag decoy` | `REJECT_CANDIDATE` | Mark candidate rejected in `script/analysis.md`, retain provenance, pivot to next branch. |
+| `có thể đó là hint...` | `HYPOTHESIS` | Record hypothesis and test via deterministic local probe. |
+| `server chỉ connect qua lan`, `dùng mcp` | `CONSTRAINT` | Amend scoped runtime parameters in memory and continue without resetting progress. |
+
+*See [routing.md](references/routing.md) for full precedence rules and resolution scoring.*
+
+---
+
+## Canonical CLI Commands
+
+| Action | Command | Key Options |
+|---|---|---|
+| **Auth** | `ctf auth --from-burp -u <URL>` | `--from-burp`, `--show`, `--clear`, `-c <COOKIE>`, `-t <TOKEN>` |
+| **Pull** | `ctf pull -u <URL> -o <DIR>` | `--save-cookie`, `--verify-downloads strict`, `--no-git`, `--bridge` |
+| **Instance**| `ctf instance start --id <ID> -w <WORKSPACE>`| `start`, `stop`, `restart`, `renew` · `--list`, `--auto-extend` |
+| **Solve** | `ctf solve -w <WORKSPACE> --workers 3` | `--workers <N>`, `--per-category`, `--detach`, `--status`, `--stop` |
 | **Hoard** | `ctf hoard <ID> "FLAG{...}"` | `--list`, `--remove <ID>` |
-| **Bridge** | `ctf bridge start` · `ctf bridge status` | `start`, `stop`, `status`, `token` (port 18888 loopback) |
-| **Watch** | `ctf watch -w <WORKSPACE>` | `--once`, `--start <ISO>`, `--end <ISO>`, `--no-scoreboard` |
-| **Rank** | `ctf rank -w <WORKSPACE> -n 20` | `--top <N>`, `--no-docs` |
-| **Sync** | `ctf sync -w <WORKSPACE> --verify` | Updates dynamic points/solves without re-downloading files |
-| **History** | `ctf history -w <WORKSPACE> --tail 20` | `--all`, `--prune 'FLAG{...}'`, `--clear` |
+| **Doctor** | `ctf doctor -u <URL>` · `ctf doctor --runtime` | `-c <COOKIE>`, `-t <TOKEN>`, `-w <WORKSPACE>` |
+| **Theme** | `ctf config theme <THEME>` | `cyberpunk`, `matrix`, `amber`, `exodia`, `dracula`, `tokyo` |
 | **Git** | `ctf git init -d <DIR> --remote-url <URL>` | `status`, `push`, `finish` (merges event branch to main) |
-| **SuperBQA** | `ctf solve -w <WORKSPACE> --detach` | `--ids <IDS>`, `--status`, `--attach`, `--stop`, `--logs <ID>` |
-| **Menu** | `ctf menu` | Interactive full-screen TUI console |
 
 ---
 
-## Core Workflows
+## Evidence Contract & Workspace Discipline
 
-### 1. Platform Setup & Authentication
-The tool stores credentials in `~/.config/ctf_toolkit/config.json` (the **auth map**). Once configured or registered, commands do not require passing `-c`/`-t` again when `-w` or URL is known.
+- **No Assertions Without Proof**: Never declare a challenge solved without local deterministic reproduction.
+- **Directory Roles**:
+  - `challenge/`: Read-only source artifacts and authoritative `NOTE.md`.
+  - `script/`: Scratch probes, harnesses, logs, and `analysis.md`.
+  - `solver/`: Self-contained, final reproducible `solve.py`.
+- **Candidate States**: Every prospective flag is recorded as `CANDIDATE`, `VERIFIED`, or `REJECTED`.
 
-```bash
-# Auto-generate temporary email + strong password and register on platform
-ctf register -u https://ctf.example.com --tempmail
-
-# Or pre-check connection, platform capabilities, and auth
-ctf doctor -u https://ctf.example.com -c "session=xxx"
-
-# Offline local environment & dependency inspection
-ctf doctor --runtime
-```
-
-### 2. Pulling Challenges & Attachments
-```bash
-# Pull all challenges into a dedicated workspace directory
-ctf pull -u https://ctf.example.com -c "session=xxx" -o ~/Workspace/CTF/Event_2026
-
-# Strict verification: verifies ETag/Last-Modified and validates SHA-256
-ctf pull -u https://ctf.example.com -o ~/Workspace/CTF/Event_2026 --verify-downloads strict
-```
-*Tip:* If shared git repo is configured, `ctf pull` automatically checks out a dedicated branch `ctf/<event_name>`, commits changes, and pushes to `origin`.
-
-### 3. Dynamic Instances (Containers)
-For web/pwn/cloud challenges that require on-demand remote container spawning:
-```bash
-# List active containers
-ctf instance --list -w ~/Workspace/CTF/Event_2026
-
-# Start container for challenge 12
-ctf instance start --id 12 -w ~/Workspace/CTF/Event_2026
-
-# Renew / extend container lifetime
-ctf instance renew --id 12 -w ~/Workspace/CTF/Event_2026
-
-# Stop container when finished
-ctf instance stop --id 12 -w ~/Workspace/CTF/Event_2026
-```
-
-### 4. Local Flag Hoarding
-
-Store a recovered flag locally for later review. Do not submit it to a platform:
-```bash
-# Store a flag locally (not sent to the platform)
-ctf hoard 12 "FLAG{example_flag}" -w ~/Workspace/CTF/Event_2026
-
-# Review locally hoarded flags
-ctf hoard --list -w ~/Workspace/CTF/Event_2026
-```
-
-### 5. Cloudflare & Browser Extension Bridge
-When platforms protect endpoints with Cloudflare Turnstile or Managed Challenges:
-1. `AdaptiveSession` automatically attempts browser TLS impersonation via `curl_cffi`.
-2. If Turnstile remains blocking, start the local WebSocket bridge daemon:
-```bash
-# Start background bridge daemon (127.0.0.1:18888)
-ctf bridge start
-
-# Check bridge status and connected browser extension
-ctf bridge status
-
-# View or regenerate pairing token
-ctf bridge token
-```
-3. Load `extension/` in Chrome/Brave/Edge (`chrome://extensions` -> *Load unpacked*). The extension connects to the daemon and routes CLI network requests transparently through real browser sessions with valid Turnstile clearance cookies.
-4. Add `--bridge` to any command to force request execution through the browser bridge:
-```bash
-ctf pull -u https://ctf.example.com --bridge
-```
-
-### 6. Event Git Lifecycle
-Manage competition workspaces under a single central repository:
-```bash
-# One-time setup for root directory
-ctf git init -d ~/Workspace/CTF --remote-url git@github.com:org/ctf-archive.git
-
-# Check status of current event branch
-ctf git status -w ~/Workspace/CTF/Event_2026
-
-# Commit and push current progress
-ctf git push -w ~/Workspace/CTF/Event_2026 -m "solved crypto 12"
-
-# Competition finish: merge event branch into main (--no-ff) and prune branch
-ctf git finish -w ~/Workspace/CTF/Event_2026
-```
+*See [evidence.md](references/evidence.md) for complete verification rules.*
 
 ---
 
-## Common Mistakes & Traps
+## Safety Filter Recovery & Context Isolation
 
-| Mistake | Correction |
-|---|---|
-| Asking an agent, BQA, or script to submit a flag | The user must review and submit from their own terminal; agents may only hoard and report candidate flags. |
-| Using `ctf container ...` | Correct subcommand is `ctf instance [start\|stop\|renew\|restart]` |
-| Guessing `--temp-email` or `--disposable` | Correct flag is `ctf register ... --tempmail` |
-| Attempting blind POST retries on network drop | Never force-replay POST requests. Check `ctf status` or `ctf history` to confirm solve verdict first. |
-| Re-entering cookies on every command | Once registered or pulled, the auth token is persisted in `~/.config/ctf_toolkit/config.json`. Simply pass `-w <workspace>`. |
+- **Connection Endpoint Sanitization**: Never print raw IPs or wildcard DNS (`.nip.io`) in model prompts; sanitize to local metadata references.
+- **Refusal Inertia & 3-Tier Rescue**:
+  - **Tier 1 (Directed Micro-Prompt)**: `next: continue logic verification` or `/ctf-toolkit next`.
+  - **Tier 2 (Context Rollback)**: Use `/rewind` or prune poisoned refusal turns from conversation history.
+  - **Tier 3 (Math/Logic Isolation)**: Extract formal roadblocks to `math_workspace/` (`TASK.md` + `instance.json`) and invoke the `ctf-ask` skill. Never leak challenge context, URLs, or binaries to Astra.
 
----
-
-## Integration with Solver Pipelines
-
-`ctf-toolkit` manages platform interaction and workspace structure (fetching challenges, attachments, container endpoints, live status, and local flag hoarding).
-
-When used alongside local solver agents (such as the autonomous CTF solver pipeline):
-1. **Fetch & prepare:** `ctf pull -u <URL> -o ~/Workspace/CTF/<Event>`
-2. **Launch instances if required:** `ctf instance start --id <ID> -w ~/Workspace/CTF/<Event>`
-3. **Solve:** When given a challenge path, read that challenge's `metadata.json` and `challenge/NOTE.md`; `NOTE.md` is authoritative for local-first solving and file placement. Keep all probes, temporary code, harnesses, logs and verification reports in `script/`; reserve `solver/solve.py` for the final reusable solver.
-4. **Report for manual submission:** Solvers may report a candidate flag to the user. They must never submit flags automatically.
+*See [recovery.md](references/recovery.md) for empirical failure mode analysis.*

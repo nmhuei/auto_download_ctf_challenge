@@ -483,14 +483,18 @@ class InstanceService:
                     if entry:
                         m['connection_info'] = entry
                         m['instance'] = str(entry)
+                        m['instance_status'] = 'on'
+                        m['instance_note'] = f"Instance active at {entry}. Use 'ctf instance renew --id {challenge_id}' to extend."
                         inst['active_instance'] = entry
                         inst['last_entry'] = entry
                         inst['remaining_time'] = time_left
                     elif status == 'stopped':
                         # Không xóa endpoint do người dùng/script tự nhập.
-                        # Chỉ clear endpoint mà lifecycle trước đó đã quản lý.
-                        if m.get('instance') == previous_active:
-                            m['instance'] = ''
+                        # Chỉ chuyển endpoint đã quản lý về 'off'.
+                        if m.get('instance') == previous_active or not m.get('instance'):
+                            m['instance'] = 'off'
+                        m['instance_status'] = 'off'
+                        m['instance_note'] = f"Instance is currently off. Use 'ctf instance start --id {challenge_id}' or /ctf-toolkit instance to spawn."
                         inst.pop('active_instance', None)
                         inst.pop('remaining_time', None)
                     m['instance_info'] = inst

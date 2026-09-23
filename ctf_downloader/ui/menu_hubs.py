@@ -43,18 +43,25 @@ def _hub_console() -> Console:
         return Console(stderr=True, theme=load_theme(None))
 
 
-def _prompt(prompt_text: str = "❯ Select action: ") -> str:
-    """Read a single line of input from console."""
+def _prompt(prompt_text: str = "Select action: ") -> str:
+    """Read a single line of input from console with styled ACCENT cursor."""
+    clean_text = prompt_text.lstrip("❯ ").strip()
     try:
-        con = _hub_console()
-        return con.input(prompt_text).strip()
-    except (EOFError, KeyboardInterrupt):
-        return "0"
+        from ..interactive_menu import _prompt as im_prompt
+        return im_prompt(clean_text + " ")
     except Exception:
+        con = _hub_console()
+        t = Text("❯ ", style=ACCENT)
+        t.append(clean_text + " ")
         try:
-            return input(prompt_text).strip()
+            return con.input(t).strip()
         except (EOFError, KeyboardInterrupt):
             return "0"
+        except Exception:
+            try:
+                return input(f"❯ {clean_text} ").strip()
+            except (EOFError, KeyboardInterrupt):
+                return "0"
 
 
 def _pause() -> None:
@@ -78,7 +85,7 @@ def render_hub_menu(
 
     # Section header banner
     header = Text()
-    header.append(" ◈ ", style=f"bold {ACCENT}")
+    header.append("◈ ", style=f"bold {ACCENT}")
     header.append(title.upper(), style=f"bold {FG_BASE}")
     if subtitle:
         header.append(f" · {subtitle}", style=FG_MUTED)
@@ -86,7 +93,7 @@ def render_hub_menu(
     con.print(
         Panel(
             header,
-            box=box.HORIZONTALS,
+            box=box.ROUNDED,
             border_style=ACCENT_DEEP,
             padding=(0, 1),
         )
@@ -107,12 +114,14 @@ def render_hub_menu(
     grid.add_column("hint")
 
     for key, main_part, hint in split_actions:
-        key_style = f"bold {FG_FAINT}" if key == "0" else f"bold {ACCENT}"
-        main_style = FG_MUTED if key == "0" else FG_BASE
+        key_style = "menu.exit" if key == "0" else "menu.key"
+        main_style = "fg.muted" if key == "0" else "fg.base"
+        hint_style = "fg.faint" if key == "0" else "fg.muted"
+        key_fmt = f"[{key:>2}]" if len(key) == 1 else f"[{key}]"
         grid.add_row(
-            Text(f"[{key}]", style=key_style),
+            Text(key_fmt, style=key_style),
             Text(main_part, style=main_style),
-            Text(hint, style=FG_MUTED) if hint else Text(""),
+            Text(hint, style=hint_style) if hint else Text(""),
         )
     con.print(Padding(grid, (0, 2)))
 
@@ -123,18 +132,19 @@ def render_hub_menu(
 def hub_workspace_targets(app: Any) -> None:
     """Hub 1: Workspace selection, cloning, credentials, and platform diagnostics."""
     actions = [
-        ("1", "Select / Switch active competition workspace"),
-        ("2", "Clone / Download new CTF challenge files"),
-        ("3", "Configure & save Cookie / Token for this event"),
-        ("4", "Platform Doctor & connectivity verification"),
-        ("0", "Back to Main Cockpit"),
+        ("1", "🎯 Switch Workspace"),
+        ("2", "📥 Clone / Download CTF"),
+        ("3", "🔑 Auth Credentials"),
+        ("4", "🩺 Platform Doctor"),
+        ("0", "🚪 Back"),
     ]
 
     while True:
         choice = render_hub_menu(
-            title="Workspace & Targets",
-            subtitle="Chiến trường & Nền tảng",
+            title="Workspaces & Targets",
+            subtitle="Competitions & Platforms",
             actions=actions,
+            prompt_text="❯ Select action (0-4): ",
         )
         if choice in ("0", ""):
             break
@@ -175,11 +185,11 @@ def challenge_action_card(app: Any, target: Dict[str, Any]) -> None:
     pts = target.get("points") or 0
 
     actions = [
-        ("1", "View Description, Hints & Attachments"),
-        ("2", "Dynamic Instance: Start / Stop / Extend container"),
-        ("3", "Submit Flag for this challenge"),
-        ("4", "Dispatch SuperBQA AI Solver (Tự động giải bài)"),
-        ("0", "Back to Challenge List"),
+        ("1", "📖 View Details"),
+        ("2", "🌐 Dynamic Container"),
+        ("3", "🚩 Submit Flag"),
+        ("4", "⚡ Run SuperBQA Solver"),
+        ("0", "🚪 Back"),
     ]
 
     while True:
@@ -209,7 +219,7 @@ def challenge_action_card(app: Any, target: Dict[str, Any]) -> None:
         choice = render_hub_menu(
             title=f"Tactical Action: {cname}",
             actions=actions,
-            prompt_text="❯ Select card action (0-4): ",
+            prompt_text="❯ Select action (0-4): ",
         )
 
         if choice in ("0", ""):
@@ -251,17 +261,18 @@ def _launch_single_solver(app: Any, cid: Any) -> None:
 def hub_challenge_operations(app: Any) -> None:
     """Hub 2: Challenge explorer, action card, and container fleet manager."""
     actions = [
-        ("1", "View challenge tree & progress (Tree View)"),
-        ("2", "Open Challenge Command Card (Select challenge)"),
-        ("3", "Manage dynamic container / instance (start / stop / renew)"),
-        ("0", "Back to Main Cockpit"),
+        ("1", "🌲 Challenge Tree"),
+        ("2", "📋 Action Card"),
+        ("3", "🌐 Manage Containers"),
+        ("0", "🚪 Back"),
     ]
 
     while True:
         choice = render_hub_menu(
             title="Challenge Operations",
-            subtitle="Tác chiến Challenge & Instance",
+            subtitle="Challenges & Instances",
             actions=actions,
+            prompt_text="❯ Select action (0-3): ",
         )
         if choice in ("0", ""):
             break
@@ -279,19 +290,20 @@ def hub_challenge_operations(app: Any) -> None:
 
 
 def hub_flag_submission(app: Any) -> None:
-    """Hub 3: Flag submission lab, hoarded flag harvesting, and submit history."""
+    """Hub 2: Flag submission lab, hoarded flag harvesting, and submit history."""
     actions = [
-        ("1", "Submit flag for a specific challenge"),
-        ("2", "Auto scan & submit hoarded flags in workspace"),
-        ("3", "View submit history & hoarded flag vault"),
-        ("0", "Back to Main Cockpit"),
+        ("1", "🚩 Submit Flag"),
+        ("2", "⚡ Auto-Submit Hoard"),
+        ("3", "📜 Flag Vault & History"),
+        ("0", "🚪 Back"),
     ]
 
     while True:
         choice = render_hub_menu(
             title="Flag Submission Lab",
-            subtitle="Trung tâm Nộp Flag & Kho Chiến lợi phẩm",
+            subtitle="Harvesting & History",
             actions=actions,
+            prompt_text="❯ Select action (0-3): ",
         )
         if choice in ("0", ""):
             break
@@ -323,17 +335,18 @@ def _show_flag_vault(app: Any) -> None:
 def hub_system_arsenal(app: Any) -> None:
     """Hub 5: Git synchronization, visual themes, and global settings."""
     actions = [
-        ("1", "Git Sync & Remote Backup (Kho vũ khí GitHub)"),
-        ("2", "Switch Visual Theme (Cyberpunk / Matrix / Amber / Nord)"),
-        ("3", "Global Configuration (Default workspace root / auto-sync)"),
-        ("0", "Back to Main Cockpit"),
+        ("1", "🌿 Git Sync & Backup"),
+        ("2", "🎨 Theme Settings"),
+        ("3", "⚙️ Global Config"),
+        ("0", "🚪 Back"),
     ]
 
     while True:
         choice = render_hub_menu(
             title="System & Arsenal",
-            subtitle="Hệ thống & Kho Vũ Khí",
+            subtitle="Git & Settings",
             actions=actions,
+            prompt_text="❯ Select action (0-3): ",
         )
         if choice in ("0", ""):
             break

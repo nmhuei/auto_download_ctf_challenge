@@ -9,7 +9,7 @@ _ctf() {
 
     local GLOBAL_OPTS="-v --version -i --interactive -w --workspace"
 
-    local SUBCOMMANDS="pull download clone status tree ls dashboard solve solver bqa eating note ghi-chu tag tags workspaces scan instance container spawn submit flag hoard flag-stash rank scoreboard leaderboard watch register reg doctor health checkup menu ui console storage du archive sync resync history log open sniper serve web git config bridge ext ask expert astra platform platforms schema"
+    local SUBCOMMANDS="pull download clone status tree ls dashboard solve solver bqa eating note ghi-chu tag tags workspaces scan instance container spawn submit flag hoard flag-stash rank scoreboard leaderboard watch register reg doctor health checkup menu ui console storage du archive sync resync history log open sniper serve web git config auth credentials login bridge ext platform platforms schema pack compress unpack decompress"
 
     # Tìm subcommand cuối (bỏ qua option và giá trị của nó)
     local cmd=""
@@ -35,18 +35,21 @@ _ctf() {
             open)                         cmd="open" ;;
             git)                          cmd="git" ;;
             config)                       cmd="config" ;;
+            auth|credentials|login)       cmd="auth" ;;
             bridge|ext)                   cmd="bridge" ;;
             sniper)                       cmd="sniper" ;;
             serve|web)                    cmd="serve" ;;
-            ask|expert|astra)             cmd="ask" ;;
             platform|platforms|schema)    cmd="platform" ;;
+            pack|compress)                cmd="pack" ;;
+            unpack|decompress)            cmd="unpack" ;;
         esac
     done
 
     local opts=""
     case "$cmd" in
         bridge)      opts="status start stop token" ;;
-        pull)        opts="-u --url -c --cookie -t --token -o --output -j --threads -C --category -E --exclude --no-third-party --no-template -f --force --verify-downloads --allow-private-redirects --update --refresh-meta --timeout --no-git --git-base --git-remote --no-git-push -k --insecure -i --interactive" ;;
+        pull)        opts="-u --url -c --cookie -t --token -o --output -j --threads -C --category -E --exclude --no-third-party --no-template -f --force --verify-downloads --allow-private-redirects --update --refresh-meta --timeout --no-git --git-base --git-remote --no-git-push -k --insecure --from-burp --save-cookie --burp-port --proxy -i --interactive" ;;
+        auth)        opts="-w --workspace -u --url -c --cookie -t --token --from-burp --burp-port --show --clear" ;;
         status)      opts="-w --workspace -u --unsolved -s --solved -C --category --container --label --search --solver --watch --set" ;;
         solve)       opts="-w --workspace --ids --workers --timeout --stale-timeout --detach --bg --foreground --status --active --stop --cancel --logs --attach --watch --new-session --reset-sessions --distill" ;;
         note)        opts="-w --workspace --remove" ;;
@@ -64,11 +67,12 @@ _ctf() {
         sync)        opts="-w --workspace --verify -a --apply --pull-status --pull -k --insecure" ;;
         history)     opts="-w --workspace --all --tail --limit --prune --clear" ;;
         open)        opts="-w --workspace" ;;
-        git)         opts="init status push finish end merge -d --dir -w --workspace --remote-url --remote --base --no-push --import-existing --keep-remote -m --message" ;;
+        git)         opts="init status push finish end merge pack unpack -d --dir -w --workspace --remote-url --remote --base --no-push --no-pack --threshold --keep-original --keep-xz --import-existing --keep-remote -m --message" ;;
+        pack)        opts="-w --workspace --threshold --replace --keep-original" ;;
+        unpack)      opts="-w --workspace --keep-xz" ;;
         config)      opts="key value on off auto-sync workspace-root" ;;
         sniper)      opts="-w --workspace --start-at --retry-wrong --poll" ;;
         serve)       opts="-w --workspace --port" ;;
-        ask)         opts="-w --workspace -o --output --model --effort --preflight-only --verify-only --dry-run" ;;
         platform)    opts="list show probe add remove --url --save --scope --key --label -w --workspace" ;;
         *)           opts="$GLOBAL_OPTS $SUBCOMMANDS" ;;
     esac

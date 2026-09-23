@@ -134,7 +134,7 @@ Chạy `ctf <lệnh> --help` để xem đầy đủ tuỳ chọn của từng l�
 
 | Lệnh | Long options |
 | --- | --- |
-| `ctf pull` | `--allow-private-redirects` · `--category` · `--cookie` · `--exclude` · `--force` · `--git-base` · `--git-remote` · `--insecure` · `--interactive` · `--no-git` · `--no-git-push` · `--no-template` · `--no-third-party` · `--output` · `--refresh-meta` · `--threads` · `--timeout` · `--token` · `--update` · `--url` · `--verify-downloads` |
+| `ctf pull` | `--allow-private-redirects` · `--burp-port` · `--category` · `--cookie` · `--exclude` · `--force` · `--from-burp` · `--git-base` · `--git-remote` · `--insecure` · `--interactive` · `--no-git` · `--no-git-push` · `--no-template` · `--no-third-party` · `--output` · `--proxy` · `--refresh-meta` · `--save-cookie` · `--threads` · `--timeout` · `--token` · `--update` · `--url` · `--verify-downloads` |
 | `ctf status` | `--category` · `--container` · `--label` · `--search` · `--set` · `--solved` · `--solver` · `--unsolved` · `--watch` · `--workspace` |
 | `ctf solve` | `--active` · `--attach` · `--bg` · `--cancel` · `--detach` · `--distill` · `--foreground` · `--ids` · `--logs` · `--new-session` · `--reset-sessions` · `--stale-timeout` · `--status` · `--stop` · `--timeout` · `--workers` · `--workspace` |
 | `ctf note` | `--remove` · `--workspace` |
@@ -157,16 +157,20 @@ Chạy `ctf <lệnh> --help` để xem đầy đủ tuỳ chọn của từng l�
 | `ctf open` | `--workspace` |
 | `ctf git init` | `--base` · `--dir` · `--import-existing` · `--no-push` · `--remote` · `--remote-url` |
 | `ctf git status` | `--workspace` |
-| `ctf git push` | `--message` · `--no-push` · `--workspace` |
+| `ctf git push` | `--message` · `--no-pack` · `--no-push` · `--threshold` · `--workspace` |
+| `ctf git pack` | `--all` · `--keep-original` · `--threshold` · `--workspace` |
+| `ctf git unpack` | `--keep-xz` · `--workspace` |
 | `ctf git finish` | `--base` · `--keep-remote` · `--no-push` · `--remote` · `--workspace` |
 | `ctf config` | — |
+| `ctf auth` | `--burp-port` · `--clear` · `--cookie` · `--from-burp` · `--show` · `--token` · `--url` · `--workspace` |
 | `ctf bridge` | — |
-| `ctf ask` | `--dry-run` · `--effort` · `--model` · `--output` · `--preflight-only` · `--verify-only` · `--workspace` |
 | `ctf platform list` | `--workspace` |
 | `ctf platform show` | `--workspace` |
 | `ctf platform probe` | `--key` · `--label` · `--save` · `--scope` · `--workspace` |
 | `ctf platform add` | `--scope` · `--workspace` |
 | `ctf platform remove` | `--scope` · `--workspace` |
+| `ctf pack` | `--all` · `--keep-original` · `--threshold` · `--workspace` |
+| `ctf unpack` | `--keep-xz` · `--workspace` |
 <!-- END GENERATED CLI OPTIONS -->
 
 ## 4. Cây workspace output

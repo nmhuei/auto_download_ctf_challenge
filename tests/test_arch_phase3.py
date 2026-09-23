@@ -96,6 +96,7 @@ class TestGlobalConfigMove(unittest.TestCase):
             "default_workspace": None,
             "workspace_root": gc.DEFAULT_WORKSPACE_ROOT,
             "auth": {},
+            "theme": "exodia",
         })
 
     def test_save_then_load_roundtrip(self):

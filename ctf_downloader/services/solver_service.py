@@ -343,27 +343,60 @@ class SolverService:
     def select_ids(self, raw_ids: str) -> list[SolverJob]:
         tokens = [part.strip() for part in str(raw_ids).split(",") if part.strip()]
         if not tokens:
-            raise SolverSelectionError("Hãy nhập ít nhất một challenge ID.")
-        if any(not token.isdecimal() for token in tokens):
-            raise SolverSelectionError("Challenge IDs không hợp lệ; dùng dạng 1,2,3.")
-        try:
-            selected_ids = [int(token) for token in tokens]
-        except ValueError:
-            raise SolverSelectionError("Challenge IDs không hợp lệ; dùng dạng 1,2,3.")
-        if len(set(selected_ids)) != len(selected_ids):
-            raise SolverSelectionError("Challenge IDs không hợp lệ: ID bị lặp.")
-        known = {job.display_id: job for job in self.scan()}
-        missing = [str(item) for item in selected_ids if item not in known]
+            raise SolverSelectionError("Please enter at least one challenge ID.")
+
+        for token in tokens:
+            if not token.isascii():
+                raise SolverSelectionError("Invalid challenge IDs; use format like 1,2,3 or challenge name.")
+
+        known = self.scan()
+        selected_jobs: list[SolverJob] = []
+        missing: list[str] = []
+
+        for token in tokens:
+            matched: SolverJob | None = None
+            if token.isdecimal():
+                num = int(token)
+                matched = next((j for j in known if j.display_id == num or str(j.challenge_id) == token), None)
+            else:
+                m = re.match(r"^([a-zA-Z]+)[-_]?(\d+)$", token)
+                if m:
+                    pfx, num = m.group(1).lower(), int(m.group(2))
+                    cat_jobs = [j for j in known if j.category.lower().startswith(pfx)]
+                    matched = next((j for j in cat_jobs if str(j.challenge_id) == str(num) or f"_{num}" in j.name or f"-{num}" in j.name), None)
+                    if not matched and 1 <= num <= len(cat_jobs):
+                        matched = cat_jobs[num - 1]
+
+                if not matched:
+                    low = token.casefold()
+                    matched = next((j for j in known if j.name.casefold() == low or j.path.name.casefold() == low), None)
+
+                if not matched:
+                    low = token.casefold()
+                    sub_matches = [j for j in known if low in j.name.casefold() or low in j.path.name.casefold()]
+                    if len(sub_matches) == 1:
+                        matched = sub_matches[0]
+
+            if matched:
+                selected_jobs.append(matched)
+            else:
+                missing.append(token)
+
         if missing:
-            raise SolverSelectionError("Challenge ID không tồn tại: " + ", ".join(missing))
-        return [known[item] for item in selected_ids]
+            raise SolverSelectionError("Challenge ID does not exist: " + ", ".join(missing))
+
+        selected_ids = [j.display_id for j in selected_jobs]
+        if len(set(selected_ids)) != len(selected_ids):
+            raise SolverSelectionError("Invalid challenge IDs: duplicate ID.")
+
+        return selected_jobs
 
     @staticmethod
     def prompt_ids() -> str:
         """Ask for display IDs outside the thin CLI command layer."""
         from rich.prompt import Prompt
 
-        return Prompt.ask("Nhập challenge IDs (ví dụ: 1,2,3)")
+        return Prompt.ask("Enter challenge IDs (e.g. 1,2,3)")
 
     @staticmethod
     def _now() -> str:
@@ -404,8 +437,22 @@ class SolverService:
         event["updated_at"] = self._now()
         atomic_write_json(job.progress_path, event)
 
-    def build_prompt(self, job: SolverJob, *, fallback_mode: bool = False, is_continuation: bool = False, is_resume: bool = False) -> str:
-        return CategoryPromptBuilder.build(job, fallback_mode=fallback_mode, is_continuation=is_continuation, is_resume=is_resume)
+    def build_prompt(
+        self,
+        job: SolverJob,
+        *,
+        fallback_mode: bool = False,
+        is_continuation: bool = False,
+        is_resume: bool = False,
+        minimal: bool = False,
+    ) -> str:
+        return CategoryPromptBuilder.build(
+            job,
+            fallback_mode=fallback_mode,
+            is_continuation=is_continuation,
+            is_resume=is_resume,
+            minimal=minimal,
+        )
 
     @property
     def category_sessions_path(self) -> Path:

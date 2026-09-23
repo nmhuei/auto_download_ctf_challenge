@@ -28,6 +28,7 @@ _DEFAULT_CONFIG: Dict[str, Any] = {
     'default_workspace': None,
     'workspace_root': DEFAULT_WORKSPACE_ROOT,
     'auth': {},
+    'theme': 'exodia',
 }
 
 

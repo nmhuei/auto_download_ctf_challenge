@@ -102,6 +102,28 @@ def handle_pull(args):
         cookie_val = c_saved
         token_val = t_saved
 
+    if getattr(args, 'from_burp', False):
+        from .services.burp_service import BurpService
+        burp = BurpService(mcp_port=getattr(args, 'burp_port', 9876))
+        target_domain = args.url or args.output
+        burp_cookie = burp.get_cookie_header(target_domain)
+        if burp_cookie:
+            Logger.success(f"Successfully extracted session cookie from Burp Suite (localhost:{burp.mcp_port})")
+            cookie_val = burp_cookie
+            if getattr(args, 'save_cookie', False) or getattr(args, 'update', False) or getattr(args, 'refresh_meta', False):
+                ok = AuthService.save_auth(args.output, url=args.url, cookie=cookie_val, token=token_val)
+                if ok:
+                    Logger.info("Saved extracted session cookie to auth credentials.")
+                else:
+                    Logger.warning("Could not persist session cookie to auth credentials.")
+        else:
+            Logger.warning(f"No matching session cookie found in Burp Suite HTTP history for {target_domain}")
+
+    proxy_val = getattr(args, 'proxy', None)
+    if proxy_val:
+        os.environ['HTTP_PROXY'] = proxy_val
+        os.environ['HTTPS_PROXY'] = proxy_val
+
     config = DownloaderConfig(
         url=args.url,
         cookie=cookie_val,
@@ -123,6 +145,7 @@ def handle_pull(args):
         git_remote=getattr(args, 'git_remote', 'origin') or 'origin',
         git_auto_push=not getattr(args, 'no_git_push', False),
         insecure=getattr(args, 'insecure', False),
+        proxy=proxy_val,
     )
 
     try:
@@ -2116,11 +2139,28 @@ def handle_git(args):
             return
 
         if command == 'push':
+            pack = not getattr(args, 'no_pack', False)
+            threshold = int(getattr(args, 'threshold', 50) or 50)
             result = GitWorkflowService.checkpoint_and_push(
                 args.workspace,
                 message=getattr(args, 'message', None),
                 push=not getattr(args, 'no_push', False),
+                pack_challenges=pack,
+                threshold_mb=threshold,
             )
+            rep = result.get('pack_report')
+            if rep:
+                from .services.storage_manager import human_size
+                if rep.get('compressed_count', 0) > 0:
+                    Logger.success(
+                        f"Đã nén tối ưu {rep['compressed_count']} file đề bài "
+                        f"(tiết kiệm {human_size(rep['saved_bytes'])}, {rep['saved_ratio_percent']:.1f}%)."
+                    )
+                if rep.get('skipped_count', 0) > 0:
+                    Logger.warning(
+                        f"Đã bỏ qua {rep['skipped_count']} file vượt ngưỡng {threshold}MB "
+                        "(đã thêm vào .gitignore và lưu metadata .skipped.json)."
+                    )
             if result.get('committed'):
                 Logger.success(f"Đã checkpoint branch {result['branch']}.")
             else:
@@ -2133,6 +2173,14 @@ def handle_git(args):
                 Logger.warning(
                     "Không có remote được cấu hình; checkpoint chỉ lưu local."
                 )
+            return
+
+        if command in ('pack', 'compress'):
+            handle_pack(args)
+            return
+
+        if command in ('unpack', 'decompress'):
+            handle_unpack(args)
             return
 
         if command in ('finish', 'end', 'merge'):
@@ -2154,11 +2202,101 @@ def handle_git(args):
                 Logger.success(f"Đã xóa local branch {result['branch']}.")
             return
 
-        Logger.error("Thiếu Git subcommand: init | status | push | finish")
+        Logger.error("Thiếu Git subcommand: init | status | push | pack | unpack | finish")
         sys.exit(2)
     except GitWorkflowError as exc:
         Logger.error(str(exc))
         sys.exit(1)
+
+
+def handle_pack(args):
+    """Nén tối đa các file đề bài trong workspace (XZ extreme, tự động skip nếu > 50MB)."""
+    from .services.challenge_compressor import ChallengeCompressor
+    from .services.storage_manager import human_size
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.text import Text
+    from rich import box
+    from .ui.theme import ACCENT, ACCENT_DEEP, FG_BASE, FG_MUTED, SUCCESS, WARN, load_theme
+
+    ws = Path(getattr(args, 'workspace', '.') or '.').expanduser().resolve()
+    threshold = int(getattr(args, 'threshold', 50) or 50)
+    pack_all = bool(getattr(args, 'all', False))
+    replace_orig = not bool(getattr(args, 'keep_original', False))
+
+    con = Console(theme=load_theme(None))
+    con.print()
+    header = Text()
+    header.append("◈ ", style=f"bold {ACCENT}")
+    header.append("CHALLENGE PACKER · NÉN ĐỀ BÀI TỐI ƯU CHO GIT", style=f"bold {FG_BASE}")
+    header.append(f" (Ngưỡng: {threshold}MB)", style=FG_MUTED)
+    con.print(Panel(header, box=box.ROUNDED, border_style=ACCENT_DEEP, padding=(0, 1)))
+
+    with con.status(f"[bold {ACCENT}]Đang quét và nén các file đề bài trong {ws.name}...[/bold {ACCENT}]"):
+        rep = ChallengeCompressor.pack_workspace(
+            ws,
+            threshold_mb=threshold,
+            pack_all=pack_all,
+            replace_original=replace_orig,
+        )
+
+    tbl = Table(box=box.ROUNDED, border_style=ACCENT_DEEP, show_header=True, header_style=f"bold {ACCENT}")
+    tbl.add_column("Mục tiêu", style=f"bold {FG_BASE}")
+    tbl.add_column("Thao tác", style=f"bold {SUCCESS}")
+    tbl.add_column("Gốc", justify="right", style=FG_MUTED)
+    tbl.add_column("Sau nén", justify="right", style=f"bold {ACCENT}")
+    tbl.add_column("Tỷ lệ", justify="right", style=f"bold {SUCCESS}")
+
+    for r in rep.get("results", []):
+        p_name = Path(r["original_path"]).name
+        action = r["action"]
+        orig_s = human_size(r["original_size"])
+        comp_s = human_size(r["compressed_size"]) if r.get("compressed_size") else "-"
+        ratio = f"{100 - (r['compressed_size']/r['original_size']*100):.1f}%" if r.get("compressed_size") and r["original_size"] > 0 else "-"
+
+        if action == "compressed":
+            act_text = Text("✔ Nén thành công", style=f"bold {SUCCESS}")
+        elif action == "skipped_too_large":
+            act_text = Text(f"! Bỏ qua (>{threshold}MB)", style=f"bold {WARN}")
+        elif action == "already_compressed":
+            act_text = Text("· Đã nén sẵn", style=FG_MUTED)
+        else:
+            act_text = Text(action, style=FG_MUTED)
+
+        tbl.add_row(p_name, act_text, orig_s, comp_s, ratio)
+
+    if rep.get("results"):
+        con.print(tbl)
+
+    summary_text = (
+        f"Hoàn tất: Nén {rep['compressed_count']} file | Bỏ qua {rep['skipped_count']} file (> {threshold}MB) | "
+        f"Tiết kiệm {human_size(rep['saved_bytes'])} ({rep['saved_ratio_percent']:.1f}% dung lượng)."
+    )
+    Logger.success(summary_text)
+
+
+def handle_unpack(args):
+    """Giải nén các file đề bài trong workspace để phân tích/giải bài."""
+    from .services.challenge_compressor import ChallengeCompressor
+    from rich.panel import Panel
+    from rich.text import Text
+    from rich import box
+    from .ui.theme import ACCENT, ACCENT_DEEP, FG_BASE, FG_MUTED, load_theme
+
+    ws = Path(getattr(args, 'workspace', '.') or '.').expanduser().resolve()
+    con = Console(theme=load_theme(None))
+    con.print()
+    header = Text()
+    header.append("◈ ", style=f"bold {ACCENT}")
+    header.append("CHALLENGE UNPACKER · GIẢI NÉN ĐỀ BÀI ĐỂ PHÂN TÍCH", style=f"bold {FG_BASE}")
+    con.print(Panel(header, box=box.ROUNDED, border_style=ACCENT_DEEP, padding=(0, 1)))
+
+    with con.status(f"[bold {ACCENT}]Đang giải nén các file đề bài trong {ws.name}...[/bold {ACCENT}]"):
+        rep = ChallengeCompressor.unpack_workspace(ws)
+
+    Logger.success(f"Đã giải nén thành công {rep['unpacked_count']} file đề bài.")
+    if rep.get("error_count", 0) > 0:
+        Logger.warning(f"Có {rep['error_count']} file gặp lỗi khi giải nén: {rep.get('errors')}")
 
 
 def handle_storage(args):
@@ -2291,6 +2429,8 @@ def _normalize_workspace_root(value: str) -> str:
     return os.path.abspath(os.path.expanduser(raw))
 
 
+from .ui.palettes import PRESET_PALETTES
+
 _CONFIG_KEYS = {
     'auto-sync': {
         'path': ('auto_sync', 'enabled'),
@@ -2305,6 +2445,12 @@ _CONFIG_KEYS = {
         'normalize': _normalize_workspace_root,
         'default': os.path.expanduser('~/Workspace/CTF'),
         'desc': 'Thư mục gốc mặc định để pull/scan/storage/git lưu các giải',
+    },
+    'theme': {
+        'path': ('theme',),
+        'values': {k: k for k in PRESET_PALETTES.keys()},
+        'default': 'exodia',
+        'desc': f"Visual theme palette ({', '.join(sorted(set(p.name for p in PRESET_PALETTES.values())))})",
     },
 }
 
@@ -2538,141 +2684,6 @@ def handle_bridge(args):
             )
 
 
-def _resolve_ask_scripts() -> tuple[Path, Path]:
-    candidates = [
-        Path.home() / ".gemini" / "config" / "skills" / "ctf-ask" / "scripts",
-        Path(__file__).resolve().parents[1] / ".agents" / "skills" / "ctf-ask" / "scripts",
-        Path(__file__).resolve().parents[1] / "skills" / "ctf-ask" / "scripts",
-    ]
-    for c in candidates:
-        val = c / "validate_sanitized_handoff.py"
-        run = c / "run_astra_expert.py"
-        if val.is_file() and run.is_file():
-            return val, run
-    raise RuntimeError("Skill ctf-ask scripts not found in ~/.gemini/config/skills/ctf-ask or repo .agents/skills/ctf-ask")
-
-
-def _parse_validator_result(res: subprocess.CompletedProcess) -> dict:
-    """Parse validator JSON output fail-closed."""
-    import json
-    if res.returncode != 0:
-        try:
-            data = json.loads(res.stdout)
-            if isinstance(data, dict):
-                data["ok"] = False
-                return data
-        except Exception:
-            pass
-        err = res.stderr.strip() or res.stdout.strip() or f"Process exited with code {res.returncode}"
-        return {"ok": False, "errors": [err], "findings": []}
-
-    try:
-        data = json.loads(res.stdout)
-        if isinstance(data, dict):
-            if data.get("ok") is not True:
-                data["ok"] = False
-            return data
-    except Exception as exc:
-        return {"ok": False, "errors": [f"Malformed validator output: {exc}"], "findings": []}
-    return {"ok": False, "errors": ["Validator returned non-object JSON"], "findings": []}
-
-
-def handle_ask(args):
-    """Bridge command line to ctf-ask skill (Codex Astra expert escalation)."""
-    import json
-    from pathlib import Path
-
-    try:
-        validator, runner = _resolve_ask_scripts()
-    except Exception as exc:
-        Logger.error(f"Cannot locate ctf-ask scripts: {exc}")
-        sys.exit(1)
-
-    raw_ws = getattr(args, 'workspace', None)
-    if raw_ws:
-        ws = Path(raw_ws).expanduser().resolve()
-    else:
-        cwd = Path.cwd().resolve()
-        if (cwd / "math_workspace").is_dir():
-            ws = (cwd / "math_workspace").resolve()
-        elif (cwd / "formal_workspace").is_dir():
-            ws = (cwd / "formal_workspace").resolve()
-        else:
-            ws = cwd
-
-    if not ws.is_dir():
-        Logger.error(f"Workspace directory not found: {ws}")
-        sys.exit(2)
-
-    if getattr(args, 'preflight_only', False):
-        Logger.info(f"Running preflight sanitizer check on: {ws}")
-        res = subprocess.run([sys.executable, str(validator), "preflight", "--workspace", str(ws)],
-                             capture_output=True, text=True, check=False)
-        data = _parse_validator_result(res)
-
-        if data.get("ok"):
-            file_count = len(data.get("files", []))
-            Logger.success(f"✔ Preflight passed: {file_count} formal file(s) verified, 0 cyber domain leakage findings.")
-            sys.exit(0)
-        else:
-            Logger.error(f"✘ Preflight rejected: workspace contains domain leakage or format errors.")
-            for err in data.get("errors", []):
-                Logger.warning(f"  - Error: {err}")
-            for f in data.get("findings", []):
-                Logger.warning(f"  - Leakage finding [{f.get('label') or f.get('kind')}]: offset {f.get('offset')} in {f.get('file')}")
-            sys.exit(2)
-
-    verify_sol = getattr(args, 'verify_only', None)
-    if verify_sol:
-        sol_path = Path(verify_sol).expanduser().resolve()
-        if not sol_path.is_file():
-            Logger.error(f"Solution file not found: {sol_path}")
-            sys.exit(2)
-        Logger.info(f"Running independent verification on {sol_path.name} against {ws.name}/instance.json...")
-        res = subprocess.run([sys.executable, str(validator), "verify", "--workspace", str(ws), "--solution", str(sol_path)],
-                             capture_output=True, text=True, check=False)
-        data = _parse_validator_result(res)
-        if data.get("ok"):
-            Logger.success(f"✔ Candidate verified independently: {data.get('type')}")
-            for chk in data.get("checks", []):
-                Logger.success(f"  ✔ {chk}")
-            sys.exit(0)
-        else:
-            Logger.error(f"✘ Verification failed: {data.get('errors')}")
-            sys.exit(3)
-
-    out_arg = getattr(args, 'output', None)
-    if out_arg:
-        out_path = Path(out_arg).expanduser().resolve()
-    else:
-        if ws.parent != ws:
-            out_path = ws.parent / f"handoff_{ws.name}.json"
-        else:
-            out_path = ws / ".." / "handoff.json"
-        out_path = out_path.resolve()
-
-    cmd = [
-        sys.executable, str(runner),
-        "--workspace", str(ws),
-        "--output", str(out_path),
-    ]
-    if getattr(args, 'model', None):
-        cmd.extend(["--model", args.model])
-    if getattr(args, 'effort', None):
-        cmd.extend(["--effort", args.effort])
-    if getattr(args, 'dry_run', False):
-        cmd.append("--dry-run")
-
-    Logger.info(f"Initiating ctf-ask expert handoff on {ws.name}...")
-    res = subprocess.run(cmd)
-    if res.returncode == 0:
-        if not getattr(args, 'dry_run', False):
-            Logger.success(f"✔ Verified handoff emitted successfully: {out_path}")
-        sys.exit(0)
-    else:
-        sys.exit(res.returncode)
-
-
 def handle_platform(args):
     """Quản lý các platform schema và chạy auto-recon khám phá nền tảng mới."""
     action = getattr(args, "platform_action", None) or "list"
@@ -2865,4 +2876,78 @@ def handle_platform(args):
             Logger.success(f"Đã xoá platform schema '{key}' khỏi {scope} scope.")
         else:
             Logger.warning(f"Không tìm thấy file schema '{key}.json' trong {scope} scope.")
+
+
+def handle_auth(args):
+    """``ctf auth`` — manage, inspect, or sync credentials for workspace or platform URL."""
+    from .services.auth_service import AuthService
+    from .services.burp_service import BurpService
+    from .storage.workspace_repo import WorkspaceRepo
+
+    raw_ws = getattr(args, 'workspace', None)
+    plat_url = getattr(args, 'url', None)
+    target = raw_ws or plat_url or '.'
+    resolved_ws = None
+
+    if os.path.isdir(target):
+        resolved_ws = os.path.abspath(target)
+        if not plat_url:
+            try:
+                plat_url = WorkspaceRepo(resolved_ws).resolve_platform_url()
+            except Exception:
+                pass
+    elif not plat_url and ("://" in str(target) or "." in str(target)):
+        plat_url = str(target)
+
+    if getattr(args, 'clear', False):
+        AuthService.delete_auth(resolved_ws or target, url=plat_url)
+        Logger.success(f"Cleared authentication credentials for {resolved_ws or plat_url}.")
+        return
+
+    if getattr(args, 'from_burp', False):
+        burp_port = getattr(args, 'burp_port', 9876) or 9876
+        burp = BurpService(mcp_port=burp_port)
+        if not burp.is_mcp_available(timeout=0.6):
+            Logger.error(f"Burp Suite MCP server is not reachable on localhost:{burp_port}.")
+            sys.exit(1)
+
+        domain_target = plat_url or resolved_ws or target
+        cookies = burp.extract_cookies(domain_target, count=100, timeout=3.0)
+        if not cookies:
+            Logger.warning(f"No session cookies found for '{domain_target}' in Burp Suite HTTP history.")
+            sys.exit(1)
+
+        cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        token_val = getattr(args, 'token', None)
+        ok = AuthService.save_auth(resolved_ws or target, url=plat_url, cookie=cookie_str, token=token_val)
+        if ok:
+            Logger.success(f"Successfully synced {len(cookies)} cookies from Burp Suite for {plat_url or resolved_ws}!")
+        else:
+            Logger.error(f"Failed to persist authentication credentials for {plat_url or resolved_ws}.")
+            sys.exit(1)
+        return
+
+    cookie_in = getattr(args, 'cookie', None)
+    token_in = getattr(args, 'token', None)
+    if cookie_in or token_in:
+        ok = AuthService.save_auth(resolved_ws or target, url=plat_url, cookie=cookie_in, token=token_in)
+        if ok:
+            Logger.success(f"Saved credentials for {plat_url or resolved_ws}.")
+        else:
+            Logger.error(f"Failed to persist authentication credentials for {plat_url or resolved_ws}.")
+            sys.exit(1)
+        return
+
+    # Default / --show: display current credentials
+    c_saved, t_saved = AuthService.resolve(resolved_ws or target, allow_burp_fallback=False)
+    if not c_saved and not t_saved and plat_url and plat_url != (resolved_ws or target):
+        c_saved, t_saved = AuthService.resolve(plat_url, allow_burp_fallback=False)
+
+    target_label = resolved_ws or plat_url or target
+    Logger.info(f"Authentication credentials for {target_label}:")
+    c_disp = (c_saved[:12] + "..." + c_saved[-6:]) if (c_saved and len(c_saved) > 20) else (c_saved or "(none)")
+    t_disp = (t_saved[:8] + "...") if (t_saved and len(t_saved) > 12) else (t_saved or "(none)")
+    Logger.info(f"  Cookie: {c_disp}")
+    Logger.info(f"  Token:  {t_disp}")
+
 

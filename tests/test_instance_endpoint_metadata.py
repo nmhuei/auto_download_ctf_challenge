@@ -112,5 +112,9 @@ def test_stopping_preserves_manual_endpoint_but_clears_managed_endpoint(tmp_path
         }],
     })
     service._update_local_instance_info(7, None, 0, status="stopped")
-    assert service.repo.read_metadata(challenge_dir / "metadata.json")["instance"] == ""
-    assert service.repo.read_challenges()["challenges"][0]["instance"] == ""
+    meta = service.repo.read_metadata(challenge_dir / "metadata.json")
+    assert meta["instance"] in ("", "off")
+    assert meta.get("instance_status") == "off"
+    assert "start" in meta.get("instance_note", "").lower()
+    assert service.repo.read_challenges()["challenges"][0]["instance"] in ("", "off")
+

@@ -87,3 +87,4 @@ core.*
 /params.txt
 /trace_output.txt
 /work/
+/scratch/

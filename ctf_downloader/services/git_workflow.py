@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import logging
 import os
 import re
 import shutil
@@ -25,6 +26,8 @@ from pathlib import Path
 from typing import Any
 
 from ..storage.fileio import locked_write_text
+
+logger = logging.getLogger(__name__)
 
 
 class GitWorkflowError(RuntimeError):
@@ -572,6 +575,8 @@ class GitWorkflowService:
         push: bool = True,
         remote: str | None = None,
         scoped_only: bool = False,
+        pack_challenges: bool = True,
+        threshold_mb: int = 50,
     ) -> dict[str, Any]:
         """Commit workspace/repo and push its branch."""
         ws = Path(workspace).expanduser().resolve()
@@ -579,6 +584,37 @@ class GitWorkflowService:
         if repo is None:
             raise GitWorkflowError(
                 f"Không tìm thấy Git repo chứa workspace {ws}."
+            )
+
+        pack_report = None
+        if pack_challenges:
+            from .challenge_compressor import ChallengeCompressor
+            try:
+                pack_report = ChallengeCompressor.pack_workspace(
+                    ws,
+                    threshold_mb=threshold_mb,
+                    replace_original=True,
+                )
+            except Exception as exc:
+                logger.warning("Auto-packing challenge files in %s failed: %s", ws, exc)
+
+        # Fail-closed guard: ensure no uncompressed, unignored file exceeds threshold_mb
+        unignored_large_files: list[tuple[Path, int]] = []
+        for fpath, fsize in cls.scan_large_files(ws, threshold_mb=threshold_mb):
+            proc = cls._run(repo, ["check-ignore", "-q", str(fpath)], check=False)
+            if proc.returncode != 0:
+                unignored_large_files.append((fpath, fsize))
+
+        if unignored_large_files:
+            file_list_str = "\n".join(
+                f"  - {p.relative_to(ws)} ({s / (1024*1024):.1f}MB)"
+                for p, s in unignored_large_files[:5]
+            )
+            more = f"\n  ... and {len(unignored_large_files) - 5} more" if len(unignored_large_files) > 5 else ""
+            raise GitWorkflowError(
+                f"Không thể commit/push: Có {len(unignored_large_files)} tệp vượt ngưỡng {threshold_mb}MB chưa được bỏ qua (ignore):\n"
+                f"{file_list_str}{more}\n"
+                f"Hãy kiểm tra lại việc nén tệp đề bài hoặc cấu hình .gitignore trước khi push lên Git."
             )
 
         meta = cls._load_meta(ws)
@@ -614,6 +650,7 @@ class GitWorkflowService:
                 "committed": committed,
                 "pushed": pushed,
                 "remote": remote_name if remote_configured else None,
+                "pack_report": pack_report,
             }
 
         rel = cls._workspace_rel(repo, ws)
@@ -649,6 +686,7 @@ class GitWorkflowService:
             "committed": committed,
             "pushed": pushed,
             "remote": remote_name if remote_configured else None,
+            "pack_report": pack_report,
         }
 
     @classmethod
@@ -665,8 +703,9 @@ class GitWorkflowService:
             raise GitWorkflowError(f"Không tìm thấy Git repo chứa workspace {ws}.")
 
         meta = cls._load_meta(ws)
+        remote_name = str(remote or (meta.get("remote") if meta else None) or cls.DEFAULT_REMOTE)
         current = cls._current_branch(repo)
-        expected_branch = meta.get("branch")
+        expected_branch = meta.get("branch") if meta else None
         if expected_branch:
             branch = str(expected_branch)
             if current != branch:
@@ -686,7 +725,6 @@ class GitWorkflowService:
                     )
         else:
             branch = current
-        remote_name = str(remote or meta.get("remote") or cls.DEFAULT_REMOTE)
 
         if not cls._remote_exists(repo, remote_name):
             raise GitWorkflowError(f"Remote '{remote_name}' không tồn tại trong repo.")

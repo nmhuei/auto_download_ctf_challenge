@@ -101,3 +101,26 @@ def test_theme_menu_switch_by_name(tmp_path, monkeypatch):
     finally:
         set_active_theme(None)
 
+
+def test_theme_persistence_and_init_theme(tmp_path, monkeypatch):
+    from ctf_downloader.ui.theme import init_theme
+    import ctf_downloader.ui.brand as brand
+
+    fake_cfg = {"theme": "tokyo"}
+    monkeypatch.setattr("ctf_downloader.storage.global_config.load_global_config", lambda: fake_cfg)
+    monkeypatch.setattr("ctf_downloader.interactive_menu.load_global_config", lambda: fake_cfg)
+
+    try:
+        pal = init_theme()
+        assert pal.name == "tokyo"
+        assert get_active_palette().name == "tokyo"
+        assert brand.BRAND_NAME == "UCS_Tokyo"
+
+        # Initialize CTFInteractiveConsole and verify it activates the saved theme
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        app = CTFInteractiveConsole(workspace_path=str(ws))
+        assert get_active_palette().name == "tokyo"
+    finally:
+        set_active_theme(None)
+

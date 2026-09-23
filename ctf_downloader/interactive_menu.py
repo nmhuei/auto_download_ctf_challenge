@@ -11,6 +11,9 @@ from rich.text import Text
 from rich.table import Table
 from rich.panel import Panel
 from rich.padding import Padding
+from rich.markdown import Markdown
+from rich import box
+import subprocess
 
 from .dashboard import CTFDashboard
 from .instance_manager import InstanceManager
@@ -35,7 +38,7 @@ from .storage.global_config import (  # noqa: F401 — re-export để giữ tư
 from .ui.banner import app_header
 from .ui.selection import MENU_CURSOR, fit_cells, selected_row
 from .ui.splash import splash
-from .ui.theme import ACCENT, FG_BASE, FG_FAINT, FG_MUTED, INFO, WARN, ERROR, SUCCESS, SOLVED as _SOLVED_COLOR, load_theme
+from .ui.theme import ACCENT, ACCENT_DEEP, FG_BASE, FG_FAINT, FG_MUTED, INFO, WARN, ERROR, SUCCESS, SOLVED, SOLVED as _SOLVED_COLOR, load_theme
 from .ui.widgets import SOLVE_RAMP, meter
 
 from .ui.menu_hubs import (
@@ -57,12 +60,12 @@ SWITCHER_TITLE_W = 30
 SWITCHER_PLATFORM_W = 8
 
 _MAIN_ACTIONS_RAW = (
-    ('1', '🎯', 'Đổi giải CTF & Auth', ''),
-    ('2', '🚩', 'Nộp Flag & Kho cờ', ''),
-    ('3', '⚡', 'AI Solver SuperBQA', ''),
-    ('4', '🏆', 'Live Scoreboard & Rank', ''),
-    ('5', '🌐', 'Quản lý Container', ''),
-    ('0', '🚪', 'Thoát', ''),
+    ('1', '🎯', 'Competitions & Auth', ''),
+    ('2', '🚩', 'Submit & Flag Vault', ''),
+    ('3', '⚡', 'SuperBQA AI Solver', ''),
+    ('4', '🏆', 'Scoreboard & Rank', ''),
+    ('5', '🌐', 'Dynamic Containers', ''),
+    ('0', '🚪', 'Exit', ''),
 )
 
 from rich.cells import cell_len as _cell_len
@@ -148,24 +151,49 @@ def _update_menu_theme(name: str):
         pass
 
 
-def _section(title: str):
-    """Heading mục thống nhất: UPPERCASE faint, không viền/divider."""
+def _render_header_panel(title: str, subtitle: str = ""):
+    """Render unified Cockpit rounded panel header."""
     con = _menu_console()
     con.print()
-    con.print(f'  {title.upper()}', style=f'bold {FG_FAINT}')
+    header = Text()
+    header.append("◈ ", style=f"bold {ACCENT}")
+    header.append(title.upper(), style=f"bold {FG_BASE}")
+    if subtitle:
+        header.append(f" · {subtitle}", style=FG_MUTED)
+    con.print(
+        Panel(
+            header,
+            box=box.ROUNDED,
+            border_style=ACCENT_DEEP,
+            padding=(0, 1),
+        )
+    )
+
+
+def _section(title: str, subtitle: str = ""):
+    """Heading mục thống nhất: Rounded panel định danh chuẩn Cockpit."""
+    if title.strip().upper() == "ACTIONS":
+        _menu_console().print()
+        return
+    _render_header_panel(title, subtitle)
 
 
 def _option(key: str, label: str):
-    """Dòng lựa chọn ``[số] <tên>`` — số accent amber, tên fg.base, desc fg.muted."""
-    t = Text('  ')
-    t.append(f'[{key}]', style=ACCENT)
+    """Dòng lựa chọn ``[số] <tên>`` chuẩn design system."""
+    key_style = "menu.exit" if key in ("0", "q") else "menu.key"
+    base_style = "fg.muted" if key in ("0", "q") else "fg.base"
+    hint_style = "fg.faint" if key in ("0", "q") else "fg.muted"
+    key_fmt = f"[{key}]"
+
+    t = Text()
+    t.append(key_fmt, style=key_style)
     if ' (' in label and label.endswith(')'):
-        title_part, paren_part = label.split(' (', 1)
-        t.append(f' {title_part} ', style=FG_BASE)
-        t.append(f'({paren_part}', style=FG_MUTED)
+        title_part, paren_part = label.rsplit(' (', 1)
+        t.append(f' {title_part} ', style=base_style)
+        t.append(f'({paren_part}', style=hint_style)
     else:
-        t.append(f' {label}', style=FG_BASE)
-    _menu_console().print(t)
+        t.append(f' {label}', style=base_style)
+    _menu_console().print(Padding(t, (0, 2)))
 
 
 def _prompt(msg: str) -> str:
@@ -339,6 +367,10 @@ class CTFInteractiveConsole:
 
     def __init__(self, workspace_path: Optional[str] = None, cookie: Optional[str] = None, token: Optional[str] = None):
         self.config = load_global_config()
+        saved_theme = self.config.get("theme")
+        if saved_theme:
+            from .ui.theme import set_active_theme
+            set_active_theme(saved_theme)
         self.workspace_path = self._resolve_initial_workspace(workspace_path)
         self.cookie = cookie
         self.token = token
@@ -531,6 +563,10 @@ class CTFInteractiveConsole:
                 canonical = key_map.get(choice_lower, choice.upper() if choice.upper() in ('G', 'T') else choice)
 
                 if canonical == '0':
+                    from .ui.theme import get_active_palette
+                    from .storage.global_config import update_global_config
+                    cur_pal = get_active_palette()
+                    update_global_config(lambda state: {**state, "theme": cur_pal.name})
                     _menu_console().print(
                         Text('\nGoodbye! Good luck with your CTF competition.\n',
                              style=FG_MUTED))
@@ -548,10 +584,10 @@ class CTFInteractiveConsole:
                 elif canonical == 'G':
                     con = _menu_console()
                     con.print()
-                    con.print(Text("  💡 Git workflow được vận hành trực tiếp qua CLI:", style=f"bold {ACCENT}"))
-                    con.print(Text("     • ctf git push      - Lưu tiến độ bài giải lên GitHub", style=FG_MUTED))
-                    con.print(Text("     • ctf git sync      - Kéo cập nhật và an toàn đồng bộ", style=FG_MUTED))
-                    con.print(Text("     • ctf git status    - Kiểm tra thay đổi và cảnh báo file nặng (>50MB)", style=FG_MUTED))
+                    con.print(Text("  💡 Git workflow commands:", style=f"bold {ACCENT}"))
+                    con.print(Text("     • ctf git push      - Checkpoint & push solves to GitHub", style=FG_MUTED))
+                    con.print(Text("     • ctf git sync      - Safely rebase & sync with remote", style=FG_MUTED))
+                    con.print(Text("     • ctf git status    - Inspect dirty files & 50MB bloat guard", style=FG_MUTED))
                     _pause()
                 elif canonical == 'T':
                     self._menu_theme()
@@ -573,6 +609,10 @@ class CTFInteractiveConsole:
                 if canonical in ('1', '2', '3', '4', '5', '6', '7', '8', '9', 'G', 'T', 'S'):
                     self._last_action = canonical
             except (EOFError, KeyboardInterrupt):
+                from .ui.theme import get_active_palette
+                from .storage.global_config import update_global_config
+                cur_pal = get_active_palette()
+                update_global_config(lambda state: {**state, "theme": cur_pal.name})
                 _menu_console().print(
                     Text('\nGoodbye! Good luck with your CTF competition.\n',
                          style=FG_MUTED))
@@ -587,11 +627,24 @@ class CTFInteractiveConsole:
 
         con = _menu_console()
         con.print()
-        con.print('  Authentication method:', style=FG_MUTED)
-        _option('1', 'Session Cookie (F12 -> Cookies -> copy session=xxx or GZCTF_Token=xxx)')
-        _option('2', 'API Token / Bearer Token')
-        _option('3', 'No authentication required (public platform)')
-        ach = _prompt('Choice (1-3) [default 1]: ') or '1'
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column("key", justify="right", no_wrap=True)
+        grid.add_column("title")
+        grid.add_row(
+            Text("[ 1]", style="menu.key"),
+            Text("Session Cookie (F12 -> Cookies -> copy session=xxx or GZCTF_Token=xxx)", style="fg.base"),
+        )
+        grid.add_row(
+            Text("[ 2]", style="menu.key"),
+            Text("API Token / Bearer Token", style="fg.base"),
+        )
+        grid.add_row(
+            Text("[ 3]", style="menu.key"),
+            Text("No authentication required (public platform)", style="fg.base"),
+        )
+        con.print(Padding(grid, (0, 2)))
+        con.print()
+        ach = _prompt('Select authentication method (1-3): ').strip() or '1'
 
         cookie = None
         token = None
@@ -640,9 +693,9 @@ class CTFInteractiveConsole:
                                 scoped_only=True,
                             )
                             if res.get("pushed"):
-                                Logger.success(f"Git: Đã tạo và push snapshot ban đầu lên {res.get('remote') or 'origin'}.")
+                                Logger.success(f"Git: Created and pushed initial snapshot to {res.get('remote') or 'origin'}.")
                             elif res.get("committed"):
-                                Logger.info("Git: Đã tạo snapshot baseline cục bộ.")
+                                Logger.info("Git: Created local baseline snapshot.")
                     except Exception as ge:
                         Logger.warning(f"Git auto-snapshot: {ge}")
         except Exception as e:
@@ -661,33 +714,66 @@ class CTFInteractiveConsole:
                     if st.get('total_challenges', 0) > 0:
                         workspaces.append((p, st))
 
-        _section('Select Active CTF Workspace')
         if not workspaces:
+            _render_header_panel("Select CTF Workspace", "Active Workspace")
             Logger.warning(f'No workspaces found in {base_ctf}.')
-            custom_p = _prompt('Enter competition directory path: ').strip()
-            if os.path.exists(custom_p):
-                self.workspace_path = os.path.abspath(custom_p)
-                self._save_current_workspace()
-            return
-
-        con = _menu_console()
-        active = os.path.abspath(self.workspace_path)
-        for row in _workspace_rows(workspaces, active):
-            con.print(row)
-
-        _option('C', 'Enter custom directory path')
-        _option('0', 'Back')
-        ch = _prompt(f'Select Workspace (1-{len(workspaces)}): ').strip()
-        if ch == '0':
-            return
-        elif ch.upper() == 'C':
-            custom_p = _prompt('Enter path: ').strip()
+            custom_p = _prompt('Enter custom workspace path: ').strip()
             if os.path.exists(custom_p):
                 self.workspace_path = os.path.abspath(custom_p)
                 self.cookie = None
                 self.token = None
                 self._load_saved_auth()
                 self._save_current_workspace()
+            return
+
+        _render_header_panel("Select CTF Workspace", "Active Workspace")
+        con = _menu_console()
+
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column("key", justify="right", no_wrap=True)
+        grid.add_column("title")
+        grid.add_column("platform")
+        grid.add_column("progress")
+
+        active = os.path.abspath(self.workspace_path)
+        for idx, (p, st) in enumerate(workspaces, 1):
+            is_active = (os.path.abspath(p) == active)
+            title = fit_cells(str(st.get('title', os.path.basename(p))), SWITCHER_TITLE_W, pad=True)
+            plat = fit_cells(str(st.get('platform', 'generic')).upper(), SWITCHER_PLATFORM_W, pad=True)
+            solv = f"{st.get('solved_challenges', 0)}/{st.get('total_challenges', 0)} solved"
+
+            if is_active:
+                key_style = "menu.active"
+                title_style = "menu.active"
+                plat_style = "menu.active"
+                prog_style = "menu.active"
+            else:
+                total = st.get('total_challenges', 0)
+                done = total > 0 and st.get('solved_challenges', 0) >= total
+                key_style = "menu.key"
+                title_style = "done" if done else "fg.base"
+                plat_style = "fg.muted"
+                prog_style = "fg.muted"
+
+            grid.add_row(
+                Text(f"[{idx:>2}]", style=key_style),
+                Text(title, style=title_style),
+                Text(f"· {plat}", style=plat_style),
+                Text(solv, style=prog_style),
+            )
+
+        grid.add_row(
+            Text("[ 0]", style="menu.exit"),
+            Text("Back", style="fg.muted"),
+            Text(""),
+            Text(""),
+        )
+        con.print(Padding(grid, (0, 2)))
+        con.print()
+
+        ch = _prompt(f'Select workspace (1-{len(workspaces)}, 0): ').strip()
+        if ch in ('0', 'q', 'back', 'exit') or not ch:
+            return
         else:
             try:
                 sel_idx = int(ch) - 1
@@ -763,16 +849,26 @@ class CTFInteractiveConsole:
                            'disappeared.')
 
     def _menu_view_tree(self):
+        from .ui.menu_hubs import render_hub_menu
         dash = CTFDashboard(self.workspace_path)
-        _section('Challenge Tree Display Options')
-        _option('1', 'Show ALL challenges')
-        _option('2', 'Show UNSOLVED challenges only')
-        _option('3', 'Show SOLVED challenges only')
-        _option('4', 'Show challenges with DYNAMIC CONTAINER only')
-        _option('5', 'Filter by category (Web, Crypto, Pwn, Rev, Forensics, Misc)')
-        fch = _prompt('Choice (1-5) [default 1]: ') or '1'
+        actions = [
+            ("1", "All Challenges"),
+            ("2", "Unsolved Only"),
+            ("3", "Solved Only"),
+            ("4", "Container Only"),
+            ("5", "Filter by Category"),
+            ("0", "Back"),
+        ]
+        fch = render_hub_menu(
+            title="Challenge Tree Explorer",
+            subtitle="Filter & Display",
+            actions=actions,
+            prompt_text="Select action (0-5): ",
+        )
 
-        if fch == '2':
+        if fch in ('0', '', 'q', 'back'):
+            return
+        elif fch == '2':
             dash.render_tree(only_unsolved=True)
         elif fch == '3':
             dash.render_tree(only_solved=True)
@@ -790,9 +886,39 @@ class CTFInteractiveConsole:
         challs: list[dict],
         prompt_suffix: str = "or enter ID/Name [0 to return]",
     ) -> Optional[dict]:
-        """Hiển thị danh sách challenges dạng Table.grid và cho phép người dùng chọn challenge."""
+        """Hiển thị danh sách challenges dạng Tactical Solver Radar & Table hoặc Table.grid."""
         con = _menu_console()
         con.print()
+
+        try:
+            from .services.solver_service import SolverService
+            from .cli_commands import _solver_table, _make_solver_overview_panel
+            service = SolverService(self.workspace_path)
+            jobs = service.scan()
+            if jobs:
+                con.print(_make_solver_overview_panel(service))
+                con.print(_solver_table(service, animate=False))
+                con.print()
+                q = _prompt(f'Select challenge (1-{len(jobs)}, ID, name, 0): ').strip()
+                if not q or q in ('0', 'q', 'back', 'exit'):
+                    return None
+                if q.isdigit():
+                    d_id = int(q)
+                    matched_job = next((j for j in jobs if j.display_id == d_id), None)
+                    if matched_job:
+                        target = next((c for c in challs if str(c.get('id')) == str(matched_job.challenge_id) or str(c.get('name', '')).strip().lower() == str(matched_job.name).strip().lower()), None)
+                        if target:
+                            return target
+                        return {"id": matched_job.challenge_id, "name": matched_job.name, "category": matched_job.category, "_folder": matched_job.path}
+                target, err = _resolve_challenge_selection(challs, q)
+                if not target:
+                    if err:
+                        Logger.error(err)
+                        _pause()
+                    return None
+                return target
+        except Exception:
+            pass
 
         grid = Table.grid(padding=(0, 1))
         grid.add_column("key", justify="right", no_wrap=True)
@@ -809,21 +935,29 @@ class CTFInteractiveConsole:
             cid = str(c.get('id', ''))
             is_solved = bool(c.get('solved_by_me'))
 
-            status_text = Text('✔ SOLVED', style='solved') if is_solved else Text('· Unsolved', style=FG_FAINT)
+            status_text = Text('✔ SOLVED', style='menu.active') if is_solved else Text('· Unsolved', style='fg.muted')
             cid_text = Text(f'(ID: {cid})', style=FG_FAINT) if cid else Text('')
 
             grid.add_row(
-                Text(f'[{idx:>2}]', style=f'bold {ACCENT}'),
-                Text(name, style=FG_BASE),
-                Text(cat, style=FG_MUTED),
-                Text(pts, style=FG_MUTED),
+                Text(f'[{idx:>2}]', style='menu.key'),
+                Text(name, style='fg.base'),
+                Text(cat, style='fg.muted'),
+                Text(pts, style='fg.muted'),
                 status_text,
                 cid_text,
             )
 
+        grid.add_row(
+            Text("[ 0]", style="menu.exit"),
+            Text("Back", style="fg.muted"),
+            Text(""),
+            Text(""),
+            Text(""),
+            Text(""),
+        )
         con.print(Padding(grid, (0, 2)))
         con.print()
-        q = _prompt(f'Select challenge (1-{len(challs)}), {prompt_suffix}: ').strip()
+        q = _prompt(f'Select challenge (1-{len(challs)}, {prompt_suffix}): ').strip()
         target, err = _resolve_challenge_selection(challs, q)
         if not target:
             if err:
@@ -993,10 +1127,25 @@ class CTFInteractiveConsole:
             return
 
         containers = mgr.list_containers()
-        _section('Manage Dynamic Containers / Instances')
+        _render_header_panel('Dynamic Instances', 'Containers')
+        con = _menu_console()
+
         if not containers:
-            Logger.info('No challenges with auto-detected dynamic containers found in workspace metadata.')
-            cid_in = _prompt('Enter Challenge ID or Name to manage container directly [0 to cancel]: ').strip()
+            Logger.info('No challenges with dynamic containers found in metadata.')
+            grid = Table.grid(padding=(0, 1))
+            grid.add_column("key", justify="right", no_wrap=True)
+            grid.add_column("title")
+            grid.add_row(
+                Text("[ID]", style="menu.key"),
+                Text("Enter Challenge ID or Name directly", style="fg.base"),
+            )
+            grid.add_row(
+                Text("[ 0]", style="menu.exit"),
+                Text("Back", style="fg.muted"),
+            )
+            con.print(Padding(grid, (0, 2)))
+            con.print()
+            cid_in = _prompt('Enter Challenge ID or Name (0 to cancel): ').strip()
             if not cid_in or cid_in in ('0', 'q', 'cancel', 'back'):
                 return
             target = mgr.find_challenge(challenge_id=cid_in) or mgr.find_challenge(challenge_name=cid_in)
@@ -1005,21 +1154,38 @@ class CTFInteractiveConsole:
             self._run_container_action_for_id(str(cid), challenge_name=cname)
             return
 
-        con = _menu_console()
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column("key", justify="right", no_wrap=True)
+        grid.add_column("title")
+        grid.add_column("id")
+        grid.add_column("category")
+        grid.add_column("solves")
+
         for idx, c in enumerate(containers, 1):
             solves = c.get('solves_count', c.get('solves', '-'))
             c_name = str(c.get('name', 'Unknown'))[:30]
             c_id = str(c.get('id', '?'))
             c_cat = c.get('category', 'Misc')
-            row = Text('  ')
-            row.append(f'[{idx:>2}]', style=ACCENT)
-            row.append(f' {c_name:<30}', style=FG_BASE)
-            row.append(f'ID {c_id:<4}', style=FG_MUTED)
-            row.append(f' {c_cat}', style=FG_MUTED)
-            row.append(f'  ·  {solves} solves', style=FG_MUTED)
-            con.print(row)
 
-        ch = _prompt(f'Select challenge for container actions (1-{len(containers)}), or enter ID/Name [0 to cancel]: ').strip()
+            grid.add_row(
+                Text(f"[{idx:>2}]", style="menu.key"),
+                Text(c_name, style="fg.base"),
+                Text(f"ID {c_id}", style="fg.muted"),
+                Text(f"· {c_cat}", style="fg.muted"),
+                Text(f"{solves} solves", style="fg.muted"),
+            )
+
+        grid.add_row(
+            Text("[ 0]", style="menu.exit"),
+            Text("Back", style="fg.muted"),
+            Text(""),
+            Text(""),
+            Text(""),
+        )
+        con.print(Padding(grid, (0, 2)))
+        con.print()
+
+        ch = _prompt(f'Select challenge (1-{len(containers)}, 0): ').strip()
         if not ch or ch in ('0', 'q', 'cancel', 'back'):
             return
         target, err = _resolve_challenge_selection(containers, ch)
@@ -1089,7 +1255,7 @@ class CTFInteractiveConsole:
                         scoped_only=True,
                     )
                     if res.get("committed"):
-                        Logger.success("Git: Đã tự động checkpoint bài giải thành công lên Git.")
+                        Logger.success("Git: Automatically checkpointed solve to Git.")
             except Exception as ge:
                 Logger.warning(f"Git auto-checkpoint: {ge}")
         _pause()
@@ -1102,16 +1268,20 @@ class CTFInteractiveConsole:
             _pause()
             return
 
-        con = _menu_console()
-        con.print()
-        title = f'  Container actions for {challenge_name} (ID: {cid}):' if challenge_name else f'  Container actions for Challenge ID {cid}:'
-        con.print(title, style=FG_MUTED)
-        _option('1', 'Start / Spawn container (get IP:Port & netcat command)')
-        _option('2', 'Check status & remaining lifetime')
-        _option('3', 'Extend lifetime (renew countdown)')
-        _option('4', 'Stop / Destroy container')
-        _option('0', 'Back')
-        act = _prompt('Choice (1-4) [0 to return]: ').strip()
+        from .ui.menu_hubs import render_hub_menu
+        actions = [
+            ("1", "Start Container"),
+            ("2", "Check Status & TTL"),
+            ("3", "Renew / Extend TTL"),
+            ("4", "Stop Container"),
+            ("0", "Back"),
+        ]
+        act = render_hub_menu(
+            title=f"Container: {challenge_name or cid}",
+            subtitle=f"ID {cid} · Dynamic Instance",
+            actions=actions,
+            prompt_text="Select action (0-4): ",
+        )
         if act == '1':
             mgr.start_instance(cid)
         elif act == '2':
@@ -1173,7 +1343,6 @@ class CTFInteractiveConsole:
         from .cli_commands import _solver_table, _make_solver_overview_panel
 
         while True:
-            _section('SuperBQA AI Solver')
             try:
                 service = SolverService(self.workspace_path)
                 service.recover_stale_jobs()
@@ -1187,16 +1356,27 @@ class CTFInteractiveConsole:
                 con = _menu_console()
                 con.print()
                 panel_content = Text()
-                panel_content.append("Chưa có bài thi nào có mã nguồn hoặc metadata trong workspace này.\n\n", style=FG_BASE)
-                panel_content.append("💡 Hướng dẫn tiếp tục:\n", style=f"bold {ACCENT}")
-                panel_content.append("  • Vào Hub [1] (Workspace & Targets) -> Chọn [2] để Clone / Download bài thi từ platform.\n", style=FG_MUTED)
-                panel_content.append("  • Hoặc chọn lại workspace cuộc thi đã có bài thi (Hub [1] -> [1]).\n", style=FG_MUTED)
-                con.print(Panel(panel_content, title="[bold]SuperBQA AI Solver[/bold]", border_style=ACCENT, padding=(1, 2)))
+                panel_content.append("No challenge files or metadata found in this workspace.\n\n", style=FG_BASE)
+                panel_content.append("💡 Quick Guide:\n", style=f"bold {ACCENT}")
+                panel_content.append("  • Go to Hub [1] (Competitions & Auth) -> Select [2] to clone/download challenges.\n", style=FG_MUTED)
+                panel_content.append("  • Or switch to an existing workspace with challenges (Hub [1] -> [1]).\n", style=FG_MUTED)
+                con.print(Panel(panel_content, title="[bold]SuperBQA AI Solver[/bold]", box=box.ROUNDED, border_style=ACCENT_DEEP, padding=(1, 2)))
                 con.print()
-                _option('1', 'Tải bài thi ngay (Chuyển sang Hub 1 -> Download)')
-                _option('0', 'Quay lại Menu chính')
+                grid = Table.grid(padding=(0, 1))
+                grid.add_column("key", justify="right", no_wrap=True)
+                grid.add_column("title")
+                grid.add_row(
+                    Text("[1]", style="menu.key"),
+                    Text("Download challenges now", style="fg.base"),
+                )
+                grid.add_row(
+                    Text("[0]", style="menu.exit"),
+                    Text("Back", style="fg.muted"),
+                )
+                con.print(Padding(grid, (0, 2)))
+                con.print()
                 try:
-                    c = _prompt('Lựa chọn (0-1) [default 0]: ').strip() or '0'
+                    c = _prompt('Select action (0-1): ').strip() or '0'
                 except (EOFError, KeyboardInterrupt):
                     return
                 if c == '1':
@@ -1223,17 +1403,18 @@ class CTFInteractiveConsole:
                 con.print(f"  [dim]📁 Category Sessions: {', '.join(sess_strs)}[/dim]")
 
             con.print()
-            _option('1', 'BQA EATING · Solve specific challenges by ID (e.g. 1 or 1,3,5)')
-            _option('2', 'SUPERBQA EATING · Auto-queue all eligible challenges')
-            _option('3', 'Live Radar · Giám sát tiến độ giải trực tiếp theo thời gian thực')
-            _option('4', 'Worker Logs · Xem log chi tiết và suy luận của agent')
-            _option('5', 'Stop Workers · Dừng / Huỷ các solver workers đang chạy')
-            _option('6', 'Distill Playbook · Tổng hợp sổ tay kỹ thuật theo Category')
-            _option('7', 'Help / Escalate · Route hard puzzle to Codex Astra (ctf-ask)')
-            _option('0', 'Quay lại Menu chính')
+            _option('1', 'BQA EATING')
+            _option('2', 'SUPERBQA EATING')
+            _option('3', 'Live Radar')
+            _option('4', 'Worker Logs')
+            _option('5', 'Stop Workers')
+            _option('6', 'Distill Playbook')
+            _option('7', 'HELP')
+            _option('0', 'Back')
+            con.print()
 
             try:
-                act = _prompt('Choice (0-7) [default 1]: ').strip() or '1'
+                act = _prompt('Select action (0-7): ').strip() or '1'
             except (EOFError, KeyboardInterrupt):
                 return
             act_clean = act.lower()
@@ -1242,7 +1423,7 @@ class CTFInteractiveConsole:
                 return
             elif act_clean in ('1', 'solve', 'target', 'bqa', 'eat', 'eating'):
                 try:
-                    ids = _prompt('Nhập Display ID bài cần giải (e.g. 1 hoặc 1,3,5): ').strip()
+                    ids = _prompt('Enter Challenge ID(s) to solve (e.g. 1 or 1,3,5): ').strip()
                 except (EOFError, KeyboardInterrupt):
                     return
                 if not ids:
@@ -1266,9 +1447,9 @@ class CTFInteractiveConsole:
                     continue
                 source_ids = ",".join(str(j.display_id) for j in target_jobs)
                 con.print()
-                con.print(f"  [{WARN}]Chuẩn bị tự động giải {len(target_jobs)} bài thi ({source_ids})...[/{WARN}]")
+                con.print(f"  [{WARN}]Preparing to auto-solve {len(target_jobs)} challenges ({source_ids})...[/{WARN}]")
                 try:
-                    confirm = Confirm.ask('  Xác nhận khởi chạy?', default=True)
+                    confirm = Confirm.ask('  Confirm launch?', default=True)
                 except (EOFError, KeyboardInterrupt):
                     return
                 if not confirm:
@@ -1286,7 +1467,7 @@ class CTFInteractiveConsole:
                 con.print()
                 con.print(Text(f"  ✔ {res.get('message')}", style=f"bold {_SOLVED_COLOR}"))
                 try:
-                    watch_now = _prompt('  Bật Live Radar theo dõi ngay? [Y/n]: ').strip().lower()
+                    watch_now = _prompt('  Launch Live Radar now? [Y/n]: ').strip().lower()
                 except (EOFError, KeyboardInterrupt):
                     return
                 if watch_now != 'n':
@@ -1372,34 +1553,52 @@ class CTFInteractiveConsole:
                 _pause()
                 continue
             elif act_clean in ('7', 'help', 'h', 'ask', 'astra', 'ctf-ask'):
-                from .cli_commands import handle_ask
-                import argparse
-                con.print(f"\n  [{ACCENT}]Help: Escalate formal math/logic roadblock to Codex Astra (ctf-ask)[/{ACCENT}]")
+                guide_text = (
+                    "### 🧠 Formal Math & Logic Escalation (`ctf-ask` Skill)\n\n"
+                    "When blocked on an algebraic, cryptographic, lattice, or SAT/SMT roadblock:\n"
+                    "1. **Isolate subproblem**: Create a clean directory `math_workspace/`.\n"
+                    "2. **De-cyberize**: Write `TASK.md` (pure math description) and `instance.json` (numerical matrices/vectors).\n"
+                    "3. **Zero Cyber Leakage**: Strip all CTF, exploit, flag, IP, and protocol keywords.\n"
+                    "4. **Consult Expert**: Use the `ctf-ask` skill methodology with Codex Astra High (`gpt-6-astra`).\n"
+                    "5. **Deterministic Verification**: Verify candidate solutions locally against the equations.\n\n"
+                    "📖 Full Skill Guide: `.agents/skills/ctf-ask/SKILL.md`"
+                )
+                con.print()
+                con.print(Panel(Markdown(guide_text), title=f"[{ACCENT}]ctf-ask Cognitive Methodology[/{ACCENT}]", border_style=ACCENT))
+
                 try:
-                    ws_input = _prompt('  Enter formal workspace path [Enter for ./math_workspace]: ').strip() or 'math_workspace'
-                    ws_path = Path(self.workspace_path) / ws_input if not Path(ws_input).is_absolute() else Path(ws_input)
-                    if not ws_path.is_dir():
-                        Logger.error(f'Workspace not found: {ws_path}')
-                        _pause()
-                        continue
-                    mode_choice = _prompt('  Mode: [1] Full Escalation to Astra  [2] Preflight check only  [3] Dry-run [default 1]: ').strip() or '1'
+                    ws_input = _prompt('  Preflight check a workspace? (Enter path or Enter to skip): ').strip()
                 except (EOFError, KeyboardInterrupt):
                     return
-                args = argparse.Namespace(
-                    workspace=str(ws_path),
-                    output=None,
-                    model=None,
-                    effort=None,
-                    preflight_only=(mode_choice == '2'),
-                    verify_only=None,
-                    dry_run=(mode_choice == '3'),
-                )
-                try:
-                    handle_ask(args)
-                except SystemExit:
-                    pass
-                except Exception as e:
-                    Logger.error(f"Help (ctf-ask) execution error: {e}")
+                if ws_input:
+                    ws_path = Path(self.workspace_path) / ws_input if not Path(ws_input).is_absolute() else Path(ws_input)
+                    if not ws_path.is_dir():
+                        Logger.error(f'Workspace directory not found: {ws_path}')
+                    else:
+                        val_script = Path(__file__).resolve().parents[1] / ".agents" / "skills" / "ctf-ask" / "scripts" / "validate_sanitized_handoff.py"
+                        if val_script.is_file():
+                            con.print(f"  [dim]Running preflight validation on {ws_path}...[/dim]")
+                            res = subprocess.run(
+                                [sys.executable, str(val_script), "preflight", "--workspace", str(ws_path)],
+                                capture_output=True,
+                                text=True,
+                                check=False,
+                            )
+                            if res.returncode == 0:
+                                con.print(f"  [{SUCCESS}]✔ Preflight PASSED: Workspace is clean, isolated, and valid.[/{SUCCESS}]")
+                            else:
+                                Logger.error("Preflight FAILED: Domain leakage or missing files detected.")
+                                try:
+                                    import json
+                                    err_data = json.loads(res.stdout)
+                                    for err in err_data.get("errors", []):
+                                        con.print(f"    [{DANGER}]✖ {err}[/{DANGER}]")
+                                    for fnd in err_data.get("findings", []):
+                                        con.print(f"    [{WARN}]▲ {fnd.get('label')}: {fnd.get('match')}[/{WARN}]")
+                                except Exception:
+                                    con.print(f"    [{DANGER}]{res.stderr or res.stdout}[/{DANGER}]")
+                        else:
+                            Logger.warning(f"Validator script not found: {val_script}")
                 _pause()
                 continue
             else:
@@ -1410,7 +1609,7 @@ class CTFInteractiveConsole:
     def _menu_ranking(self):
         """🏆 Live Scoreboard & Rank — bảng xếp hạng trực tiếp từ platform."""
         if not self.workspace_path or not os.path.exists(self.workspace_path):
-            Logger.warning("Chưa có workspace hợp lệ để lấy ranking.")
+            Logger.warning("No valid workspace selected to fetch ranking.")
             _pause()
             return
 
@@ -1432,30 +1631,30 @@ class CTFInteractiveConsole:
                 )
                 svc.display_and_update(top_n=top_n, update_docs=True)
             except Exception as e:
-                Logger.error(f"Lỗi khi lấy scoreboard: {e}")
+                Logger.error(f"Error fetching scoreboard: {e}")
 
             actions = [
-                ("1", "Làm mới bảng xếp hạng (Refresh scoreboard)"),
-                ("2", f"Thay đổi số đội hiển thị (Hiện tại: top {top_n})"),
-                ("0", "Quay lại Menu chính"),
+                ("1", "Refresh Scoreboard"),
+                ("2", f"Change Top Count (Current: {top_n})"),
+                ("0", "Back"),
             ]
             ch = render_hub_menu(
                 title="Live Scoreboard & Ranking",
-                subtitle=f"Top {top_n} Đội Dẫn Đầu",
+                subtitle=f"Top {top_n} Standings",
                 actions=actions,
-                prompt_text="❯ Lựa chọn thao tác (0-2) [default 0]: ",
+                prompt_text="Select action (0-2): ",
             )
             if ch in ("0", "", "q", "back", "exit"):
                 break
             elif ch == "1":
                 continue
             elif ch == "2":
-                new_n = _prompt("Nhập số đội hiển thị (mặc định 15): ").strip()
+                new_n = _prompt("Enter number of teams to display (default: 15): ").strip()
                 if new_n.isdigit() and int(new_n) > 0:
                     top_n = int(new_n)
 
     def _menu_auto_submit(self):
-        _section('Auto-Scan & Submit Solved Flags in Workspace')
+        _render_header_panel('Auto-Submit Flags', 'Scan and submit captured flags')
         confirm = Confirm.ask('Scan all README.md files and auto-submit filled flags?', default=True)
         if confirm:
             sub = FlagSubmitter(
@@ -1476,7 +1675,7 @@ class CTFInteractiveConsole:
                             scoped_only=True,
                         )
                         if res.get("committed"):
-                            Logger.success("Git: Đã tự động checkpoint các flag vừa submit thành công lên Git.")
+                            Logger.success("Git: Checkpointed submitted flags to Git.")
                 except Exception as ge:
                     Logger.warning(f"Git auto-checkpoint: {ge}")
         _pause()
@@ -1489,23 +1688,24 @@ class CTFInteractiveConsole:
         _pause()
 
     def _menu_configure_auth(self):
-        _section(f'Configure Authentication for: {os.path.basename(self.workspace_path)}')
-        con = _menu_console()
+        from .ui.menu_hubs import render_hub_menu
+        ws_name = os.path.basename(self.workspace_path)
         ck_show = f"Saved ({self.cookie[:8]}...)" if self.cookie else '(None)'
         tk_show = f"Saved ({self.token[:8]}...)" if self.token else '(None)'
-        cur = Text('  Current Cookie: ')
-        cur.append(ck_show, style=INFO if self.cookie else FG_FAINT)
-        con.print(cur)
-        cur2 = Text('  Current Token : ')
-        cur2.append(tk_show, style=INFO if self.token else FG_FAINT)
-        con.print(cur2)
-
-        con.print()
-        _option('1', 'Enter / Paste new Session Cookie (session=... or GZCTF_Token=...)')
-        _option('2', 'Enter API Token / Bearer Token')
-        _option('3', 'Clear saved credentials')
-        _option('0', 'Back')
-        ch = _prompt('Choice (0-3): ').strip()
+        subtitle = f"{ws_name} · Cookie: {ck_show} · Token: {tk_show}"
+        actions = [
+            ("1", "Set Session Cookie"),
+            ("2", "Set API / Bearer Token"),
+            ("3", "Clear Saved Credentials"),
+            ("4", "Auto-extract & Sync Cookie from Burp Suite (localhost:9876)"),
+            ("0", "Back"),
+        ]
+        ch = render_hub_menu(
+            title="Configure Authentication",
+            subtitle=subtitle,
+            actions=actions,
+            prompt_text="Select action (0-4): ",
+        )
 
         if ch == '1':
             c_in = _prompt('Paste Cookie [Enter to cancel]: ').strip()
@@ -1565,23 +1765,95 @@ class CTFInteractiveConsole:
             self._save_current_workspace()
             Logger.info('Credentials cleared.')
             _pause()
+        elif ch == '4':
+            plat_url = None
+            try:
+                from .storage.workspace_repo import WorkspaceRepo
+                plat_url = WorkspaceRepo(self.workspace_path).resolve_platform_url()
+            except Exception:
+                pass
+            if not plat_url:
+                plat_url = _prompt('Target CTF URL or domain (e.g. asisctf.com) [Enter to cancel]: ').strip()
+                if not plat_url:
+                    return
+
+            from .services.burp_service import BurpService
+            con = _menu_console()
+            burp = BurpService()
+            if not burp.is_mcp_available(timeout=0.6):
+                Logger.warning(
+                    f"Burp Suite MCP server is not reachable on localhost:{burp.mcp_port}.\n"
+                    "  Ensure Burp Suite is running and the MCP extension/server is listening on port 9876."
+                )
+                _pause()
+                return
+
+            with con.status(f"[bold {ACCENT}]Querying Burp Suite HTTP history for {plat_url}...[/bold {ACCENT}]"):
+                cookies = burp.extract_cookies(plat_url, count=100, timeout=3.0)
+
+            if not cookies:
+                Logger.warning(
+                    f"No session cookies found for '{plat_url}' in Burp Suite HTTP proxy history.\n"
+                    "  Tip: Browse the CTF platform in Burp's embedded browser or through proxy 127.0.0.1:8080 first."
+                )
+                _pause()
+                return
+
+            grid = Table(box=box.ROUNDED, border_style=ACCENT_DEEP)
+            grid.add_column("Cookie Key", style=f"bold {ACCENT}")
+            grid.add_column("Preview Value", style=FG_BASE)
+            grid.add_column("Status", style=SOLVED)
+
+            cookie_parts = []
+            for k, v in cookies.items():
+                masked_val = v[:6] + "..." + v[-4:] if len(v) > 12 else v
+                grid.add_row(k, masked_val, "✔ Active")
+                cookie_parts.append(f"{k}={v}")
+
+            con.print()
+            con.print(Panel(
+                grid,
+                title=f"[bold]🍪 EXTRACTED BURP SUITE SESSION ({len(cookies)} cookies)[/bold]",
+                box=box.ROUNDED,
+                border_style=ACCENT_DEEP,
+                padding=(0, 1),
+            ))
+            con.print()
+
+            formatted_cookie = "; ".join(cookie_parts)
+            self.cookie = formatted_cookie
+            AuthService.save_auth(self.workspace_path, url=plat_url, cookie=self.cookie, token=self.token)
+            self._save_current_workspace()
+            Logger.success(f"Synced & saved {len(cookies)} cookies from Burp Suite for this workspace!")
+            _pause()
 
     def _menu_git(self):
         import subprocess
         from .services.git_workflow import GitWorkflowService, GitWorkflowError
-        _section('Git Sync & Remote Backup (Kho vũ khí GitHub)')
+        _section('Git Sync & Remote Backup')
         con = _menu_console()
 
         ws = Path(self.workspace_path)
         repo_root = GitWorkflowService.find_repo_root(ws)
         if not repo_root:
-            Logger.warning(f"Thư mục '{ws.name}' chưa nằm trong Git repository nào.")
-            con.print("  [dim]Bạn có thể khởi tạo Git repo cho thư mục này để lưu trữ bài giải.[/dim]\n")
-            _option('1', 'Khởi tạo Git repo mới tại đây')
-            _option('0', 'Quay lại')
-            ch = _prompt('Lựa chọn (0-1) [default 1]: ').strip() or '1'
+            Logger.warning(f"Directory '{ws.name}' is not inside a Git repository.")
+            con.print("  [dim]You can initialize a Git repository to track your solves.[/dim]\n")
+            grid = Table.grid(padding=(0, 1))
+            grid.add_column("key", justify="right", no_wrap=True)
+            grid.add_column("title")
+            grid.add_row(
+                Text("[1]", style="menu.key"),
+                Text("Initialize new Git repo here", style="fg.base"),
+            )
+            grid.add_row(
+                Text("[0]", style="menu.exit"),
+                Text("Back", style="fg.muted"),
+            )
+            con.print(Padding(grid, (0, 2)))
+            con.print()
+            ch = _prompt('Select action (0-1): ').strip() or '1'
             if ch == '1':
-                remote_url = _prompt('Remote GitHub URL (ví dụ: https://github.com/user/repo.git) [Enter bỏ qua]: ').strip() or None
+                remote_url = _prompt('Remote GitHub URL (e.g. https://github.com/user/repo.git) [Enter to skip]: ').strip() or None
                 try:
                     res = GitWorkflowService.initialize_repository(
                         ws,
@@ -1590,9 +1862,9 @@ class CTFInteractiveConsole:
                         push=bool(remote_url),
                         import_existing=True,
                     )
-                    Logger.success(f"Đã khởi tạo Git repo tại: {res['repo_root']}")
+                    Logger.success(f"Initialized Git repo at: {res['repo_root']}")
                 except Exception as e:
-                    Logger.error(f"Khởi tạo Git thất bại: {e}")
+                    Logger.error(f"Git init failed: {e}")
             _pause()
             return
 
@@ -1617,38 +1889,69 @@ class CTFInteractiveConsole:
         except Exception as e:
             con.print(f"  [dim]Git status check: {e}[/dim]\n")
 
-        _option('1', 'Quick Push / Checkpoint (Lưu tiến độ giải này lên Git)')
-        _option('2', 'Safe Sync (Kéo cập nhật mới về + đẩy bài lên)')
-        _option('3', 'Detailed Status & Large File Guard (Quét file nặng > 50MB)')
-        _option('4', 'Configure Remote GitHub URL')
-        _option('0', 'Back to main menu')
+        actions = [
+            ("1", "Quick Push / Checkpoint"),
+            ("2", "Safe Sync"),
+            ("3", "Status & Large File Guard"),
+            ("4", "Configure Remote URL"),
+            ("5", "Pack Challenges"),
+            ("6", "Unpack Challenges"),
+            ("0", "Back"),
+        ]
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column("key", justify="right", no_wrap=True)
+        grid.add_column("title")
+        for k, lbl in actions:
+            key_style = "menu.exit" if k == "0" else "menu.key"
+            lbl_style = "fg.muted" if k == "0" else "fg.base"
+            grid.add_row(
+                Text(f"[{k:>2}]", style=key_style),
+                Text(lbl, style=lbl_style),
+            )
+        con.print(Padding(grid, (0, 2)))
+        con.print()
 
-        act = _prompt('Choice (0-4) [default 1]: ').strip() or '1'
+        act = _prompt('Select action (0-6): ').strip() or '1'
         if act in ('0', 'q', 'back'):
             return
         elif act == '1':
-            msg = _prompt(f"Commit message [default: ctf({ws.name}): checkpoint]: ").strip() or None
+            msg = _prompt(f"Commit message (Enter: ctf({ws.name}): checkpoint): ").strip() or None
             try:
-                res = GitWorkflowService.checkpoint_and_push(ws, message=msg, push=True, scoped_only=True)
+                res = GitWorkflowService.checkpoint_and_push(
+                    ws, message=msg, push=True, scoped_only=True, pack_challenges=True, threshold_mb=50
+                )
+                rep = res.get("pack_report")
+                if rep:
+                    from .services.storage_manager import human_size
+                    if rep.get("compressed_count", 0) > 0:
+                        Logger.success(
+                            f"Optimally compressed {rep['compressed_count']} challenge files "
+                            f"(saved {human_size(rep['saved_bytes'])}, {rep['saved_ratio_percent']:.1f}%)."
+                        )
+                    if rep.get("skipped_count", 0) > 0:
+                        Logger.warning(
+                            f"Skipped {rep['skipped_count']} files exceeding 50MB "
+                            "(added to .gitignore and saved metadata)."
+                        )
                 if res.get("committed"):
-                    Logger.success(f"Đã commit checkpoint cho {ws.name}.")
+                    Logger.success(f"Committed checkpoint for {ws.name}.")
                 else:
-                    Logger.info("Không có thay đổi mới trong workspace để commit.")
+                    Logger.info("No new changes in workspace to commit.")
                 if res.get("pushed"):
-                    Logger.success(f"Đã push thành công lên {res.get('remote') or 'origin'}.")
+                    Logger.success(f"Successfully pushed to {res.get('remote') or 'origin'}.")
                 else:
-                    Logger.warning("Chưa cấu hình remote hoặc không có remote để push (đã lưu local).")
+                    Logger.warning("No remote configured or cannot push (saved locally).")
             except Exception as e:
-                Logger.error(f"Lỗi khi push Git: {e}")
+                Logger.error(f"Git push error: {e}")
             _pause()
         elif act == '2':
             try:
                 res = GitWorkflowService.safe_sync(ws)
                 if res.get("rebased"):
-                    Logger.info("Đã rebase commit mới từ remote về.")
-                Logger.success(f"Đã sync thành công nhánh {res.get('branch')} với {res.get('remote')}.")
+                    Logger.info("Rebased new commits from remote.")
+                Logger.success(f"Successfully synced branch {res.get('branch')} with {res.get('remote')}.")
             except Exception as e:
-                Logger.error(f"Lỗi khi sync Git: {e}")
+                Logger.error(f"Git sync error: {e}")
             _pause()
         elif act == '3':
             # Detailed status & Large files via service
@@ -1656,42 +1959,68 @@ class CTFInteractiveConsole:
                 det = GitWorkflowService.workspace_detailed_status(ws)
                 large = det.get("large_files", [])
                 if large:
-                    con.print(f"\n  [{ERROR}]⚠️ CẢNH BÁO: Phát hiện {len(large)} file > 50MB (nguy cơ bị GitHub reject):[/{ERROR}]")
+                    con.print(f"\n  [{ERROR}]⚠️ WARNING: Detected {len(large)} files > 50MB (risk of GitHub rejection):[/{ERROR}]")
                     for fpath, size in large:
                         mb = size / (1024 * 1024)
                         rel_p = fpath.relative_to(ws) if fpath.is_relative_to(ws) else fpath
                         con.print(f"    - [{WARN}]{rel_p}[/{WARN}] ({mb:.1f} MB)")
-                    con.print("  [dim]Gợi ý: Thêm các file này vào .gitignore trước khi push.[/dim]")
+                    con.print("  [dim]Tip: Add these files to .gitignore before pushing.[/dim]")
                 else:
-                    con.print(f"\n  [{SUCCESS}]✔ Anti-bloat check: Không có file nào > 50MB trong workspace.[/{SUCCESS}]")
+                    con.print(f"\n  [{SUCCESS}]✔ Anti-bloat check: No files > 50MB in workspace.[/{SUCCESS}]")
 
                 lines = det.get("changed_files", [])
                 if lines:
-                    con.print(f"\n  [bold]Danh sách thay đổi trong {ws.name}:[/bold]")
+                    con.print(f"\n  [bold]Changes in {ws.name}:[/bold]")
                     for line in lines[:15]:
                         con.print(f"    {line}")
                     if len(lines) > 15:
-                        con.print(f"    ... và {len(lines) - 15} files khác")
+                        con.print(f"    ... and {len(lines) - 15} more files")
                 else:
-                    con.print("\n  [dim]Workspace hoàn toàn sạch sẽ (no unstaged changes).[/dim]")
+                    con.print("\n  [dim]Workspace is clean (no unstaged changes).[/dim]")
 
                 ahead = det.get("ahead", 0)
                 behind = det.get("behind", 0)
                 if ahead > 0 or behind > 0:
                     con.print(f"\n  [dim]Sync status: {ahead} ahead, {behind} behind remote.[/dim]")
             except Exception as e:
-                Logger.error(f"Lỗi kiểm tra status: {e}")
+                Logger.error(f"Status check error: {e}")
             _pause()
         elif act == '4':
-            cur_remote = GitWorkflowService.get_remote_url(ws) or "(Chưa có)"
-            con.print(f"  Remote hiện tại: [{INFO}]{cur_remote}[/{INFO}]")
-            new_url = _prompt("Nhập GitHub remote URL mới (Enter bỏ qua): ").strip()
+            cur_remote = GitWorkflowService.get_remote_url(ws) or "(None)"
+            con.print(f"  Current remote: [{INFO}]{cur_remote}[/{INFO}]")
+            new_url = _prompt("Enter new GitHub remote URL (Enter to skip): ").strip()
             if new_url:
                 try:
                     GitWorkflowService.set_remote_url(ws, new_url)
-                    Logger.success(f"Đã cập nhật remote 'origin' -> {new_url}")
+                    Logger.success(f"Updated remote 'origin' -> {new_url}")
                 except Exception as e:
-                    Logger.error(f"Lỗi cập nhật remote: {e}")
+                    Logger.error(f"Failed to update remote: {e}")
+            _pause()
+        elif act == '5':
+            from .services.challenge_compressor import ChallengeCompressor
+            from .services.storage_manager import human_size
+            try:
+                con.print(f"\n[bold {ACCENT}]Scanning and packing challenge files in {ws.name}...[/bold {ACCENT}]")
+                rep = ChallengeCompressor.pack_workspace(ws, threshold_mb=50)
+                Logger.success(
+                    f"Packed {rep['compressed_count']} files | Skipped {rep['skipped_count']} files (>50MB) | "
+                    f"Saved {human_size(rep['saved_bytes'])} ({rep['saved_ratio_percent']:.1f}%)."
+                )
+            except Exception as e:
+                Logger.error(f"Pack error: {e}")
+            _pause()
+        elif act == '6':
+            from .services.challenge_compressor import ChallengeCompressor
+            try:
+                con.print(f"\n[bold {ACCENT}]Unpacking challenge files in {ws.name}...[/bold {ACCENT}]")
+                rep = ChallengeCompressor.unpack_workspace(ws)
+                skip_msg = f" ({rep.get('skipped_existing_count', 0)} already extracted)" if rep.get("skipped_existing_count", 0) > 0 else ""
+                err_msg = f" ({rep.get('error_count', 0)} errors)" if rep.get("error_count", 0) > 0 else ""
+                Logger.success(
+                    f"Unpacked {rep['unpacked_count']} challenge files{skip_msg}{err_msg}."
+                )
+            except Exception as e:
+                Logger.error(f"Unpack error: {e}")
             _pause()
 
     def _menu_theme(self):
@@ -1699,13 +2028,13 @@ class CTFInteractiveConsole:
         from .ui.palettes import PRESET_PALETTES
         from rich.padding import Padding
 
-        _section('Visual Theme Settings (Giao Diện Tác Chiến)')
+        _section('Visual Theme Settings')
         con = _menu_console()
         cur = get_active_palette()
 
         # 1. Active Theme Showcase Panel
         showcase = Text()
-        showcase.append("Theme đang hoạt động: ", style=f"bold {FG_BASE}")
+        showcase.append("Active theme: ", style=f"bold {FG_BASE}")
         showcase.append(f"{cur.display_name} ", style=f"bold {cur.accent}")
         showcase.append(f"({cur.name})\n", style=FG_MUTED)
         showcase.append(f"{cur.description}\n\n", style=FG_BASE)
@@ -1714,7 +2043,8 @@ class CTFInteractiveConsole:
         con.print(Panel(
             showcase,
             title="[bold]🎨 LIVE SPECTRUM SHOWCASE[/bold]",
-            border_style=cur.accent,
+            box=box.ROUNDED,
+            border_style=ACCENT_DEEP,
             padding=(1, 2),
         ))
         con.print()
@@ -1732,33 +2062,33 @@ class CTFInteractiveConsole:
         grid.add_column("key", justify="right", no_wrap=True)
         grid.add_column("swatch", no_wrap=True)
         grid.add_column("title", no_wrap=True)
-        grid.add_column("badge", no_wrap=True)
         grid.add_column("desc")
 
         for idx, pal in enumerate(unique_themes, 1):
             is_active = pal.name == cur.name
-            key_text = Text(f"[{idx}]", style="bold accent")
+            key_style = "menu.active" if is_active else "menu.key"
+            title_style = "menu.active" if is_active else "fg.base"
+            desc_style = "menu.active" if is_active else "fg.muted"
+
+            key_text = Text(f"[{idx:>2}]", style=key_style)
             swatch_text = pal.color_ramp_text()
-            title_style = "bold accent" if is_active else "fg.base"
             title_text = Text(pal.display_name, style=title_style)
-            badge_text = Text("● active", style="bold success") if is_active else Text("")
-            desc_text = Text(pal.description, style="fg.muted")
+            desc_text = Text(pal.description, style=desc_style)
 
-            grid.add_row(key_text, swatch_text, title_text, badge_text, desc_text)
+            grid.add_row(key_text, swatch_text, title_text, desc_text)
 
-        # Option 0 (Quay lại) integrated cleanly into the same grid
+        # Option 0 (Back) integrated cleanly into the same grid
         grid.add_row(
-            Text("[0]", style="bold fg.faint"),
+            Text("[ 0]", style="menu.exit"),
             Text(""),
-            Text("Quay lại Menu chính", style="fg.muted"),
+            Text("Back", style="fg.muted"),
             Text(""),
-            Text("(Giữ nguyên dải màu hiện tại)", style="fg.faint"),
         )
 
         con.print(Padding(grid, (0, 2)))
         con.print()
 
-        ch = _prompt(f'Chọn dải màu (1-{len(unique_themes)}, tên theme) [0 để quay lại]: ').strip()
+        ch = _prompt(f'Select theme (1-{len(unique_themes)}, name, 0): ').strip()
         if ch:
             chosen = None
             if ch.isdigit() and 1 <= int(ch) <= len(unique_themes):
@@ -1777,10 +2107,12 @@ class CTFInteractiveConsole:
                         state["theme"] = chosen.name
                         return state
 
-                    update_global_config(_save_theme)
+                    saved = update_global_config(_save_theme)
+                    if saved is not None:
+                        self.config = saved
                 except Exception as e:
-                    Logger.warning(f"Không thể lưu cấu hình theme: {e}")
-                Logger.success(f"Đã kích hoạt dải màu: {chosen.display_name}!")
+                    Logger.warning(f"Could not save theme configuration: {e}")
+                Logger.success(f"Activated theme: {chosen.display_name}!")
                 _pause()
 
 
@@ -1791,6 +2123,8 @@ def _pause():
 def launch_interactive_menu(workspace_path: Optional[str] = None, cookie: Optional[str] = None, token: Optional[str] = None):
     # Full brand owns the first frame. The first menu redraw therefore skips
     # AppHeader to avoid showing UCS_ExOdia twice back-to-back.
+    from .ui.theme import init_theme
+    init_theme()
     con = _menu_console()
     con.print(splash(con.width))
     app = CTFInteractiveConsole(

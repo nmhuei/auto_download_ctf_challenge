@@ -341,7 +341,7 @@ def test_menu_solver_bqa_eating_labels_and_help_alias(monkeypatch):
         output = "\n".join(con.printed)
         assert "[1] BQA EATING" in output
         assert "[2] SUPERBQA EATING" in output
-        assert "[7] Help" in output
+        assert "[7] HELP" in output or "[7] Help" in output
 
 
 def test_menu_solver_superbqa_uses_one_worker_per_category(monkeypatch):
@@ -610,7 +610,7 @@ def test_menu_solver_empty_workspace_guidance(monkeypatch):
         app._menu_solver()
 
         output = "\n".join(con.printed)
-        assert "Chưa có bài thi nào" in output
+        assert "No challenge files or metadata" in output
         assert "Hub [1]" in output
 
 

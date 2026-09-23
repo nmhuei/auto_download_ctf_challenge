@@ -1,0 +1,201 @@
+{
+  "version": 1,
+  "categories": [
+    {
+      "key": "pwn",
+      "display_name": "Pwnable",
+      "safe_label": "Binary Analysis",
+      "title_suffix": "Binary Triage & Architecture Analysis",
+      "scope_focus": "Focus strictly on defensive software analysis and binary inspection:",
+      "match_keywords": ["pwn", "binary", "kernel", "heap", "buffer", "overflow"],
+      "instructions": [
+        "Inspect binary protections: checksec/readelf (NX, PIE, Canary, RELRO) and target libc version.",
+        "Locate memory offsets: find stack displacement, format string leak/write offsets (%p/%n), or heap chunk layout.",
+        "Formulate target control transfer: build ROP gadget chain, ret2libc, or function pointer redirection in script/.",
+        "Test diagnostic harness locally before running against target instance, and record findings in script/analysis.md.",
+        "If a candidate flag is found, save it to flag.txt."
+      ],
+      "icon": "⚔️",
+      "color_token": "pwn"
+    },
+    {
+      "key": "crypto",
+      "display_name": "Crypto",
+      "safe_label": "Cryptographic Modeling",
+      "title_suffix": "Cryptographic Modeling & Reduction",
+      "scope_focus": null,
+      "match_keywords": ["crypto", "cipher", "rsa", "ecc", "hash", "lattice", "lwe", "dlp"],
+      "instructions": [
+        "Extract public parameters: modulus N, exponents, curves, IVs, and ciphertexts into script/.",
+        "Check structural relations: small e, Wiener/Boneh-Durfee, factorable modulus, linear feedback (LFSR), or biased nonces.",
+        "Analyze cipher modes: check keystream reuse in stream ciphers, padding oracles, or ECB block permutations.",
+        "For hard algebraic or lattice instances, isolate subproblem into math_workspace/ with the ctf-ask skill.",
+        "If a candidate flag is found, save it to flag.txt."
+      ],
+      "icon": "🔒",
+      "color_token": "crypto"
+    },
+    {
+      "key": "reverse",
+      "display_name": "Reverse",
+      "safe_label": "Algorithm Recovery",
+      "title_suffix": "Algorithm Recovery & Behavior Modeling",
+      "scope_focus": null,
+      "match_keywords": ["rev", "reverse", "crack", "decompile", "vm", "disasm"],
+      "instructions": [
+        "Map entrypoint & logic flow: trace main dispatcher, string transformations, and check conditions.",
+        "Deconstruct custom VM opcodes: isolate dispatch routines, lookup tables (S-boxes), cyclic shifts, or modular arithmetic.",
+        "Formulate constraint solver: model check routines via Z3/SAT solver or compute algebraic inverse.",
+        "Build standalone decoder/emulator in script/ to verify candidate inputs against local logic.",
+        "If a candidate flag is found, save it to flag.txt."
+      ],
+      "icon": "⚙️",
+      "color_token": "rev"
+    },
+    {
+      "key": "hardware",
+      "display_name": "Hardware",
+      "safe_label": "Signal Analysis",
+      "title_suffix": "Hardware & Signal Analysis",
+      "scope_focus": null,
+      "match_keywords": ["hardware", "rf", "radio", "dsp", "signal", "iot", "firmware", "logic", "saleae", "uart", "spi", "i2c"],
+      "instructions": [
+        "Determine signal properties: sample rate, modulation scheme, baud rate, or bus protocol.",
+        "Build a phased demodulation pipeline in script/ and save visual/data checkpoints.",
+        "Synthesize intermediate findings into script/analysis.md every stage to avoid token exhaustion.",
+        "If a candidate flag is found, save it to flag.txt."
+      ],
+      "icon": "📡",
+      "color_token": "hardware"
+    },
+    {
+      "key": "web",
+      "display_name": "Web",
+      "safe_label": "Web Systems",
+      "title_suffix": "Web Architecture & Protocol Analysis",
+      "scope_focus": "Focus strictly on defensive software architecture analysis and state modeling:",
+      "match_keywords": ["web", "http", "api", "injection", "xss", "graphql", "ssrf"],
+      "instructions": [
+        "Review backend framework structure & route sinks: trace HTTP endpoints, query params, template reflections ({{...}}), and deserialization.",
+        "Inspect session & auth: test JWT signatures (alg:none, weak HMAC, key confusion), role claims, and object ID parameter swaps.",
+        "Check file & proxy bounds: test upload extensions, directory traversal (../), and server-side request URL boundaries.",
+        "Build deterministic verification harness in script/ and document findings in script/analysis.md.",
+        "If a candidate flag is found, save it to flag.txt."
+      ],
+      "icon": "🌐",
+      "color_token": "web"
+    },
+    {
+      "key": "forensics",
+      "display_name": "Forensics",
+      "safe_label": "Data Analysis",
+      "title_suffix": "Forensic Artifact & Data Analysis",
+      "scope_focus": null,
+      "match_keywords": ["forensic", "pcap", "dfir", "stego", "disk", "memory", "image", "volatility", "wireshark"],
+      "instructions": [
+        "Examine file headers, metadata, file systems, or network capture streams.",
+        "Extract embedded files, hidden records, or reconstructed timeline events into script/.",
+        "Summarize findings and anomalies in script/analysis.md.",
+        "If a candidate flag is found, save it to flag.txt."
+      ],
+      "icon": "🔍",
+      "color_token": "forensics"
+    },
+    {
+      "key": "blockchain",
+      "display_name": "Blockchain",
+      "safe_label": "Contract Verification",
+      "title_suffix": "Smart Contract & Blockchain Security Analysis",
+      "scope_focus": null,
+      "match_keywords": ["blockchain", "web3", "contract", "solidity", "evm", "ether", "defi"],
+      "instructions": [
+        "Audit smart contract ABI, Solidity/Vyper source code, state variables, and access controls.",
+        "Identify arithmetic invariants, state transition order, or token interaction flows.",
+        "Formulate local reproduction test harnesses in script/ and document state in script/analysis.md.",
+        "If a candidate flag is found, save it to flag.txt."
+      ],
+      "icon": "⛓️",
+      "color_token": "accent"
+    },
+    {
+      "key": "ai",
+      "display_name": "AI / ML",
+      "safe_label": "Model Verification",
+      "title_suffix": "Machine Learning & Model Safety Analysis",
+      "scope_focus": null,
+      "match_keywords": ["ai", "llm", "prompt", "jailbreak", "model", "neural", "ml", "adversarial"],
+      "instructions": [
+        "Inspect model architecture, weights, tokenizer configuration, and prompt templates.",
+        "Analyze decision boundaries, model responses, and prompt evaluation behavior.",
+        "Build offline inference probes in script/ and record findings in script/analysis.md.",
+        "If a candidate flag is found, save it to flag.txt."
+      ],
+      "icon": "🧠",
+      "color_token": "accent"
+    },
+    {
+      "key": "mobile",
+      "display_name": "Mobile",
+      "safe_label": "Mobile App Analysis",
+      "title_suffix": "Mobile Application Architecture & Logic Analysis",
+      "scope_focus": null,
+      "match_keywords": ["mobile", "android", "apk", "ios", "ipa", "dex", "smali"],
+      "instructions": [
+        "Inspect manifest, permissions, package structure, and exported components.",
+        "Inspect compiled bytecode or DEX structures to analyze cryptography, storage, and IPC intents.",
+        "Extract embedded resources, certificates, or endpoint configurations into script/.",
+        "If a candidate flag is found, save it to flag.txt."
+      ],
+      "icon": "📱",
+      "color_token": "accent"
+    },
+    {
+      "key": "quantum",
+      "display_name": "Quantum",
+      "safe_label": "Quantum Modeling",
+      "title_suffix": "Quantum Circuit & Algorithmic State Analysis",
+      "scope_focus": null,
+      "match_keywords": ["quantum", "qiskit", "qubit", "circuit", "shor", "grover"],
+      "instructions": [
+        "Analyze quantum circuit depth, gate operations, and state vector matrices.",
+        "Model quantum register transformations and measurement probabilities.",
+        "Implement classical simulation or reduction scripts in script/.",
+        "If a candidate flag is found, save it to flag.txt."
+      ],
+      "icon": "⚛️",
+      "color_token": "accent"
+    },
+    {
+      "key": "osint",
+      "display_name": "OSINT",
+      "safe_label": "Intelligence Analysis",
+      "title_suffix": "Open Source Intelligence & Verification",
+      "scope_focus": null,
+      "match_keywords": ["osint", "recon", "geoint", "imint", "humint", "social", "geolocation"],
+      "instructions": [
+        "Examine publicly available metadata, timestamps, image EXIF, and geospatial markers.",
+        "Cross-reference public archives, DNS registries, and certificate logs.",
+        "Document verifiable investigative provenance and timeline in script/analysis.md.",
+        "If a candidate flag is found, save it to flag.txt."
+      ],
+      "icon": "🕵️",
+      "color_token": "accent"
+    },
+    {
+      "key": "general",
+      "display_name": "General",
+      "safe_label": "Challenge Analysis",
+      "title_suffix": "Challenge Analysis",
+      "scope_focus": null,
+      "match_keywords": ["misc", "general", "trivia", "welcome", "sanity", "checkin", "baby"],
+      "instructions": [
+        "Inspect metadata.json, challenge/NOTE.md, and all challenge attachments.",
+        "Build diagnostic test harnesses or analysis scripts in script/.",
+        "Document your hypotheses, findings, and technical notes in script/analysis.md.",
+        "If a candidate flag is found, save it to flag.txt."
+      ],
+      "icon": "🎯",
+      "color_token": "base"
+    }
+  ]
+}

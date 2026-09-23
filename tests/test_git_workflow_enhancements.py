@@ -112,3 +112,28 @@ def test_safe_sync_pull_rebase(git_env):
     assert sync_res["success"] is True
     assert (ws / "remote_notes.md").exists()
     assert (ws / "local_notes.md").exists()
+
+
+def test_checkpoint_and_push_blocks_unignored_oversized_file(git_env):
+    repo, remote, _info = git_env
+    ws = repo / "CTF_HEAVY"
+    ws.mkdir()
+    (ws / "solve.py").write_text("print('start')")
+
+    # Create uncompressed 55MB file without gitignore
+    huge_file = ws / "challenge" / "large.bin"
+    huge_file.parent.mkdir(parents=True)
+    with open(huge_file, "wb") as f:
+        f.seek(55 * 1024 * 1024 - 1)
+        f.write(b"\0")
+
+    # Disabling pack_challenges simulates packing failure or unhandled raw oversized file
+    with pytest.raises(GitWorkflowError) as exc_info:
+        GitWorkflowService.checkpoint_and_push(
+            ws,
+            pack_challenges=False,
+            threshold_mb=50,
+            push=False,
+        )
+    assert "vượt ngưỡng 50MB" in str(exc_info.value)
+

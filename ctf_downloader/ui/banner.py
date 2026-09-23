@@ -12,6 +12,7 @@ from rich.text import Text
 
 from .brand import (
     BRAND_NAME,
+    get_brand_name,
     compact_brand,
     full_brand,
     operation_rail,
@@ -44,11 +45,14 @@ def app_header(
     timestamp: str = "",
     width: int | None = None,
 ) -> Text:
-    """Single-line UCS_ExOdia command header with an inline spectral rail."""
+    """Single-line command header with an inline spectral rail matching active theme."""
     cols = terminal_width(width)
     ver = _major_version()
 
-    left = Text(BRAND_NAME, style=f"bold {ACCENT}")
+    from .theme import get_active_palette
+    pal = get_active_palette()
+
+    left = Text(get_brand_name(), style=f"bold {pal.accent}")
     left.append(" // ", style="dim")
     left.append(str(command or "console"), style="bold")
     ctx = str(context or "").strip()
@@ -64,7 +68,7 @@ def app_header(
     if stamp and cols >= 100:
         right.append(stamp, style="dim")
         right.append(" · ", style="dim")
-    right.append(ver, style=f"bold {FG_MUTED}")
+    right.append(ver, style=f"bold {pal.muted}")
 
     rail_w = cell_len(rail.plain)
     right_w = cell_len(right.plain)

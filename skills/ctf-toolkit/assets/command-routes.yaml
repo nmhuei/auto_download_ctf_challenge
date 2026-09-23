@@ -1,0 +1,47 @@
+# Precedence: reject_candidate -> status -> continue -> select -> hypothesis -> constraint
+version: "1.0"
+routes:
+  reject_candidate:
+    description: "Mark active flag candidate as fake/decoy, retain provenance, pivot to next branch."
+    aliases:
+      - decoy
+      - "flag decoy"
+      - "decoy flag"
+      - "fake flag"
+      - "cai nafy laf flag decoy"
+      - "cái này là flag decoy"
+  status:
+    description: "Emit concise verified observations, phase, next probe, blockers without fluff."
+    aliases:
+      - status
+      - "tiến độ"
+      - "tieens ddooj"
+      - tiendo
+      - progress
+      - "báo cáo"
+      - "/status"
+      - "/statú"
+  continue:
+    description: "Execute the first unfinished verification or probe step from durable state."
+    aliases:
+      - next
+      - nexxt
+      - continue
+      - "tiếp"
+      - "tiếp tục"
+      - proceed
+      - "/ctf-toolkit next"
+      - "/ctf next"
+  select:
+    description: "Locate challenge workspace, read NOTE.md/metadata.json, begin local triage."
+    patterns:
+      - '^(?:/ctf(?:-toolkit)?\s+)?([a-zA-Z]+)[-_ ]?(\d+)$'
+      - '^/ctf(?:-toolkit)?\s+(.+)$'
+  hypothesis:
+    description: "Record new lead/hypothesis and test with concrete probe."
+    patterns:
+      - '(?i)\b(?:có thể đó là|co the do la|hint hay j|maybe|hypothesis)\b'
+  constraint:
+    description: "Update runtime network/environment assumptions without resetting progress."
+    patterns:
+      - '(?i)\b(?:connect qua lan|lan only|chỉ có thể connect qua lan|dùng lan)\b'

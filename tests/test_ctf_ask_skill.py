@@ -347,53 +347,7 @@ def test_runner_with_mock_codex_emits_verified_handoff(tmp_path: Path) -> None:
     assert handoff["verification"]["ok"] is True
 
 
-def test_cli_ask_preflight_and_dry_run(tmp_path: Path) -> None:
-    from argparse import Namespace
-    from ctf_downloader.cli_commands import handle_ask
 
-    ws = tmp_path / "math_ws"
-    ws.mkdir()
-    (ws / "TASK.md").write_text("# Linear Task\nFind x mod 17\n", encoding="utf-8")
-    (ws / "instance.json").write_text(json.dumps({
-        "type": "modular_linear",
-        "modulus": 17,
-        "A": [[1]],
-        "b": [5],
-    }), encoding="utf-8")
-
-    # 1. Preflight only (should exit 0)
-    args_pf = Namespace(
-        workspace=str(ws),
-        preflight_only=True,
-        verify_only=None,
-        dry_run=False,
-        output=None,
-        model=None,
-        effort=None,
-    )
-    with pytest.raises(SystemExit) as exc:
-        handle_ask(args_pf)
-    assert exc.value.code == 0
-
-    # 2. Dry run (should exit 0)
-    args_dry = Namespace(
-        workspace=str(ws),
-        preflight_only=False,
-        verify_only=None,
-        dry_run=True,
-        output=str(tmp_path / "handoff.json"),
-        model="gpt-6-astra",
-        effort="high",
-    )
-    with pytest.raises(SystemExit) as exc:
-        handle_ask(args_dry)
-    assert exc.value.code == 0
-
-    # 3. Preflight with leak (should exit 2)
-    (ws / "TASK.md").write_text("# Exploit vulnerability\nRecover CTF flag\n", encoding="utf-8")
-    with pytest.raises(SystemExit) as exc:
-        handle_ask(args_pf)
-    assert exc.value.code == 2
 
 
 def test_validator_rejects_boolean_coercion_and_empty_systems(tmp_path: Path) -> None:
@@ -475,37 +429,152 @@ def test_validator_rejects_boolean_coercion_and_empty_systems(tmp_path: Path) ->
     assert data["ok"] is False
 
 
-def test_parse_validator_result_fail_closed() -> None:
-    from ctf_downloader.cli_commands import _parse_validator_result
+def test_parse_tool_json_fail_closed() -> None:
+    import importlib.util
     from unittest.mock import MagicMock
 
+    spec = importlib.util.spec_from_file_location("run_astra_expert", str(RUNNER))
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
     # 1. Non-zero exit code with non-JSON stdout
-    p1 = MagicMock(returncode=1, stdout="crash", stderr="")
-    r1 = _parse_validator_result(p1)
-    assert r1["ok"] is False
-    assert r1["errors"] == ["crash"]
+    p1 = MagicMock(returncode=1, stdout="crash", stderr="error")
+    with pytest.raises(RuntimeError):
+        mod.parse_tool_json(p1, "test")
 
     # 2. Zero exit code with malformed JSON
     p2 = MagicMock(returncode=0, stdout="not-json", stderr="")
-    r2 = _parse_validator_result(p2)
-    assert r2["ok"] is False
-    assert any("Malformed" in e for e in r2["errors"])
+    with pytest.raises(RuntimeError):
+        mod.parse_tool_json(p2, "test")
 
-    # 3. Zero exit code with non-dict JSON
-    p3 = MagicMock(returncode=0, stdout="[1, 2, 3]", stderr="")
-    r3 = _parse_validator_result(p3)
-    assert r3["ok"] is False
-    assert "non-object" in r3["errors"][0]
+    # 3. Zero exit code with ok: False
+    p3 = MagicMock(returncode=0, stdout='{"ok": false, "errors": ["invalid"]}')
+    with pytest.raises(RuntimeError):
+        mod.parse_tool_json(p3, "test")
 
-    # 4. Zero exit code with ok: False
-    p4 = MagicMock(returncode=0, stdout='{"ok": false, "errors": ["invalid"]}', stderr="")
-    r4 = _parse_validator_result(p4)
-    assert r4["ok"] is False
-    assert r4["errors"] == ["invalid"]
+    # 4. Zero exit code with ok: True
+    p4 = MagicMock(returncode=0, stdout='{"ok": true, "files": []}')
+    res = mod.parse_tool_json(p4, "test")
+    assert res["ok"] is True
 
-    # 5. Non-zero exit code even if JSON claimed ok: True
-    p5 = MagicMock(returncode=2, stdout='{"ok": true, "errors": []}', stderr="")
-    r5 = _parse_validator_result(p5)
-    assert r5["ok"] is False
+
+def test_preflight_rejects_unisolated_challenge_files(tmp_path: Path) -> None:
+    ws = tmp_path / "bad_challenge_ws"
+    ws.mkdir()
+    (ws / "TASK.md").write_text("# Math Task\n", encoding="utf-8")
+    (ws / "instance.json").write_text("{}", encoding="utf-8")
+    (ws / "metadata.json").write_text('{"instance": "https://172.31.102.101.nip.io"}', encoding="utf-8")
+
+    res = run_validator_cmd(["preflight", "--workspace", str(ws)])
+    assert res.returncode != 0
+    data = json.loads(res.stdout)
+    assert data["ok"] is False
+    assert any("unisolated challenge artifact forbidden" in e for e in data["errors"])
+
+    # Also test chall.txt specifically (verifying Codex finding fix)
+    (ws / "metadata.json").unlink()
+    (ws / "chall.txt").write_text("pure coefficients only", encoding="utf-8")
+    res2 = run_validator_cmd(["preflight", "--workspace", str(ws)])
+    assert res2.returncode != 0
+    data2 = json.loads(res2.stdout)
+    assert data2["ok"] is False
+    assert any("unisolated challenge artifact forbidden" in e for e in data2["errors"])
+
+
+def test_preflight_rejects_ip_and_attack_heuristics(tmp_path: Path) -> None:
+    ws = tmp_path / "attack_ws"
+    ws.mkdir()
+    (ws / "TASK.md").write_text("# Task\nUse fault injection on HSM to extract key at 172.31.102.101 nip.io\n", encoding="utf-8")
+    (ws / "instance.json").write_text("{}", encoding="utf-8")
+
+    res = run_validator_cmd(["preflight", "--workspace", str(ws)])
+    assert res.returncode != 0
+    data = json.loads(res.stdout)
+    assert data["ok"] is False
+    labels = [f.get("label") for f in data["findings"]]
+    assert "fault-injection" in labels
+    assert "hsm" in labels
+    assert "ip-address" in labels
+    assert "dynamic-dns" in labels
+
+
+
+
+
+def test_runner_executes_in_isolated_sandbox(tmp_path: Path) -> None:
+    ws = tmp_path / "ws_isolated_runner"
+    ws.mkdir()
+    (ws / "TASK.md").write_text("# Pure Math Task\n", encoding="utf-8")
+    (ws / "instance.json").write_text(json.dumps({
+        "type": "modular_linear",
+        "modulus": 17,
+        "A": [[1]],
+        "b": [3],
+    }), encoding="utf-8")
+
+    out_file = tmp_path / "handoff.json"
+    cmd = [
+        sys.executable, str(RUNNER),
+        "--workspace", str(ws),
+        "--output", str(out_file),
+        "--dry-run",
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    assert res.returncode == 0, res.stderr
+    data = json.loads(res.stdout)
+    assert data["ok"] is True
+    assert "isolated_sandbox" in data
+    # Verify that the --cd passed to codex points to the isolated sandbox, NOT the source workspace!
+    cd_idx = data["command"].index("--cd")
+    cd_path = data["command"][cd_idx + 1]
+    assert cd_path == data["isolated_sandbox"]
+    assert cd_path != str(ws)
+
+
+def test_four_mirror_skills_synchronization() -> None:
+    """Invariant: All 4 skill mirrors must remain synchronized for ctf-ask and ctf-toolkit."""
+    skills = ["ctf-ask", "ctf-toolkit", "ctf-crypto"]
+    home = Path.home()
+    
+    for skill in skills:
+        src = REPO_ROOT / ".agents" / "skills" / skill
+        assert src.is_dir(), f"Source skill directory missing: {src}"
+        
+        mirrors = [
+            home / ".gemini" / "config" / "skills" / skill,
+            REPO_ROOT / "skills" / skill,
+            home / ".agents" / "skills" / skill,
+        ]
+        
+        src_files = {p.relative_to(src): p.read_bytes() for p in src.rglob("*") if p.is_file() and "__pycache__" not in p.parts}
+        
+        for mirror in mirrors:
+            assert mirror.is_dir(), f"Mirror directory missing: {mirror}"
+            mirror_files = {p.relative_to(mirror): p.read_bytes() for p in mirror.rglob("*") if p.is_file() and "__pycache__" not in p.parts}
+            
+            # Check for missing or extra files
+            assert set(src_files.keys()) == set(mirror_files.keys()), (
+                f"File inventory mismatch for {skill} between {src} and {mirror}: "
+                f"missing={set(src_files.keys()) - set(mirror_files.keys())}, "
+                f"extra={set(mirror_files.keys()) - set(src_files.keys())}"
+            )
+            # Check content equivalence
+            for rel_path, content in src_files.items():
+                assert mirror_files[rel_path] == content, f"Content mismatch in {skill}/{rel_path} between {src} and {mirror}"
+
+
+def test_zero_stale_cli_references_in_skills() -> None:
+    """Invariant: Shipped skills must have zero stale 'ctf ask' CLI invocations."""
+    skills_root = REPO_ROOT / ".agents" / "skills"
+    forbidden = ["ctf ask --", "ctf ask "]
+    
+    for f in skills_root.rglob("*"):
+        if f.is_file() and f.suffix in (".md", ".py", ".yaml", ".json"):
+            text = f.read_text(encoding="utf-8", errors="ignore")
+            for phrase in forbidden:
+                assert phrase not in text, f"Stale CLI invocation '{phrase}' found in {f}"
+
+
 
 

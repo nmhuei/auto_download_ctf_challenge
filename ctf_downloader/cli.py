@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test cũ
     get_auth_for_workspace,
-    handle_ask,
+    handle_auth,
     handle_bridge,
     handle_config,
     handle_doctor,
@@ -18,6 +18,7 @@ from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test c
     handle_instance,
     handle_note,
     handle_open,
+    handle_pack,
     handle_platform,
     handle_pull,
     handle_rank,
@@ -30,6 +31,7 @@ from .cli_commands import (  # noqa: F401 — re-export cho script legacy/test c
     handle_submit,
     handle_sync,
     handle_tag,
+    handle_unpack,
     handle_watch,
     handle_workspaces,
 )
@@ -88,7 +90,7 @@ class _PhosphorHelpParser(argparse.ArgumentParser):
             ('serve', 'Dashboard web read-only cho workspace'),
             ('open', 'Mở thư mục challenge trong file manager'),
             ('config', 'Xem/đặt cấu hình toàn cục (auto-sync…)'),
-            ('ask', 'Chuyển tiếp bài toán hình thức sang chuyên gia Codex Astra'),
+            ('auth', 'Manage & sync credentials (Burp Suite, cookie, token)'),
             ('menu', 'Console interactive đầy đủ'),
         ]
 
@@ -178,6 +180,14 @@ def build_unified_parser():
                              help='Tạo/commit branch nhưng không tự push sau pull')
     pull_parser.add_argument('-k', '--insecure', action='store_true',
                              help='Bỏ qua xác minh SSL/TLS certificate (dùng cho CTF server LAN/self-signed)')
+    pull_parser.add_argument('--from-burp', action='store_true',
+                             help='Tự động trích xuất session cookie cho URL từ Burp Suite MCP (localhost:9876)')
+    pull_parser.add_argument('--save-cookie', action='store_true',
+                             help='Lưu cookie đã trích xuất vào cấu hình xác thực của workspace/URL')
+    pull_parser.add_argument('--burp-port', type=int, default=9876,
+                             help='Cổng MCP của Burp Suite (mặc định: 9876)')
+    pull_parser.add_argument('--proxy', type=str, default=None,
+                             help='HTTP/HTTPS proxy cho request (vd: http://127.0.0.1:8080 cho Burp Proxy)')
     pull_parser.add_argument('-i', '--interactive', action='store_true', help='Launch interactive download wizard')
 
     # 2. STATUS / TREE / LS / DASHBOARD
@@ -453,6 +463,28 @@ def build_unified_parser():
     git_push.add_argument('-m', '--message', help='Commit message tùy chọn')
     git_push.add_argument('--no-push', action='store_true',
                           help='Chỉ commit local, không push remote')
+    git_push.add_argument('--no-pack', action='store_true',
+                          help='Không tự động nén file đề bài trước khi commit/push')
+    git_push.add_argument('--threshold', type=int, default=50,
+                          help='Ngưỡng dung lượng tối đa cho mỗi file nén (MB, mặc định: 50)')
+
+    git_pack = git_sub.add_parser('pack', aliases=['compress'],
+                                  help='Nén tối đa file đề bài trong workspace (XZ extreme, skip nếu > 50MB)')
+    git_pack.add_argument('-w', '--workspace', default='.',
+                          help='Workspace giải (default: current dir)')
+    git_pack.add_argument('--threshold', type=int, default=50,
+                          help='Ngưỡng tối đa cho mỗi file sau nén tính bằng MB (default: 50)')
+    git_pack.add_argument('--all', action='store_true',
+                          help='Quét toàn bộ thư mục thay vì chỉ challenge/attachments')
+    git_pack.add_argument('--keep-original', action='store_true',
+                          help='Giữ lại file gốc thay vì xoá thay thế bằng .xz')
+
+    git_unpack = git_sub.add_parser('unpack', aliases=['decompress'],
+                                    help='Giải nén các file đề bài .xz trong workspace')
+    git_unpack.add_argument('-w', '--workspace', default='.',
+                            help='Workspace giải (default: current dir)')
+    git_unpack.add_argument('--keep-xz', action='store_true',
+                            help='Giữ lại file .xz sau khi giải nén')
 
     git_finish = git_sub.add_parser(
         'finish', aliases=['end', 'merge'],
@@ -477,31 +509,33 @@ def build_unified_parser():
     config_parser.add_argument('value', nargs='?',
                                help="Giá trị mới (vd auto-sync: on|off; workspace-root: đường dẫn). Bỏ trống để chỉ xem")
 
+    # AUTH — manage & sync CTF platform credentials (Burp Suite, cookie, token)
+    auth_parser = subparsers.add_parser('auth', aliases=['credentials', 'login'],
+                                        help='Manage & sync CTF credentials (Burp Suite, cookie, token)')
+    auth_parser.add_argument('-w', '--workspace', default=None,
+                             help='Workspace path to configure auth for')
+    auth_parser.add_argument('-u', '--url', default=None,
+                             help='Target platform URL to configure auth for')
+    auth_parser.add_argument('-c', '--cookie', default=None,
+                             help='Session cookie string or cookie file path')
+    auth_parser.add_argument('-t', '--token', default=None,
+                             help='API / Bearer token')
+    auth_parser.add_argument('--from-burp', action='store_true',
+                             help='Auto-extract and sync session cookie from Burp Suite MCP (localhost:9876)')
+    auth_parser.add_argument('--burp-port', type=int, default=9876,
+                             help='Burp Suite MCP port (default: 9876)')
+    auth_parser.add_argument('--show', action='store_true',
+                             help='Display saved credentials for target workspace or URL')
+    auth_parser.add_argument('--clear', action='store_true',
+                             help='Clear saved credentials for target workspace or URL')
+
     # 19. BRIDGE — quản lý Browser Extension Bridge daemon
     bridge_parser = subparsers.add_parser('bridge', aliases=['ext'],
                                           help='Quản lý Browser Extension Bridge (vượt Cloudflare)')
     bridge_parser.add_argument('bridge_action', nargs='?', choices=['status', 'start', 'stop', 'token'],
                                default='status', help='Thao tác: status (mặc định), start, stop, token')
 
-    # 20. ASK — chuyển tiếp bài toán hình thức hóa sang chuyên gia Codex Astra (ctf-ask skill)
-    ask_parser = subparsers.add_parser('ask', aliases=['expert', 'astra'],
-                                       help='Chuyển tiếp bài toán hình thức hóa sang chuyên gia Codex Astra độc lập')
-    ask_parser.add_argument('-w', '--workspace', default=None,
-                            help='Thư mục formal workspace chứa TASK.md và instance.json (mặc định: ./math_workspace hoặc cwd)')
-    ask_parser.add_argument('-o', '--output', default=None,
-                            help='Đường dẫn file handoff.json đầu ra (mặc định: ../handoff.json bên ngoài workspace)')
-    ask_parser.add_argument('--model', default=None,
-                            help='Model Codex (mặc định: gpt-6-astra hoặc biến CTF_ASK_MODEL)')
-    ask_parser.add_argument('--effort', choices=['low', 'medium', 'high', 'xhigh', 'max'], default=None,
-                            help='Mức suy luận reasoning effort (mặc định: high)')
-    ask_parser.add_argument('--preflight-only', action='store_true',
-                            help='Chỉ chạy kiểm tra tiền kiểm (preflight linter) tránh domain leakage')
-    ask_parser.add_argument('--verify-only', default=None, metavar='SOLUTION_JSON',
-                            help='Chỉ chạy xác minh độc lập candidate từ solution JSON đối chiếu với instance.json')
-    ask_parser.add_argument('--dry-run', action='store_true',
-                            help='Chạy preflight và in câu lệnh Codex mà không thực thi')
-
-    # 21. PLATFORM — quản lý platform schemas và auto-recon
+    # 20. PLATFORM — quản lý platform schemas và auto-recon
     plat_parser = subparsers.add_parser('platform', aliases=['platforms', 'schema'],
                                         help='Quản lý cấu trúc platform CTF và chạy Auto-Recon')
     plat_sub = plat_parser.add_subparsers(dest='platform_action')
@@ -530,6 +564,26 @@ def build_unified_parser():
     plat_rm.add_argument('target', help='Key của schema cần xoá')
     plat_rm.add_argument('--scope', choices=['global', 'workspace'], default='global', help='Phạm vi xoá')
     plat_rm.add_argument('-w', '--workspace', default=None, help='Workspace CTF')
+
+    # 22. PACK — nén tối đa file đề bài cho Git
+    pack_parser = subparsers.add_parser('pack', aliases=['compress'],
+                                        help='Nén tối đa file đề bài trong workspace (XZ extreme, skip nếu > 50MB)')
+    pack_parser.add_argument('-w', '--workspace', default='.',
+                             help='Workspace giải (default: current dir)')
+    pack_parser.add_argument('--threshold', type=int, default=50,
+                             help='Ngưỡng tối đa cho mỗi file sau nén tính bằng MB (default: 50)')
+    pack_parser.add_argument('--all', action='store_true',
+                             help='Quét toàn bộ thư mục thay vì chỉ challenge/attachments')
+    pack_parser.add_argument('--keep-original', action='store_true',
+                             help='Giữ lại file gốc thay vì xoá thay thế bằng .xz')
+
+    # 23. UNPACK — giải nén file đề bài .xz
+    unpack_parser = subparsers.add_parser('unpack', aliases=['decompress'],
+                                          help='Giải nén các file đề bài .xz trong workspace')
+    unpack_parser.add_argument('-w', '--workspace', default='.',
+                               help='Workspace giải (default: current dir)')
+    unpack_parser.add_argument('--keep-xz', action='store_true',
+                               help='Giữ lại file .xz sau khi giải nén')
 
     return parser
 
@@ -689,6 +743,9 @@ def _bqa_boundary(dispatch):
 
 @_bqa_boundary
 def main():
+    from .ui.theme import init_theme
+    init_theme()
+
     if len(sys.argv) == 1:
         launch_interactive_menu()
         return
@@ -784,12 +841,19 @@ def main():
             _run_framed(handle_config, args, 'config')
         else:
             handle_config(args)
+    elif cmd in ['auth', 'credentials', 'login']:
+        if getattr(args, 'show', False) or (not getattr(args, 'cookie', None) and not getattr(args, 'token', None) and not getattr(args, 'from_burp', False) and not getattr(args, 'clear', False)):
+            _run_framed(handle_auth, args, 'auth')
+        else:
+            handle_auth(args)
     elif cmd in ['bridge', 'ext']:
         handle_bridge(args)
-    elif cmd in ['ask', 'expert', 'astra']:
-        handle_ask(args)
     elif cmd in ['platform', 'platforms', 'schema']:
         handle_platform(args)
+    elif cmd in ['pack', 'compress']:
+        handle_pack(args)
+    elif cmd in ['unpack', 'decompress']:
+        handle_unpack(args)
     elif cmd in ['menu', 'ui', 'console']:
         launch_interactive_menu(workspace_path=args.workspace, cookie=args.cookie, token=args.token)
     else:

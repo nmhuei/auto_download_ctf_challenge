@@ -103,12 +103,14 @@ Tích hợp trực tiếp từ [`RankService.display_and_update()`](../ctf_downl
 │ rank 5/250 · gap 920 pts                                   │
 ╰────────────────────────────────────────────────────────────╯
 
-  ◈ LIVE SCOREBOARD & RANKING
-  [1] Làm mới bảng xếp hạng
-  [2] Thay đổi số đội hiển thị (Top 15)
-  [0] Quay lại Menu chính
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ ◈ LIVE SCOREBOARD & RANKING · Top 15 Đội Dẫn Đầu                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  [ 1] Làm mới bảng xếp hạng    (Refresh scoreboard)
+  [ 2] Thay đổi số đội hiển thị (Hiện tại: top 15)
+  [ 0] Quay lại Menu chính
 
-  ❯ Lựa chọn thao tác (0-2) [default 0]: 
+  ❯ Lựa chọn thao tác (0-2):
 ```
 
 ---
@@ -125,19 +127,55 @@ Khi gõ `info <id>` hoặc chọn bài trong Hub Nộp cờ:
 │ Status     : ✔ SOLVED (★ flag{d15e…7697} lưu trong README.md)                                          │
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
-  ◈ TACTICAL ACTION: Crypto Challenge 1
-  [1] Xem mô tả đề bài, Hints & File đính kèm
-  [2] Dynamic Instance: Bật / Tắt / Gia hạn Container
-  [3] Nộp Flag cho bài này
-  [4] Chạy SuperBQA AI Solver tự động giải
-  [0] Quay lại
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ ◈ TACTICAL ACTION: CRYPTO CHALLENGE 1                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  [ 1] 📖 Xem mô tả đề bài, Hints & File đính kèm (View details)
+  [ 2] 🌐 Dynamic Instance: Bật / Tắt / Gia hạn   (Instances)
+  [ 3] 🚩 Nộp Flag cho bài này                    (Submit flag)
+  [ 4] ⚡ Chạy SuperBQA AI Solver tự động giải    (Auto-solver)
+  [ 0] 🚪 Quay lại
 
-  ❯ Select card action (0-4): 
+  ❯ Lựa chọn thao tác (0-4):
 ```
 
 ---
 
-## 6. Quy chuẩn Lập trình Giao diện (Design System Standards - Rule 6)
+## 6. Template Giao diện 4: Chọn Chiến trường CTF (Workspace Switcher)
+
+```text
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ ◈ CHỌN CHIẾN TRƯỜNG CTF · ACTIVE WORKSPACE                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  [ 1] ASIS_CTF_Quals_2026            · ASISCTF   20/37 solved
+  [ 2] CTF Da Nang 2026               · CTFD      49/61 solved  <-- (Active: BOLD GREEN)
+  [ 3] K17_CTF_2026                   · NOCTF      7/36 solved
+  [ 4] NNS CTF 2026                   · RCTF       6/79 solved
+  [ 0] Quay lại Menu chính
+
+  ❯ Lựa chọn chiến trường (1-4, 0):
+```
+
+---
+
+## 7. Template Giao diện 5: Sub-Hub Menu (Ví dụ: Hub 1 Workspace & Targets)
+
+```text
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ ◈ WORKSPACE & TARGETS · Chiến trường & Nền tảng                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  [ 1] 🎯 Chuyển giải đấu CTF         (Switch active workspace)
+  [ 2] 📥 Tải / Clone bài thi giải mới(Clone / Download CTF)
+  [ 3] 🔑 Cấu hình Cookie / Token     (Configure auth)
+  [ 4] 🩺 Platform Doctor             (Doctor verification)
+  [ 0] 🚪 Quay lại Menu chính
+
+  ❯ Lựa chọn thao tác (0-4):
+```
+
+---
+
+## 8. Quy chuẩn Lập trình Giao diện (Design System Standards - Rule 6)
 
 1. **Zero-Hardcoding**:
    - Tuyệt đối không dùng mã màu ANSI cứng (như `\033[32m`) hoặc hex code trực tiếp.

@@ -32,6 +32,12 @@ class WorkspaceBuilder:
 - Keep the final reusable solver at `solver/solve.py`.
 - Solve and verify locally first; use an instance only after local verification.
 - After successful local verification, write `script/worker-report.json` with `{"local_verification":"passed","summary":"what was verified"}`.
+- After saving flag to `flag.txt`: Write a thorough, step-by-step cognitive writeup to `writeup/README.md`.
+  - Focus strictly on the actual thought process and discovery trail, NOT generic textbook theory:
+    1. **Rationale**: Why this exact step was performed.
+    2. **Discovery Triggers**: What specific clues, strings, xrefs, code patterns, or anomalies were detected that prompted that action.
+    3. **Research Trail**: Exactly what was searched online (queries, docs, CVEs, RFCs, GitHub repositories) and how the findings were applied to this problem.
+    4. **Dead-ends & Pivots**: What initial hypotheses failed and why you pivoted to the winning path.
 <!-- CTF-SOLVER-RULES:END -->
 """
         start = existing.find(cls._SOLVER_RULES_START)
@@ -258,6 +264,24 @@ class WorkspaceBuilder:
         writeup_path = os.path.join(writeup_sub_dir, "README.md")
         _safe_generate(writeup_path, lambda: WorkspaceBuilder._generate_writeup_template(challenge))
 
+        # Determine container and instance status
+        inst_info = challenge.instance_info if isinstance(challenge.instance_info, dict) else {}
+        is_container_challenge = bool(inst_info.get("is_container") or getattr(challenge, "has_container", False))
+        active_entry = inst_info.get("active_instance") or inst_info.get("entry") or inst_info.get("url")
+
+        if active_entry:
+            instance_val = str(active_entry)
+            instance_status = "on"
+            instance_note = f"Instance active at {active_entry}. Use 'ctf instance renew --id {challenge.id}' to extend."
+        elif is_container_challenge:
+            instance_val = "off"
+            instance_status = "off"
+            instance_note = f"Instance is currently off. Use 'ctf instance start --id {challenge.id}' or /ctf-toolkit instance to spawn."
+        else:
+            instance_val = ""
+            instance_status = "none"
+            instance_note = ""
+
         # 2. Generate metadata.json
         meta_data = {
             "id": challenge.id,
@@ -268,9 +292,10 @@ class WorkspaceBuilder:
             "tags": challenge.tags,
             "hints": challenge.hints,
             "connection_info": challenge.connection_info,
-            # Endpoint instance do platform trả về hoặc người dùng/script điền
-            # sau này. Luôn có mặt để metadata giữ một schema ổn định.
-            "instance": "",
+            # Endpoint instance do platform trả về hoặc người dùng/script điền sau này
+            "instance": instance_val,
+            "instance_status": instance_status,
+            "instance_note": instance_note,
             "solved_by_me": challenge.solved_by_me,
             "solves_count": challenge.solves_count,
             "submit_endpoint": challenge.submit_endpoint,

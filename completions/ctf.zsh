@@ -41,15 +41,18 @@ _ctf() {
                 'history:Lịch sử submit flag của workspace'
                 'open:Mở thư mục challenge trong file manager/terminal'
                 'config:Xem/đặt cấu hình toàn cục (vd: ctf config auto-sync off)'
+                'auth:Manage & sync platform credentials (Burp Suite, cookie, token)'
                 'sniper:Nộp flag tự động đúng giờ G'
                 'serve:Dashboard web read-only cho workspace'
                 'bridge:Quản lý Browser Extension Bridge (vượt Cloudflare)'
-                'ask:Chuyển tiếp bài toán hình thức sang chuyên gia Codex Astra'
                 'platform:Quản lý platform schemas và auto-recon'
+                'pack:Ultra-compress challenge files in workspace'
+                'unpack:Decompress packed challenge files in workspace'
             )
             # alias map về lệnh chuẩn
             local -a aliases=(
                 'download:alias of pull' 'clone:alias of pull'
+                'credentials:alias of auth' 'login:alias of auth'
                 'tree:alias of status' 'ls:alias of status' 'dashboard:alias of status'
                 'solver:alias of solve'
                 'ghi-chu:alias of note' 'tags:alias of tag'
@@ -64,10 +67,10 @@ _ctf() {
                 'log:alias of history'
                 'web:alias of serve'
                 'ext:alias of bridge'
-                'expert:alias of ask'
-                'astra:alias of ask'
                 'platforms:alias of platform'
                 'schema:alias of platform'
+                'compress:alias of pack'
+                'decompress:alias of unpack'
             )
             _describe -t commands 'command' cmds && return 0
             _describe -t commands 'alias' aliases && return 0
@@ -96,6 +99,10 @@ _ctf() {
                         '--git-remote[tên remote dùng push]:remote:' \
                         '--no-git-push[tạo/commit branch nhưng không auto push]' \
                         '(-k --insecure)'{-k,--insecure}'[bỏ qua xác minh SSL/TLS certificate]' \
+                        '--from-burp[auto-extract session cookie from Burp Suite MCP]' \
+                        '--save-cookie[persist extracted Burp cookie into auth config]' \
+                        '--burp-port[Burp Suite MCP port]:port:' \
+                        '--proxy[HTTP/HTTPS proxy for requests]:proxy:' \
                         '(-i --interactive)'{-i,--interactive}'[launch interactive download wizard]'
                     ;;
                 status|tree|ls|dashboard)
@@ -281,21 +288,48 @@ _ctf() {
                     ;;
                 git)
                     _arguments \
-                        '1:git action:(init status push finish end merge)' \
+                        '1:git action:(init status push finish end merge pack unpack)' \
                         '(-d --dir)'{-d,--dir}'[shared CTF git repo directory]:dir:_directories' \
                         '(-w --workspace)'{-w,--workspace}'[CTF workspace directory]:dir:_directories' \
                         '--remote-url[remote URL for init]:url:' \
                         '--remote[remote name]:remote:' \
                         '--base[base branch]:branch:' \
                         '--no-push[do not push remote]' \
+                        '--no-pack[skip challenge packing before commit/push]' \
+                        '--threshold[size threshold in MB for pack guard]:threshold:' \
+                        '--keep-original[keep uncompressed file after packing]' \
+                        '--keep-xz[keep xz archive after unpacking]' \
                         '--import-existing[import current directory contents into main baseline]' \
                         '--keep-remote[keep remote event branch after merge]' \
                         '(-m --message)'{-m,--message}'[checkpoint commit message]:message:'
                     ;;
+                pack)
+                    _arguments \
+                        '(-w --workspace)'{-w,--workspace}'[CTF workspace directory]:dir:_directories' \
+                        '--threshold[size threshold in MB]:threshold:' \
+                        '--replace[replace original file with compressed archive]' \
+                        '--keep-original[keep uncompressed file after packing]'
+                    ;;
+                unpack)
+                    _arguments \
+                        '(-w --workspace)'{-w,--workspace}'[CTF workspace directory]:dir:_directories' \
+                        '--keep-xz[keep xz archive after unpacking]'
+                    ;;
                 config)
                     _arguments \
-                        ':key:(auto-sync workspace-root)' \
+                        ':key:(auto-sync workspace-root theme)' \
                         ':value:'
+                    ;;
+                auth|credentials|login)
+                    _arguments \
+                        '(-w --workspace)'{-w,--workspace}'[workspace path]:dir:_directories' \
+                        '(-u --url)'{-u,--url}'[target platform URL]:url' \
+                        '(-c --cookie)'{-c,--cookie}'[cookie string or path to cookie file]:cookie:_files' \
+                        '(-t --token)'{-t,--token}'[API token or Bearer token]:token' \
+                        '--from-burp[auto-extract session cookie from Burp Suite MCP]' \
+                        '--burp-port[Burp Suite MCP port]:port:' \
+                        '--show[display saved credentials]' \
+                        '--clear[clear saved credentials]'
                     ;;
                 serve|web)
                     _arguments \
@@ -305,16 +339,6 @@ _ctf() {
                 bridge|ext)
                     _arguments \
                         '1:action:(status start stop token)'
-                    ;;
-                ask|expert|astra)
-                    _arguments \
-                        '(-w --workspace)'{-w,--workspace}'[formal workspace directory]:dir:_directories' \
-                        '(-o --output)'{-o,--output}'[output handoff JSON path]:file:_files' \
-                        '--model[Codex model identifier]:model:' \
-                        '--effort[reasoning effort level]:effort:(low medium high xhigh max)' \
-                        '--preflight-only[chạy kiểm tra tiền kiểm sanitizer]' \
-                        '--verify-only[xác minh độc lập candidate solution]:solution:_files' \
-                        '--dry-run[validate preflight without executing model]'
                     ;;
                 platform)
                     _arguments \

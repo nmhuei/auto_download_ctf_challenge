@@ -3,7 +3,7 @@ Workspace: Current working directory.
 Target Directory: {{target_directory}}
 Boundary: Strictly confined to this challenge directory. DO NOT search, list, or navigate outside (never scan /home, ~, Desktop, Downloads, or parent directories).
 Immediate Action: Read ./challenge/README.md and ./challenge/NOTE.md first to understand the challenge. Inspect files in ./challenge/.
-Hard Roadblocks: If blocked on a difficult mathematical, cryptographic, reverse-engineering, SAT/SMT, or state reachability subproblem, abstract it into a minimal formal instance and use the `ctf-ask` skill with deterministic local verification.
+Hard Roadblocks: If blocked on a difficult mathematical, cryptographic, algorithmic modeling, SAT/SMT, or state reachability subproblem, abstract it into a minimal formal instance and use the `ctf-ask` skill with deterministic local verification.
 {{dynamic_context}}
 
 Instructions:
