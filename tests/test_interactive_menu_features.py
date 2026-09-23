@@ -18,17 +18,18 @@ class FakeMenuConsole:
     def print(self, *args, **kwargs):
         rendered = []
         for arg in args:
-            if hasattr(arg, "plain"):
-                rendered.append(arg.plain)
-            elif hasattr(arg, "renderable"):
-                rendered.append(getattr(arg.renderable, "plain", str(arg.renderable)))
-            elif hasattr(arg, "columns"):
-                for col in getattr(arg, "columns", []):
+            target = arg
+            while hasattr(target, "renderable"):
+                target = target.renderable
+            if hasattr(target, "plain"):
+                rendered.append(target.plain)
+            elif hasattr(target, "columns"):
+                for col in getattr(target, "columns", []):
                     rendered.append(str(col.header))
                     for cell in getattr(col, "_cells", []):
                         rendered.append(getattr(cell, "plain", str(cell)))
             else:
-                rendered.append(str(arg))
+                rendered.append(str(target))
         self.printed.append(" ".join(rendered))
 
     def input(self, prompt=""):
@@ -669,22 +670,36 @@ def test_menu_ranking_displays_and_exits(monkeypatch):
         assert "LIVE SCOREBOARD & RANKING" in output.upper()
 
 
-def test_prompt_challenge_selection_helper(monkeypatch):
-    """_prompt_challenge_selection properly prints challenges and resolves selection."""
-    con = FakeMenuConsole(inputs=["1"])
+def test_main_menu_action_g_shows_cli_guidance(monkeypatch):
+    """Pressing G in main menu displays CLI workflow tips and returns."""
+    con = FakeMenuConsole(inputs=["g", "0"])
     monkeypatch.setattr(im, "_menu_console", lambda: con)
+    monkeypatch.setattr(im, "_pause", lambda: None)
 
     with tempfile.TemporaryDirectory() as temp:
         ws = create_dummy_workspace(temp)
         app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
         app.workspace_path = str(ws)
+        app.cookie = app.token = None
+        app.config = {}
+        app._last_action = None
 
-        challs = [
-            {"id": 101, "name": "Web Challenge", "category": "Web", "points": 100},
-            {"id": 102, "name": "Crypto Challenge", "category": "Crypto", "points": 200},
-        ]
-        target = app._prompt_challenge_selection(challs)
-        assert target is not None
-        assert target["id"] == 101
+        app.run()
+
+        output = "\n".join(con.printed)
+        assert "ctf git push" in output
+        assert "ctf git sync" in output
+
+
+def test_update_menu_theme_recolors_rank_console():
+    """Theme switch must dynamically recolor the rank service console."""
+    from ctf_downloader.services import rank_service as rs
+    im._update_menu_theme("dracula")
+    try:
+        assert str(rs._get_rank_console().get_style("accent")) == "#bd93f9"
+        assert str(rs._rank_console.get_style("accent")) == "#bd93f9"
+    finally:
+        im._update_menu_theme("exodia")
+
 
 

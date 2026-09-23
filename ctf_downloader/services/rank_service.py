@@ -26,6 +26,15 @@ from ..utils.sanitize import md_cell, strip_ansi
 #: ``fg.base`` / ``accent.deep`` … chỉ resolve trên console có load_theme().
 _rank_console = Console(theme=load_theme(None))
 
+
+def _get_rank_console() -> Console:
+    """Return a Rich console with the current active theme palette."""
+    from ..ui.theme import load_theme, get_active_palette
+    try:
+        return Console(theme=load_theme(get_active_palette().name))
+    except Exception:
+        return _rank_console
+
 #: Glyph vị trí top-3 thay huy chương emoji (spec §6: không emoji).
 _TOP3_GLYPH = "◆"
 
@@ -209,7 +218,7 @@ class RankService:
     def display_and_update(self, top_n: int = 15, update_docs: bool = True) -> Dict[str, Any]:
         data = self.fetch_ranking()
 
-        _rank_console.print(self._render_scoreboard(data, top_n=top_n))
+        _get_rank_console().print(self._render_scoreboard(data, top_n=top_n))
 
         if not data.get("standings"):
             Logger.warning("Platform chưa có dữ liệu standings trên scoreboard.")

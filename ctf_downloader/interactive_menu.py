@@ -10,6 +10,7 @@ from rich.live import Live
 from rich.text import Text
 from rich.table import Table
 from rich.panel import Panel
+from rich.padding import Padding
 
 from .dashboard import CTFDashboard
 from .instance_manager import InstanceManager
@@ -43,6 +44,7 @@ from .ui.menu_hubs import (
     hub_flag_submission,
     hub_system_arsenal,
     challenge_action_card,
+    render_hub_menu,
 )
 
 #: Meter dùng chung ramp 3 mốc spec §3.3 (than hồng → hổ phách → vàng nhạt)
@@ -139,6 +141,11 @@ def _update_menu_theme(name: str):
     set_active_theme(name)
     from rich.console import Console
     _MENU_CON = Console(stderr=True, theme=load_theme(name))
+    try:
+        from .services import rank_service
+        rank_service._rank_console = Console(theme=load_theme(name))
+    except Exception:
+        pass
 
 
 def _section(title: str):
@@ -457,7 +464,7 @@ class CTFInteractiveConsole:
                     '2': '2', 'chall': '2', 'challenge': '2', 'tree': '2', 'ls': '2',
                     '3': '3', 'flag': '3', 'submit': '3', 'nop': '3',
                     '4': '4', 'solve': '4', 'solver': '4', 'bqa': '4', 'eating': '4',
-                    '5': '5', 'rank': '5', 'ranking': '5', 'scoreboard': '5', 'board': '5', 'bxh': '5', 'system': '5', 'arsenal': '5', 'sys': '5',
+                    '5': '5', 'rank': '5', 'ranking': '5', 'scoreboard': '5', 'board': '5', 'bxh': '5',
                     'g': 'G', 'git': 'G', 'sync': 'G', 'push': 'G', 'backup': 'G',
                     't': 'T', 'theme': 'T', 'color': 'T', 'colors': 'T', 'style': 'T',
                     's': 'S',
@@ -480,7 +487,13 @@ class CTFInteractiveConsole:
                 elif canonical == '5':
                     self._menu_ranking()
                 elif canonical == 'G':
-                    self._menu_git()
+                    con = _menu_console()
+                    con.print()
+                    con.print(Text("  💡 Git workflow được vận hành trực tiếp qua CLI:", style=f"bold {ACCENT}"))
+                    con.print(Text("     • ctf git push      - Lưu tiến độ bài giải lên GitHub", style=FG_MUTED))
+                    con.print(Text("     • ctf git sync      - Kéo cập nhật và an toàn đồng bộ", style=FG_MUTED))
+                    con.print(Text("     • ctf git status    - Kiểm tra thay đổi và cảnh báo file nặng (>50MB)", style=FG_MUTED))
+                    _pause()
                 elif canonical == 'T':
                     self._menu_theme()
                 elif canonical == 'S':
@@ -718,28 +731,38 @@ class CTFInteractiveConsole:
         challs: list[dict],
         prompt_suffix: str = "or enter ID/Name [0 to return]",
     ) -> Optional[dict]:
-        """Hiển thị danh sách challenges và cho phép người dùng chọn challenge theo index/id/name."""
+        """Hiển thị danh sách challenges dạng Table.grid và cho phép người dùng chọn challenge."""
         con = _menu_console()
+        con.print()
+
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column("key", justify="right", no_wrap=True)
+        grid.add_column("name", style=f"bold {FG_BASE}")
+        grid.add_column("category", style=FG_MUTED)
+        grid.add_column("points", style=FG_MUTED, justify="right")
+        grid.add_column("status", no_wrap=True)
+        grid.add_column("cid", style=FG_FAINT)
+
         for idx, c in enumerate(challs, 1):
-            name = fit_cells(str(c.get('name') or 'Unknown'), 28, pad=True)
-            cat = fit_cells(str(c.get('category') or 'Other'), 12, pad=True)
+            name = fit_cells(str(c.get('name') or 'Unknown'), 28)
+            cat = fit_cells(str(c.get('category') or 'Other'), 12)
             pts = f"{c.get('points', '-'):>4} pts"
             cid = str(c.get('id', ''))
             is_solved = bool(c.get('solved_by_me'))
 
-            row = Text('  ')
-            row.append(f'[{idx:>2}]', style=ACCENT)
-            row.append(f' {name} ', style=FG_BASE)
-            row.append(f'{cat} ', style=FG_MUTED)
-            row.append(f'{pts} ', style=FG_MUTED)
-            if is_solved:
-                row.append('✔ SOLVED', style='solved')
-            else:
-                row.append('· Unsolved', style=FG_FAINT)
-            if cid:
-                row.append(f' (ID: {cid})', style=FG_FAINT)
-            con.print(row)
+            status_text = Text('✔ SOLVED', style='solved') if is_solved else Text('· Unsolved', style=FG_FAINT)
+            cid_text = Text(f'(ID: {cid})', style=FG_FAINT) if cid else Text('')
 
+            grid.add_row(
+                Text(f'[{idx:>2}]', style=f'bold {ACCENT}'),
+                Text(name, style=FG_BASE),
+                Text(cat, style=FG_MUTED),
+                Text(pts, style=FG_MUTED),
+                status_text,
+                cid_text,
+            )
+
+        con.print(Padding(grid, (0, 2)))
         con.print()
         q = _prompt(f'Select challenge (1-{len(challs)}), {prompt_suffix}: ').strip()
         target, err = _resolve_challenge_selection(challs, q)
@@ -1327,8 +1350,6 @@ class CTFInteractiveConsole:
 
     def _menu_ranking(self):
         """🏆 Live Scoreboard & Rank — bảng xếp hạng trực tiếp từ platform."""
-        _section('Live Scoreboard & Ranking (Bảng Xếp Hạng & Tiến Độ)')
-        con = _menu_console()
         if not self.workspace_path or not os.path.exists(self.workspace_path):
             Logger.warning("Chưa có workspace hợp lệ để lấy ranking.")
             _pause()
@@ -1336,7 +1357,6 @@ class CTFInteractiveConsole:
 
         top_n = 15
         while True:
-            con.print()
             try:
                 from .services.rank_service import RankService
                 plat_url = None
@@ -1355,17 +1375,23 @@ class CTFInteractiveConsole:
             except Exception as e:
                 Logger.error(f"Lỗi khi lấy scoreboard: {e}")
 
-            con.print()
-            _option('1', 'Làm mới bảng xếp hạng (Refresh)')
-            _option('2', f'Thay đổi số đội hiển thị (Hiện tại: top {top_n})')
-            _option('0', 'Quay lại Menu chính')
-            ch = _prompt('Lựa chọn (0-2) [default 0]: ').strip() or '0'
-            if ch in ('0', 'q', 'back', 'exit'):
+            actions = [
+                ("1", "Làm mới bảng xếp hạng (Refresh scoreboard)"),
+                ("2", f"Thay đổi số đội hiển thị (Hiện tại: top {top_n})"),
+                ("0", "Quay lại Menu chính"),
+            ]
+            ch = render_hub_menu(
+                title="Live Scoreboard & Ranking",
+                subtitle=f"Top {top_n} Đội Dẫn Đầu",
+                actions=actions,
+                prompt_text="❯ Lựa chọn thao tác (0-2) [default 0]: ",
+            )
+            if ch in ("0", "", "q", "back", "exit"):
                 break
-            elif ch == '1':
+            elif ch == "1":
                 continue
-            elif ch == '2':
-                new_n = _prompt('Nhập số đội hiển thị (mặc định 15): ').strip()
+            elif ch == "2":
+                new_n = _prompt("Nhập số đội hiển thị (mặc định 15): ").strip()
                 if new_n.isdigit() and int(new_n) > 0:
                     top_n = int(new_n)
 
