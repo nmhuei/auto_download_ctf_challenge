@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator, Sequence
 
+from ..solver.registry import DEFAULT_SOLVER_ENGINE, get_solver_adapter
 from ..storage.fileio import atomic_write_json, locked_update_json
 from ..storage.workspace_repo import WorkspaceRepo, is_superseded
 from ..utils.agy_resolver import resolve_agy_binary
@@ -201,11 +202,12 @@ class SolverService:
     """A single-process scheduler with per-challenge durable state."""
 
     def __init__(self, workspace: str | Path, *, timeout_seconds: int = 3600,
-                 stale_seconds: float = 300):
+                 stale_seconds: float = 300, engine: str = DEFAULT_SOLVER_ENGINE):
         self.workspace = Path(workspace).resolve()
         self.repo = WorkspaceRepo(self.workspace)
         self.timeout_seconds = max(1, int(timeout_seconds))
         self.stale_seconds = max(0.01, float(stale_seconds))
+        self.engine = str(engine or DEFAULT_SOLVER_ENGINE)
         self.max_active_workers = 0
         self._activity_lock = threading.Lock()
         self._last_activity: dict[Path, float] = {}
@@ -419,40 +421,48 @@ class SolverService:
         except (OSError, ValueError):
             return {}
 
-    def get_category_session(self, category: str) -> str | None:
+    def get_category_session(self, category: str, engine: str | None = None) -> str | None:
         if not category:
             return None
+        target_engine = str(engine or getattr(self, "engine", "agy")).strip().lower()
         sessions = self.get_category_sessions()
-        if category in sessions:
-            val = sessions[category]
-            return val.get("conversation_id") if isinstance(val, dict) else val
         cat_lower = category.strip().lower()
-        for k, val in sessions.items():
-            if k.strip().lower() == cat_lower:
-                return val.get("conversation_id") if isinstance(val, dict) else val
+
+        # 1. Look for namespaced key: "{engine}:{category}"
+        namespaced_key = f"{target_engine}:{cat_lower}"
+        if namespaced_key in sessions:
+            val = sessions[namespaced_key]
+            return val.get("conversation_id") if isinstance(val, dict) else val
+
+        # 2. Backward compatibility: check plain category key if target_engine == 'agy'
+        if target_engine == "agy":
+            if category in sessions:
+                val = sessions[category]
+                entry_eng = val.get("engine", "agy") if isinstance(val, dict) else "agy"
+                if entry_eng == "agy":
+                    return val.get("conversation_id") if isinstance(val, dict) else val
+            for k, val in sessions.items():
+                if k.strip().lower() == cat_lower:
+                    entry_eng = val.get("engine", "agy") if isinstance(val, dict) else "agy"
+                    if entry_eng == "agy":
+                        return val.get("conversation_id") if isinstance(val, dict) else val
         return None
 
-    def save_category_session(self, category: str, conversation_id: str, job: SolverJob | None = None) -> None:
+    def save_category_session(self, category: str, conversation_id: str, job: SolverJob | None = None, engine: str | None = None) -> None:
         if not category or not conversation_id:
             return
-        cat_key = category.strip().lower()
+        target_engine = str(engine or getattr(self, "engine", "agy")).strip().lower()
+        cat_lower = category.strip().lower()
+        cat_key = f"{target_engine}:{cat_lower}" if target_engine != "agy" else cat_lower
         self.category_sessions_path.parent.mkdir(parents=True, exist_ok=True)
 
         def mutate(cur: dict) -> dict:
-            entry = None
-            matched_k = None
-            for k, v in cur.items():
-                if k.strip().lower() == cat_key:
-                    entry = v if isinstance(v, dict) else {}
-                    matched_k = k
-                    break
-            if entry is None:
+            entry = cur.get(cat_key)
+            if not isinstance(entry, dict):
                 entry = {}
-            if matched_k and matched_k != cat_key:
-                cur.pop(matched_k, None)
-
             entry["conversation_id"] = conversation_id
             entry["category"] = category.strip()
+            entry["engine"] = target_engine
             entry["updated_at"] = self._now()
             if job:
                 entry["last_display_id"] = job.display_id
@@ -561,7 +571,7 @@ class SolverService:
         if cmdline_path.exists():
             try:
                 cmdline = cmdline_path.read_text(encoding="utf-8", errors="ignore")
-                if cmdline and not any(term in cmdline for term in ("agy", "python", "solve", "sh", "bash", "pytest")):
+                if cmdline and not any(term in cmdline for term in ("agy", "python", "solve", "sh", "bash", "pytest", "codex", "claude")):
                     return False
             except OSError:
                 pass
@@ -622,10 +632,13 @@ class SolverService:
                     pass
         return recovered
 
-    def _append_output(self, job: SolverJob, line: str) -> None:
+    def _append_output(self, job: SolverJob, line: str, log_filename: str = "agy.log", adapter: object = None) -> None:
         job.script_dir.mkdir(parents=True, exist_ok=True)
         with job.log_path.open("a", encoding="utf-8") as log:
             log.write(line)
+        if log_filename and log_filename != "agy.log":
+            with (job.script_dir / log_filename).open("a", encoding="utf-8") as alt_log:
+                alt_log.write(line)
         stripped = line.strip()
         if not stripped:
             return
@@ -635,6 +648,32 @@ class SolverService:
             updates["filter_detected"] = True
         if _AGY_PRINT_TIMEOUT_RE.search(stripped):
             updates["agy_timeout_detected"] = True
+
+        if adapter and hasattr(adapter, "decode_stream_line"):
+            try:
+                for evt in adapter.decode_stream_line(stripped):
+                    if evt.event_type == "session_started" and evt.message:
+                        updates["conversation_id"] = evt.message
+                        eng = getattr(adapter, "engine_id", "agy")
+                        if not self.get_category_session(job.category, engine=eng):
+                            self.save_category_session(job.category, evt.message, job, engine=eng)
+                    elif evt.event_type == "progress":
+                        if evt.phase:
+                            updates["phase"] = evt.phase
+                        if evt.message:
+                            updates["message"] = str(evt.message)[:120]
+                        if evt.candidate_flag:
+                            updates["candidate_flag"] = evt.candidate_flag
+                        if evt.raw and isinstance(evt.raw, dict):
+                            self._write_progress(job, evt.raw)
+                    elif evt.event_type == "timeout":
+                        updates["agy_timeout_detected"] = True
+                    elif evt.event_type == "refusal":
+                        updates["filter_detected"] = True
+                    elif evt.event_type == "quota":
+                        updates["quota_detected"] = True
+            except Exception:
+                pass
 
         # Extract real-time telemetry from stream-json events
         if stripped.startswith("{") and stripped.endswith("}"):
@@ -713,38 +752,60 @@ class SolverService:
                     updates["message"] = str(event["message"])[-500:]
         self._write_job(job, **updates)
 
-    def _start_worker(self, job: SolverJob, agy_command: Sequence[str], *, reuse_session: bool = True, fork_session: bool = False, force_resume: bool = False) -> subprocess.Popen:
+    def _start_worker(
+        self,
+        job: SolverJob,
+        agy_command: Sequence[str] | None = None,
+        *,
+        reuse_session: bool = True,
+        fork_session: bool = False,
+        force_resume: bool = False,
+        engine: str | None = None,
+    ) -> subprocess.Popen:
+        engine_name = engine or getattr(self, "engine", DEFAULT_SOLVER_ENGINE)
+        adapter = get_solver_adapter(engine_name)
+        caps = adapter.capabilities()
+
         prior_state = self.read_job(job)
         prior_conv_id = prior_state.get("conversation_id")
+        prior_engine = prior_state.get("engine", "agy")
+        if prior_engine != adapter.engine_id:
+            prior_conv_id = None
+
+        can_resume = bool(caps.supports_session_resume and reuse_session)
+        can_fork = bool(caps.supports_session_fork and fork_session and adapter.engine_id == "agy")
+
         is_filtered = (
             prior_state.get("state") == "filtered"
             or prior_state.get("filter_detected") is True
             or prior_state.get("was_filtered") is True
         )
-        is_resume = force_resume or (bool(prior_conv_id) and is_filtered and reuse_session)
+        is_resume = force_resume or (bool(prior_conv_id) and is_filtered and can_resume)
 
-        category_conv_id = self.get_category_session(job.category) if reuse_session else None
+        category_conv_id = self.get_category_session(job.category, engine=adapter.engine_id) if can_resume else None
         if is_resume and prior_conv_id:
             worker_conv_id = prior_conv_id
-        elif category_conv_id and fork_session:
+        elif category_conv_id and can_fork:
             from .session_forker import fork_agy_session
             forked = fork_agy_session(category_conv_id, title=f"{job.category} · {job.name}")
             worker_conv_id = forked if forked else None
-        else:
+        elif can_resume:
             worker_conv_id = category_conv_id
+        else:
+            worker_conv_id = None
 
         is_continuation = bool(worker_conv_id) and not is_resume
+        prompt = self.build_prompt(job, is_continuation=is_continuation, is_resume=is_resume)
 
-        base_cmd = list(agy_command)
-        if worker_conv_id and "--conversation" not in base_cmd:
-            base_cmd.extend(["--conversation", worker_conv_id])
+        spec = adapter.build_invocation(
+            job,
+            prompt,
+            session_id=worker_conv_id,
+            timeout=self.timeout_seconds,
+            extra_args=agy_command,
+        )
+        command = spec.argv
 
-        command = [
-            *base_cmd,
-            "--output-format", "stream-json",
-            "--print-timeout", f"{self.timeout_seconds + 60}s",
-            "--print", self.build_prompt(job, is_continuation=is_continuation, is_resume=is_resume),
-        ]
         solver = job.path / "solver" / "solve.py"
         try:
             prior_solver_mtime = solver.stat().st_mtime_ns
@@ -753,15 +814,21 @@ class SolverService:
         job.script_dir.mkdir(parents=True, exist_ok=True)
         with contextlib.suppress(OSError):
             job.log_path.write_text("", encoding="utf-8")
+        if spec.log_filename and spec.log_filename != "agy.log":
+            with contextlib.suppress(OSError):
+                (job.script_dir / spec.log_filename).write_text("", encoding="utf-8")
+
+        worker_label = "Agy" if adapter.engine_id == "agy" else adapter.display_name
         if is_resume:
             msg = f"Resuming {job.name} after filter"
         elif is_continuation:
             msg = f"Resuming {job.category} session"
         else:
-            msg = "Agy worker starting"
+            msg = f"{worker_label} worker starting"
         self._write_job(job, state="starting", phase="starting", error_code=None, message=msg,
                         started_at=self._now(), heartbeat_at=self._now(), command=command[:-1],
                         conversation_id=worker_conv_id,
+                        engine=adapter.engine_id,
                         reused_session=bool(worker_conv_id and worker_conv_id == category_conv_id),
                         forked_session=bool(worker_conv_id and worker_conv_id != category_conv_id),
                         filter_detected=False, agy_timeout_detected=False,
@@ -769,12 +836,26 @@ class SolverService:
         self._touch_activity(job)
         try:
             process = subprocess.Popen(
-                command, cwd=str(job.path), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, start_new_session=True, errors="replace",
+                command,
+                cwd=str(spec.cwd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if spec.stdin_payload else None,
+                text=True,
+                bufsize=1,
+                start_new_session=True,
+                errors="replace",
+                env=spec.env if spec.env else None,
             )
+            if spec.stdin_payload and process.stdin:
+                try:
+                    process.stdin.write(spec.stdin_payload)
+                    process.stdin.close()
+                except Exception:
+                    pass
         except OSError as exc:
             self._write_job(job, state="failed", phase="crashed", error_code="E_WORKER_CRASH",
-                            message=f"Agy worker failed to start: {exc}", ended_at=self._now())
+                            message=f"{worker_label} worker failed to start: {exc}", ended_at=self._now())
             raise
         start_ticks = get_pid_start_ticks(process.pid)
         boot_id = get_system_boot_id()
@@ -787,7 +868,7 @@ class SolverService:
             boot_id=boot_id,
             phase="running",
             heartbeat_at=self._now(),
-            message="Agy worker started",
+            message=f"{worker_label} worker started",
         )
 
         def _consume() -> None:
@@ -795,13 +876,14 @@ class SolverService:
             if stdout is None:
                 return
             for line in stdout:
-                self._append_output(job, line)
+                self._append_output(job, line, log_filename=spec.log_filename, adapter=adapter)
             with contextlib.suppress(Exception):
                 stdout.close()
 
-        reader = threading.Thread(target=_consume, daemon=True, name=f"agy-log-{job.display_id}")
+        reader = threading.Thread(target=_consume, daemon=True, name=f"{adapter.engine_id}-log-{job.display_id}")
         reader.start()
         process._reader_thread = reader  # type: ignore[attr-defined]
+        process._solver_adapter = adapter  # type: ignore[attr-defined]
         return process
 
     @staticmethod
@@ -830,8 +912,10 @@ class SolverService:
                     process.wait(timeout=0.5)
 
     def _finish_worker(self, job: SolverJob, process: subprocess.Popen, *, timed_out: bool,
-                       stalled: bool = False) -> dict:
+                       stalled: bool = False, adapter: object = None) -> dict:
         exit_code = process.poll()
+        if adapter is None:
+            adapter = getattr(process, "_solver_adapter", None)
         state = self.read_job(job)
         output = str(state.get("last_output") or "")
         log_content = ""
@@ -857,11 +941,13 @@ class SolverService:
         if timed_out:
             return self._write_job(job, state="failed", phase="stopped", error_code="E_TIMEOUT",
                                    message="Worker exceeded its time limit.", exit_code=exit_code, ended_at=self._now())
+        worker_label = "Agy" if not adapter or getattr(adapter, "engine_id", "agy") == "agy" else getattr(adapter, "display_name", "Worker")
         if (state.get("agy_timeout_detected") is True
             or _AGY_PRINT_TIMEOUT_RE.search(output)
             or _AGY_PRINT_TIMEOUT_RE.search(log_content)):
+            msg = "Agy print mode timed out before the turn completed." if worker_label == "Agy" else f"{worker_label} timed out before the turn completed."
             return self._write_job(job, state="failed", phase="stopped", error_code="E_TIMEOUT",
-                                   message="Agy print mode timed out before the turn completed.",
+                                   message=msg,
                                    exit_code=exit_code, ended_at=self._now())
         if (state.get("filter_detected") is True
             or _FILTER_RE.search(output)
@@ -890,10 +976,18 @@ class SolverService:
 
         if exit_code != 0:
             error_code = "E_WORKER_CRASH"
-            msg = f"Worker exited with code {exit_code}."
+            msg = f"{worker_label} worker exited with code {exit_code}."
+            if adapter and hasattr(adapter, "classify_exit"):
+                classified = adapter.classify_exit(exit_code, [])
+                if classified == "refusal":
+                    error_code = "E_FILTER"
+                    msg = f"{worker_label} worker was stopped by a safety filter."
+                elif classified == "quota":
+                    error_code = "E_QUOTA"
+                    msg = f"{worker_label} worker stopped: model quota limit reached."
             if _QUOTA_RE.search(output) or _QUOTA_RE.search(log_content):
                 error_code = "E_QUOTA"
-                msg = "Worker stopped: model quota limit reached."
+                msg = f"{worker_label} worker stopped: model quota limit reached."
                 if has_analysis:
                     msg += " Analysis preserved in script/analysis.md."
 
@@ -976,14 +1070,19 @@ class SolverService:
 
     def run(self, raw_ids: str, *, workers: int = 3, agy_command: Sequence[str] | None = None,
             on_refresh: Callable[[], None] | None = None, acquire_lock: bool = True,
-            reuse_session: bool = True, per_category: bool = False) -> list[dict]:
+            reuse_session: bool = True, per_category: bool = False,
+            engine: str | None = None) -> list[dict]:
+        if engine:
+            self.engine = engine
         if workers < 1 or (workers > 3 and not per_category):
             raise ValueError("workers must be between 1 and 3 unless per_category mode is enabled.")
         jobs = self.select_ids(raw_ids)
-        raw_cmd = list(agy_command or ["agy", "--mode", "accept-edits", "--dangerously-skip-permissions"])
-        if raw_cmd:
-            raw_cmd[0] = resolve_agy_binary(raw_cmd[0])
-        command = raw_cmd
+        if agy_command:
+            command = list(agy_command)
+            if self.engine == "agy" and command:
+                command[0] = resolve_agy_binary(command[0])
+        else:
+            command = None
         active: dict[SolverJob, tuple[subprocess.Popen, float]] = {}
         completed: dict[SolverJob, dict] = {}
         lock_ctx = self._manager_lock() if acquire_lock else contextlib.nullcontext()
@@ -1061,9 +1160,18 @@ class SolverService:
                                     command,
                                     reuse_session=reuse_session,
                                     fork_session=fork_session,
-                                    )
+                                    engine=self.engine,
+                                )
                             except TypeError:
-                                proc = self._start_worker(job, command)
+                                try:
+                                    proc = self._start_worker(
+                                        job,
+                                        command,
+                                        reuse_session=reuse_session,
+                                        fork_session=fork_session,
+                                    )
+                                except TypeError:
+                                    proc = self._start_worker(job, command)
                         except OSError:
                             completed[job] = self.read_job(job)
                             if reuse_session or per_category:

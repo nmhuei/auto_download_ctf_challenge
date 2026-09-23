@@ -74,20 +74,19 @@ def _submit_interactive_wizard(flag_format: str = None):
 
     # Look for existing workspace
     workspace_root = resolve_workspace_root()
-    default_workspace = os.path.join(workspace_root, "PTIT_CTF_2026")
-    if not os.path.exists(default_workspace):
-        default_workspace = workspace_root
+    default_workspace = workspace_root
     # Nhãn prompt là chrome trung tính (quy ước watch_service) — không còn
     # bold cyan phụ thuộc theme terminal.
     workspace = Prompt.ask("Workspace directory (or press enter to skip)", default=default_workspace).strip()
 
     # Try reading URL from challenges.json if available (qua WorkspaceRepo —
     # file thiếu/hỏng trả rỗng như khối try/except cũ)
-    default_url = ""
     ctf_info = WorkspaceRepo(workspace).read_challenges().get("ctf_info") or {}
-    default_url = ctf_info.get("url", "")
-
-    url = Prompt.ask("Enter CTF Platform URL", default=default_url or "https://jeo.infosecptit.org/games/6/challenges").strip()
+    default_url = str(ctf_info.get("url") or "").strip()
+    if default_url:
+        url = Prompt.ask("Enter CTF Platform URL", default=default_url).strip()
+    else:
+        url = Prompt.ask("Enter CTF Platform URL").strip()
     cookie = Prompt.ask("Paste Cookie (or path to cookie file)").strip()
     try:
         cookie = AuthService.resolve_cookie_arg(cookie)

@@ -51,9 +51,6 @@ def probe_noctf_api(origin: str, session: Any, info: Any, done: set) -> bool:
     html_markers=(
         "<title>noCTF</title>",
         "noctf",
-        "k17ctf",
-        "scoreboard.k17ctf.secso.cc",
-        "api-k17ctf.secso.cc",
     ),
     probes=(probe_noctf_api,),
     supports_container=False,
@@ -62,9 +59,7 @@ def probe_noctf_api(origin: str, session: Any, info: Any, done: set) -> bool:
 class NoCTFPlatform(BasePlatform):
     """
     Adapter cho nền tảng noCTF (SvelteKit frontend + REST API backend).
-    Ví dụ: K17 CTF
-    Frontend: https://scoreboard.k17ctf.secso.cc
-    Backend API: https://api-k17ctf.secso.cc
+    Tự động suy luận API URL theo domain convention (scoreboard.<domain> -> api-<domain>).
     """
 
     def __init__(self, base_url: str, session: requests.Session):
@@ -76,16 +71,17 @@ class NoCTFPlatform(BasePlatform):
         netloc = parsed.netloc.lower()
 
         # Determine default API base URL
-        if "k17ctf" in netloc:
-            self.api_url = "https://api-k17ctf.secso.cc"
-            self.ctf_info.title = "K17_CTF_2026"
-        elif netloc.startswith("scoreboard."):
+        if netloc.startswith("scoreboard."):
             domain_part = netloc[len("scoreboard."):]
             self.api_url = f"https://api-{domain_part}"
-            self.ctf_info.title = domain_part.split(".")[0].replace("-", "_").upper() + "_2026"
+            self.ctf_info.title = domain_part.split(".")[0].replace("-", "_").upper()
+        elif netloc.startswith("api-") or netloc.startswith("api."):
+            self.api_url = self.base_url
+            clean_host = netloc.split(".", 1)[-1]
+            self.ctf_info.title = clean_host.split(".")[0].replace("-", "_").upper()
         else:
             self.api_url = self.base_url
-            self.ctf_info.title = netloc.split(".")[0].replace("-", "_").upper() + "_2026"
+            self.ctf_info.title = netloc.split(".")[0].replace("-", "_").upper()
 
         # Try dynamic discovery if base_url frontend contains api url in JS chunks
         self._discover_api_url()
@@ -123,7 +119,7 @@ class NoCTFPlatform(BasePlatform):
                                     disc_netloc = urllib.parse.urlparse(discovered).netloc.split(":")[0].lower()
                                     base_parts = base_netloc.split(".")
                                     base_parent = ".".join(base_parts[-2:]) if len(base_parts) >= 2 else base_netloc
-                                    if disc_netloc == base_netloc or disc_netloc.endswith("." + base_parent) or disc_netloc.endswith(".secso.cc"):
+                                    if disc_netloc == base_netloc or disc_netloc.endswith("." + base_parent):
                                         Logger.info(f"Discovered verified noCTF API URL: {discovered}")
                                         self.api_url = discovered
                                         return
@@ -193,15 +189,34 @@ class NoCTFPlatform(BasePlatform):
 
     def fetch_rules(self) -> str:
         """Lấy nội dung rules và flag format của giải."""
-        return "Flags format: K17{...}. All flags look like K17{funny_message}."
+        try:
+            resp = self.session.get(f"{self.api_url}/info", headers=self.auth_headers, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json().get("data", {})
+                if isinstance(data, dict) and data.get("rules"):
+                    return str(data["rules"])
+        except Exception:
+            pass
+        return ""
 
     def fetch_event_times(self) -> Optional[EventTimes]:
-        return EventTimes(
-            start_utc=normalize_epoch_to_utc(1789084800),
-            end_utc=normalize_epoch_to_utc(1789257600),
-            confidence="medium",
-            source="noctf:k17ctf",
-        )
+        try:
+            resp = self.session.get(f"{self.api_url}/info", headers=self.auth_headers, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json().get("data", {})
+                if isinstance(data, dict):
+                    start = data.get("start_time") or data.get("start")
+                    end = data.get("end_time") or data.get("end")
+                    if start or end:
+                        return EventTimes(
+                            start_utc=normalize_epoch_to_utc(start) if start else None,
+                            end_utc=normalize_epoch_to_utc(end) if end else None,
+                            confidence="high",
+                            source=f"noctf:{self.ctf_info.title.lower() if self.ctf_info.title else 'api'}",
+                        )
+        except Exception:
+            pass
+        return None
 
     def fetch_challenges(self) -> List[Challenge]:
         """Tải toàn bộ challenges, category, difficulty và file attachments."""
