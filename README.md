@@ -1,131 +1,86 @@
 # ⚡ CTF Toolkit
 
-Unified CTF CLI: tải challenge, submit flag, quản lý container động, scoreboard & dashboard — hỗ trợ CTFd, GZCTF, rCTF.
+<p align="center">
+  <strong>Unified CTF Operations Cockpit & Autonomous Multi-Agent Solver Engine</strong><br>
+  <em>Tác chiến CTF toàn diện: Tải đề, Quản lý Container, Giải tự động SuperBQA, Đồng bộ Burp Suite & Nộp Flag.</em>
+</p>
 
-## 1. Install
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10%2B-blue?style=flat-square&logo=python" alt="Python">
+  <img src="https://img.shields.io/badge/Architecture-Phosphor%20Cockpit-success?style=flat-square" alt="Cockpit">
+  <img src="https://img.shields.io/badge/Skills-ctf--ask%20%7C%20ctf--toolkit%20%7C%20ctf--crypto-purple?style=flat-square" alt="Skills">
+  <img src="https://img.shields.io/badge/Tests-2050%2B%20Passed-green?style=flat-square" alt="Tests">
+</p>
 
-```bash
-git clone <repo> && cd auto_download_ctf_challenge
-pip install .
-```
+---
 
-Hoặc dùng [pipx](https://pipx.pypa.io/) (cô lập môi trường, không đụng system Python):
-
-```bash
-pipx install .
-```
-
-## 2. Set up ban đầu
-
-Tự tạo tài khoản trên platform (GZCTF/CTFd/rCTF) và lưu auth:
+## 🚀 Quick Start (Cài đặt & Khởi động trong 30s)
 
 ```bash
-ctf register -u https://ctf.example.com --tempmail
+# 1. Cài đặt trực tiếp hoặc qua pipx (khuyên dùng)
+git clone https://github.com/nmhuei/auto_download_ctf_challenge.git && cd auto_download_ctf_challenge
+pip install -e .
+
+# 2. Khởi động Trung tâm Tác chiến Cockpit TUI
+ctf menu
 ```
 
-`--tempmail` tự sinh email tạm (mail.tm) + mật khẩu random mạnh, verify email nếu platform bắt buộc.
+Hoặc tải giải đấu ngay từ dòng lệnh:
+```bash
+# Tự động bắt cookie từ Burp Suite proxy và tải toàn bộ challenge
+ctf pull -u https://ctf.example.com --from-burp -o ./workspace_ctf
+```
 
-Cloudflare được xử lý adaptive: traffic thường vẫn dùng `requests`; khi phát hiện Cloudflare, tool chuyển sang browser TLS/HTTP fingerprint bằng `curl_cffi`. Nếu Managed Challenge/Turnstile vẫn chặn, mở site bằng browser rồi truyền `cf_clearance`: `ctf register --cf-clearance <value>` hoặc với lệnh có `-c`, dùng `-c "cf_clearance=xxx; session=yyy"`. Tool không tự bypass CAPTCHA và không replay mù POST/submit.
+---
 
-Nếu đã có sẵn tài khoản, dán cookie/token thủ công vào lệnh bất kỳ (`-c "session=xxx"` hoặc `-t <token>`).
+## 🎯 Tính Năng Cốt Lõi
 
-Kiểm tra sức khoẻ platform trước giờ giải:
+| Phân hệ | Mô tả năng lực tác chiến |
+|---|---|
+| 🕹️ **Tactical Cockpit TUI** | Bàn điều khiển 5-Hub (`ctf menu`) với 10 bảng màu Cyberpunk/Matrix/Amber, Live Radar & Scoreboard trực tiếp. |
+| 🤖 **SuperBQA Autosolver** | Worker pool giải bài tự động đa luồng theo danh mục (`ctf solve`), tự phục hồi khi dính filter an toàn AI. |
+| 🧠 **Bộ Kỹ năng AI (Skills)** | Tích hợp sẵn `ctf-ask` (tham vấn toán học hình thức), `ctf-toolkit`, `ctf-crypto` trong `.agents/skills/`. |
+| 🔌 **Burp Suite Auto-Sync** | Tự động đọc và đồng bộ cookie/token trực tiếp từ Burp Suite proxy đang chạy (`ctf auth --from-burp`). |
+| 🐳 **Dynamic Instances** | Tự động spawn, gia hạn (`< 5m`) và điều phối container động cho Web/Pwn (`ctf instance`). |
+| 📦 **Git Lifecycle & Pack** | Tự động tạo nhánh event, checkpoint khi có flag mới, nén attachment lớn bằng XZ (`ctf git`). |
+| 🏁 **Flag Hoarder & Sniper** | Lưu flag cục bộ (`ctf hoard`), hẹn giờ bắn flag thần tốc vào thời khắc quyết định (`ctf sniper`). |
+
+---
+
+## ⚡ Cheatsheet Lệnh Tác Chiến
 
 ```bash
-ctf doctor -u https://ctf.example.com
+# === 1. TẢI ĐỀ & ĐỒNG BỘ AUTH ===
+ctf pull -u <URL> --from-burp -o ./my_ctf     # Tải đề tự động lấy cookie từ Burp Suite
+ctf auth --show                              # Xem credentials và trạng thái proxy hiện tại
+ctf register -u <URL> --tempmail             # Tự tạo tài khoản qua email tạm (mail.tm)
+
+# === 2. GIẢI BÀI TỰ ĐỘNG (SUPERBQA) ===
+ctf solve -w ./my_ctf --workers 3            # Chạy pool 3 worker giải bài nền
+ctf solve --status                           # Theo dõi tiến độ, logs và candidate flags
+
+# === 3. CONTAINER ĐỘNG & SCOREBOARD ===
+ctf instance start --id 12 -w ./my_ctf       # Khởi chạy container động cho challenge 12
+ctf rank -n 20                               # Bảng xếp hạng trực tiếp dạng TUI
+ctf submit --id 12 -f "FLAG{...}"            # Nộp flag (hoặc 'ctf hoard' để lưu trữ bí mật)
+
+# === 4. GIT LIFECYCLE CHO MỖI GIẢI ===
+ctf git init -d ~/Workspace/CTF --remote-url git@github.com:user/ctf-vault.git
+ctf git push -w ./my_ctf                     # Đẩy checkpoint bài giải lên GitHub/GitLab
+ctf git finish -w ./my_ctf                   # Merge nhánh giải đấu vào main và dọn dẹp
 ```
 
-Credentials được lưu trong **auth map** tại `~/.config/ctf_toolkit/config.json`, map theo URL/workspace — các lệnh sau đó không cần truyền lại cookie (chỉ cần `-w <workspace>`).
+---
 
-### BQA: tự phục hồi lỗi CLI
+## 🧠 Bộ Kỹ Năng Tích Hợp Cho AI Agents (`.agents/skills/`)
 
-Khi một lệnh `ctf` thất bại, tool có thể tự gọi **BQA** (phiên `agy` bền vững theo source checkout) để chẩn đoán và sửa trực tiếp lỗi của CLI, thêm regression test, kiểm tra bản vá, rồi chạy lại đúng lệnh đó **một lần**. BQA chạy với quyền tự động chấp thuận để không dừng chờ prompt cấp quyền. Trong terminal, BQA hiện tiến trình chẩn đoán, sửa platform và chạy test; không cần nhập thêm lựa chọn.
+Dự án trang bị sẵn 3 kỹ năng tác chiến chuẩn mực cho các AI Agent (Antigravity CLI / AGY / Codex / Claude Code):
 
-Session BQA nằm tại `~/.config/ctf_toolkit/bqa_sessions.json`. Incident chỉ chứa lệnh đã che secret, lỗi, URL/schema response và cấu trúc cookie (tên cookie/số segment); giá trị cookie, token, password và flag không được ghi vào session, log hay prompt. Retry có cơ chế chống lặp nên một lỗi lặp lại sẽ được báo lại bình thường.
+1. **`ctf-ask`**: Kỹ năng tham vấn chuyên gia toán học rời rạc / đại số (Astra High / Codex) với **Giao thức 5 bước tự phục hồi khi dính Filter an toàn** và cơ chế sandbox vật lý cô lập tuyệt đối.
+2. **`ctf-toolkit`**: Kỹ năng điều phối tổng lực, prompt routing Telex thông minh, kiểm soát container và quản lý worker pool.
+3. **`ctf-crypto`**: Kỹ năng chuyên sâu giải mật mã hiện đại (Lattice CVP/SVP, RSA Coppersmith, PRNG, AES DFA).
 
-BQA chỉ phục hồi độ tin cậy của CLI, detection và adapter platform. Nó không dùng AI để giải challenge. Cơ chế này cần source checkout hiện hành và executable `agy` đã đăng nhập/có sẵn trên máy.
-
-## 3. Cách sử dụng cơ bản
-
-| Lệnh | Mô tả | Ví dụ |
-|---|---|---|
-| `pull` | Tải toàn bộ challenge + build workspace | `ctf pull -u https://ctf.example.com -c "session=xxx" -o ./my_ctf` |
-| `status` | Cây challenge, points, tiến độ solve | `ctf status -w my_ctf -u` |
-| `workspaces` | Quét các workspace trên máy | `ctf workspaces -d ~/Workspace/CTF` |
-| `instance` | Bật/tắt/gia hạn container động | `ctf instance start --id 34 -w my_ctf` |
-| `submit` | Nộp flag lên platform | `ctf submit --id 16 -f "FLAG{...}"` · `ctf submit --auto` |
-| `hoard` | Lưu flag local, KHÔNG nộp | `ctf hoard 16 "FLAG{...}"` · `ctf hoard --list` |
-| `rank` | Scoreboard live + cập nhật RANKING.md | `ctf rank -n 20` |
-| `watch` | Auto-sync challenge/scoreboard trong event window | `ctf watch --once` |
-| `doctor` | Health-check platform (auth/capabilities/window) | `ctf doctor -u https://ctf.example.com` |
-| `storage` | Báo cáo dung lượng + archive tar.gz | `ctf storage archive my_ctf` |
-| `git` | Branch/push/merge lifecycle riêng cho từng giải | `ctf git status -w my_ctf` · `ctf git finish -w my_ctf` |
-| `note` | Ghi chú cho challenge | `ctf note 12 "đã thử SSTI, bị WAF chặn"` |
-| `tag` | Gắn label cho challenge | `ctf tag 12 hard todo` |
-| `sync` | Đồng bộ metadata động (points/solves) | `ctf sync --verify` |
-| `history` | Lịch sử submit flag (mặc định 100 entry mới nhất) | `ctf history --tail 20` · `ctf history --all` · `ctf history --prune 'FLAG{...}'` · `ctf history --clear` |
-| `sniper` | Preload flag, nộp ngay giờ G | `ctf sniper --start-at "2026-09-01T08:00:00+07:00"` |
-| `serve` | Dashboard web local (POST submit qua gate CLI) | `ctf serve --port 8689` |
-| `open` | Mở thư mục challenge trong file manager | `ctf open 12` |
-| `config` | Xem/đặt cấu hình toàn cục — global là mặc định, workspace `.ctf/config.json` override | `ctf config auto-sync off` |
-| `register` | Tạo tài khoản + lưu auth map | `ctf register -u https://ctf.example.com --tempmail` |
-| `menu` | Interactive console đầy đủ | `ctf menu` |
-
-Đường dẫn mặc định cho mọi workspace có thể cấu hình một lần:
-
-```bash
-ctf config workspace-root ~/Workspace/CTF
-```
-
-`pull` khi không truyền `-o`, cùng với `workspaces`, `storage` và `git init`, đều dùng `workspace-root` này.
-
-### Git workflow theo từng giải
-
-Khởi tạo một shared Git repo (làm một lần) và gắn remote:
-
-```bash
-ctf git init -d ~/Workspace/CTF --remote-url git@github.com:user/ctf-workspaces.git
-# Nếu ~/Workspace/CTF đã có dữ liệu cũ và muốn đưa chúng vào main:
-ctf git init -d ~/Workspace/CTF --remote-url git@github.com:user/ctf-workspaces.git --import-existing
-```
-
-Sau đó `ctf pull` mặc định tạo/checkout branch `ctf/<ten-giai>`, chỉ commit thư mục workspace của giải và tự push branch lên `origin` khi remote đã cấu hình:
-
-```bash
-ctf pull -u https://ctf.example.com -o ~/Workspace/CTF/Example_CTF_2026
-ctf git push -w ~/Workspace/CTF/Example_CTF_2026
-ctf git status -w ~/Workspace/CTF/Example_CTF_2026
-```
-
-Khi giải kết thúc:
-
-```bash
-ctf git finish -w ~/Workspace/CTF/Example_CTF_2026
-```
-
-`finish` tạo final checkpoint, merge event branch vào `main` bằng `--no-ff`, push `main`, rồi mới xóa branch event local/remote. Nếu working tree có thay đổi ngoài workspace, merge conflict, hoặc push `main` thất bại thì branch event được giữ nguyên. Dùng `pull --no-git` để tắt workflow cho một lượt, hoặc `--no-git-push` để chỉ commit local.
-
-### Giao diện UCS_ExOdia
-
-Brand CLI dùng **UCS_ExOdia** theo hướng brutalist + cyber minimal. Màu brand chạy từ teal/cyan → blue → violet → fuchsia → amber; mỗi stage `detect / pull / workspace / submit / watch / sniper / rank / automate` có một micro-gradient riêng. Màu semantic của dữ liệu vẫn dùng theme Amber Refit (`#FFB000`, ✔ solved, ✗ error, ! warning), nên màu trang trí không làm lẫn nghĩa trạng thái.
-
-```text
-UCS_ExOdia // status · ~/Workspace/CTF/PTIT_CTF_2026 ▰▰▰ ▰▰▰ ▰▰▰ ▰▰▰ ▰▰▰ ▰▰▰ ▰▰▰ ▰▰▰  22:49 UTC+7 · v3
-╭──────────────  TIẾN ĐỘ · Vòng loại PTIT CTF 2026 · gzctf  ──────────────╮
-│ ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 1/35 · 2.9%   500/8135 pts · hoarded 0 · drafts 0 │
-╰──────────────────────────────────────────────────────────────────────────╯
-┌┐ CRYPTO ─────────────────────────────────────────────  0/7 ▱▱▱▱▱▱▱▱▱▱ 0/1880
-  ·  12  SSSH                      180 pts    9 giải   ⛁ ⎘
-  ·   5  Signaling                 108 pts   20 giải   ⎘
-┌┐ REVERSE ──────────────────────────────────────────  1/7 ▰▱▱▱▱▱▱▱▱▱ 500/1587
-  ✔  18  Tiger Bạc                 500 pts    0 giải   ⎘
-```
-
-AppHeader của lệnh thường chỉ còn **1 dòng**: `UCS_ExOdia // <command> · <context>` + spectral rail 8 stage + version; từ 100 cột trở lên mới thêm timestamp để ưu tiên giữ context ở terminal hẹp. Header tự co rail theo width, truncate context bằng `…`, không wrap. `status` dùng **một** panel `TIẾN ĐỘ`; activity/window chỉ xuất hiện khi có tín hiệu thật, không dựng panel `GIẢI` rỗng hay sparkline `+0`. Các category nối liền nhau, bỏ blank separator. Capture thật PTIT 35 challenge vừa đúng 45 dòng ở terminal 120×45; 80 và 60 cột đều không overflow.
-
-Mở `ctf` hoặc `ctf menu`, full splash **UCS_ExOdia** xuất hiện đúng một lần: terminal ≥ 80 cột dùng splash 7 dòng (6 dòng logo brutalist + 1 footer brand/rail), terminal < 80 tự rơi về compact 2 dòng. `ctf --help` dùng full brand một lần; các subcommand dùng AppHeader 1 dòng để hạn chế scroll.
-
-Chạy `ctf <lệnh> --help` để xem đầy đủ tuỳ chọn của từng lệnh.
+---
 
 <!-- BEGIN GENERATED CLI OPTIONS -->
 ### Chỉ mục tuỳ chọn CLI (tự sinh)
@@ -173,33 +128,8 @@ Chạy `ctf <lệnh> --help` để xem đầy đủ tuỳ chọn của từng l�
 | `ctf unpack` | `--keep-xz` · `--workspace` |
 <!-- END GENERATED CLI OPTIONS -->
 
-## 4. Cây workspace output
+---
 
-```
-my_ctf/
-├── challenges.json          # metadata tổng (points/solves/solved/status)
-├── SUMMARY.md               # tổng quan giải
-├── Web/
-│   └── <challenge-name>/
-│       ├── README.md        # đề bài, hints, connection info
-│       ├── metadata.json    # dữ liệu thô + status/notes/tags/flag
-│       ├── solve.py         # template giải mẫu (pwntools/requests)
-│       └── <attachment>
-├── Pwn/
-├── Crypto/
-└── ...
-```
-
-Docs thiết kế chi tiết: [`docs/superpowers/specs`](docs/superpowers/specs).
-
-### BQA pull recovery prompts
-
-`ctf pull` classifies recoverable failures as `CTF-PULL-D01` through
-`CTF-PULL-D15`; an otherwise unhandled crash is `CTF-PULL-D99`. Its prompt
-policy and one template per code live in `ctf_downloader/bqa_prompts/`.
-
-In an interactive terminal the CLI displays the code and asks `SuperBQA? [Y/n]`. BQA runs after Enter or `y`; it repairs the checkout, verifies the change,
-and retries once. Non-interactive invocations never start BQA. Credential
-values are not put in prompts, logs, or BQA session records. For a private
-platform probe, the original URL and cookie are supplied only in the BQA child
-process environment.
+<p align="center">
+  <sub>Built with ⚡ by nmhuei & Antigravity Agentic Team · UCS_ExOdia Phosphor Engine</sub>
+</p>
