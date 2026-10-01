@@ -22,12 +22,12 @@ def make_workspace() -> Path:
     return root
 
 
-def test_solve_parser_defaults_to_three_workers_and_accepts_ids():
-    args = build_unified_parser().parse_args(["solve", "--ids", "1,2", "--workers", "3"])
+def test_solve_parser_defaults_to_three_workers_and_accepts_five_workers():
+    args = build_unified_parser().parse_args(["solve", "--ids", "1,2", "--workers", "5"])
 
     assert args.subcommand == "solve"
     assert args.ids == "1,2"
-    assert args.workers == 3
+    assert args.workers == 5
 
 
 def test_status_solver_parser_accepts_detail_target_and_watch():

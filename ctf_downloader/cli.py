@@ -214,8 +214,8 @@ def build_unified_parser():
                                          help='BQA EATING: Analyze and auto-solve CTF challenges in parallel')
     solve_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
     solve_parser.add_argument('--ids', help='Challenge display IDs, e.g. 1,2,3')
-    solve_parser.add_argument('--workers', type=int, choices=(1, 2, 3), default=3,
-                             help='Parallel worker count (1-3, default: 3)')
+    solve_parser.add_argument('--workers', type=int, choices=(1, 2, 3, 4, 5), default=3,
+                             help='Parallel worker count (1-5, default: 3)')
     solve_parser.add_argument('--timeout', type=int, default=3600,
                              help='Per-worker timeout in seconds (default: 3600)')
     solve_parser.add_argument('--stale-timeout', type=float, default=300,
@@ -239,6 +239,8 @@ def build_unified_parser():
                              help='Clear saved category sessions for this workspace')
     solve_parser.add_argument('--distill', nargs='?', const='all',
                              help='Distill solution workflow into category Playbook (e.g. --distill crypto)')
+    solve_parser.add_argument('--engine', default=None,
+                             help='AI solver engine adapter (e.g. agy, gpt, codex, claude; default: agy)')
 
     # 2b. NOTE / TAG — memory của người chơi ("đã thử SSTI, bị chặn")
     note_parser = subparsers.add_parser('note', aliases=['ghi-chu'],

@@ -1325,7 +1325,7 @@ class CTFInteractiveConsole:
                 return
 
             con = _menu_console()
-            res = service.spawn_background(str(matched_job.display_id), workers=1)
+            res = service.spawn_background(str(matched_job.display_id), workers=1, engine=getattr(self, "_solver_engine", "agy"))
             if not res.get("success"):
                 Logger.error(res.get("message", "SuperBQA startup failed."))
                 _pause()
@@ -1402,6 +1402,9 @@ class CTFInteractiveConsole:
                 sess_strs = [f"{cat} ({info.get('conversation_id', '')[:8]}...)" for cat, info in cat_sessions.items()]
                 con.print(f"  [dim]📁 Category Sessions: {', '.join(sess_strs)}[/dim]")
 
+            engine_name = getattr(self, "_solver_engine", "agy")
+            con.print(f"  [bold cyan]⚙ Engine:[/bold cyan] [bold white]{engine_name.upper()}[/bold white]  ·  (Press 8 to switch engine)")
+
             con.print()
             _option('1', 'BQA EATING')
             _option('2', 'SUPERBQA EATING')
@@ -1410,17 +1413,36 @@ class CTFInteractiveConsole:
             _option('5', 'Stop Workers')
             _option('6', 'Distill Playbook')
             _option('7', 'HELP')
+            _option('8', f'Switch Engine (Current: {engine_name.upper()})')
             _option('0', 'Back')
             con.print()
 
             try:
-                act = _prompt('Select action (0-7): ').strip() or '1'
+                act = _prompt('Select action (0-8): ').strip() or '1'
             except (EOFError, KeyboardInterrupt):
                 return
             act_clean = act.lower()
 
             if act_clean in ('0', 'q', 'back', 'exit'):
                 return
+            elif act_clean in ('8', 'engine', 'switch'):
+                from .solver.registry import probe_available_adapters
+                con.print("\n  Available AI Engines (Auto-discovered):")
+                probes = probe_available_adapters()
+                curr_eng = getattr(self, "_solver_engine", "agy")
+                for idx, p in enumerate(probes, start=1):
+                    badge = f"[{SUCCESS}]Ready[/{SUCCESS}]" if p.usable else f"[{FG_MUTED}]{p.status_message}[/{FG_MUTED}]"
+                    active_marker = f" [{ACCENT}](Active)[/{ACCENT}]" if p.engine_id == curr_eng else ""
+                    con.print(f"    [{idx}] {p.display_name} ({p.engine_id}){active_marker} — {badge}")
+                try:
+                    eng_c = _prompt(f'  Select engine (1-{len(probes)}): ').strip()
+                    if eng_c.isdigit() and 1 <= int(eng_c) <= len(probes):
+                        chosen = probes[int(eng_c) - 1]
+                        self._solver_engine = chosen.engine_id
+                        Logger.success(f"Switched active solver engine to: {chosen.display_name} ({chosen.engine_id})")
+                except (EOFError, KeyboardInterrupt):
+                    pass
+                continue
             elif act_clean in ('1', 'solve', 'target', 'bqa', 'eat', 'eating'):
                 try:
                     ids = _prompt('Enter Challenge ID(s) to solve (e.g. 1 or 1,3,5): ').strip()
@@ -1428,7 +1450,10 @@ class CTFInteractiveConsole:
                     return
                 if not ids:
                     continue
-                res = service.spawn_background(ids, workers=3)
+                bg_kwargs = {"workers": 3}
+                if getattr(self, "_solver_engine", None) and self._solver_engine != "agy":
+                    bg_kwargs["engine"] = self._solver_engine
+                res = service.spawn_background(ids, **bg_kwargs)
                 if not res.get("success"):
                     Logger.error(res.get("message", "Solver startup failed."))
                     _pause()
@@ -1455,10 +1480,12 @@ class CTFInteractiveConsole:
                 if not confirm:
                     continue
                 category_count = len({job.category.strip().casefold() for job in target_jobs})
+                bg_kwargs = {"workers": max(1, category_count), "per_category": True}
+                if getattr(self, "_solver_engine", None) and self._solver_engine != "agy":
+                    bg_kwargs["engine"] = self._solver_engine
                 res = service.spawn_background(
                     source_ids,
-                    workers=max(1, category_count),
-                    per_category=True,
+                    **bg_kwargs,
                 )
                 if not res.get("success"):
                     Logger.error(res.get("message", "Auto-solve startup failed."))

@@ -137,7 +137,8 @@ _ctf() {
                         '--watch[tự refresh khi xem status]' \
                         '--new-session[bắt đầu session mới, không tái sử dụng session của category]' \
                         '--reset-sessions[xóa lịch sử session các category đã lưu]' \
-                        '--distill[tổng hợp quy trình làm bài vào Playbook category]:category:'
+                        '--distill[tổng hợp quy trình làm bài vào Playbook category]:category:' \
+                        '--engine[AI solver engine]:engine:(agy gpt codex claude generic)'
                     ;;
                 note|ghi-chu)
                     _arguments \

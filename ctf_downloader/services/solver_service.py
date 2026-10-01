@@ -202,12 +202,14 @@ class SolverService:
     """A single-process scheduler with per-challenge durable state."""
 
     def __init__(self, workspace: str | Path, *, timeout_seconds: int = 3600,
-                 stale_seconds: float = 300, engine: str = DEFAULT_SOLVER_ENGINE):
+                 stale_seconds: float = 300, engine: str = DEFAULT_SOLVER_ENGINE,
+                 minimal_prompt: bool = True):
         self.workspace = Path(workspace).resolve()
         self.repo = WorkspaceRepo(self.workspace)
         self.timeout_seconds = max(1, int(timeout_seconds))
         self.stale_seconds = max(0.01, float(stale_seconds))
         self.engine = str(engine or DEFAULT_SOLVER_ENGINE)
+        self.minimal_prompt = minimal_prompt
         self.max_active_workers = 0
         self._activity_lock = threading.Lock()
         self._last_activity: dict[Path, float] = {}
@@ -702,7 +704,7 @@ class SolverService:
                     if evt.event_type == "session_started" and evt.message:
                         updates["conversation_id"] = evt.message
                         eng = getattr(adapter, "engine_id", "agy")
-                        if not self.get_category_session(job.category, engine=eng):
+                        if eng != "gpt" and not self.get_category_session(job.category, engine=eng):
                             self.save_category_session(job.category, evt.message, job, engine=eng)
                     elif evt.event_type == "progress":
                         if evt.phase:
@@ -734,8 +736,13 @@ class SolverService:
                     )
                     if conv_id:
                         updates["conversation_id"] = conv_id
-                        if not self.get_category_session(job.category):
+                        if getattr(adapter, "engine_id", "agy") != "gpt" and not self.get_category_session(job.category):
                             self.save_category_session(job.category, conv_id, job)
+                    if getattr(adapter, "engine_id", "agy") == "gpt":
+                        for field in ("session_id", "bqa_chat_id", "bqa_workspace_path"):
+                            value = evt_obj.get(field)
+                            if isinstance(value, str) and value:
+                                updates["gpt_session_id" if field == "session_id" else field] = value
                 if isinstance(evt_obj, dict) and evt_obj.get("event") == "step_update":
                     su = evt_obj.get("step_update", {})
                     stype = su.get("step_type")
@@ -829,20 +836,60 @@ class SolverService:
         )
         is_resume = force_resume or (bool(prior_conv_id) and is_filtered and can_resume)
 
-        category_conv_id = self.get_category_session(job.category, engine=adapter.engine_id) if can_resume else None
-        if is_resume and prior_conv_id:
-            worker_conv_id = prior_conv_id
-        elif category_conv_id and can_fork:
-            from .session_forker import fork_agy_session
-            forked = fork_agy_session(category_conv_id, title=f"{job.category} · {job.name}")
-            worker_conv_id = forked if forked else None
-        elif can_resume:
-            worker_conv_id = category_conv_id
+        gpt_session_id: str | None = None
+        if adapter.engine_id == "gpt":
+            category_conv_id = None
+            existing_session = prior_state.get("gpt_session_id")
+            if isinstance(existing_session, str) and existing_session:
+                gpt_session_id = existing_session
+            else:
+                try:
+                    gpt_session_id = adapter.create_session(job)
+                except Exception as exc:
+                    self._write_job(
+                        job, state="failed", phase="session", error_code="E_GPT_SESSION",
+                        message=f"Could not create durable GPT session: {exc}", ended_at=self._now(),
+                    )
+                    raise OSError("GPT session creation failed") from exc
+            worker_conv_id = gpt_session_id
         else:
-            worker_conv_id = None
+            category_conv_id = self.get_category_session(job.category, engine=adapter.engine_id) if can_resume else None
+            if is_resume and prior_conv_id:
+                worker_conv_id = prior_conv_id
+            elif category_conv_id and can_fork:
+                from .session_forker import fork_agy_session
+                forked = fork_agy_session(category_conv_id, title=f"{job.category} · {job.name}")
+                worker_conv_id = forked if forked else None
+            elif can_resume:
+                worker_conv_id = category_conv_id
+            else:
+                worker_conv_id = None
 
         is_continuation = bool(worker_conv_id) and not is_resume
-        prompt = self.build_prompt(job, is_continuation=is_continuation, is_resume=is_resume)
+        if adapter.engine_id == "gpt":
+            is_resume = bool(prior_state.get("gpt_session_id"))
+            is_continuation = is_resume
+            if is_resume:
+                workspace_id = prior_state.get("bqa_chat_id")
+                if not isinstance(workspace_id, str) or not workspace_id:
+                    self._write_job(
+                        job, state="blocked", phase="workspace", error_code="E_WORKSPACE_MAPPING",
+                        message="GPT session exists but no BQA workspace mapping was recorded.", ended_at=self._now(),
+                    )
+                    raise OSError("GPT continuation requires a recorded BQA workspace")
+                instruction = prior_state.get("continuation_instruction")
+                if instruction not in {"continue", "verify candidate"}:
+                    instruction = "continue"
+                prompt = f"host_workspace_bind resume_id={workspace_id}; {instruction}"
+            else:
+                prompt = f"solve {job.path}"
+        else:
+            prompt = self.build_prompt(
+                job,
+                is_continuation=is_continuation,
+                is_resume=is_resume,
+                minimal=self.minimal_prompt,
+            )
 
         spec = adapter.build_invocation(
             job,
@@ -874,7 +921,8 @@ class SolverService:
             msg = f"{worker_label} worker starting"
         self._write_job(job, state="starting", phase="starting", error_code=None, message=msg,
                         started_at=self._now(), heartbeat_at=self._now(), command=command[:-1],
-                        conversation_id=worker_conv_id,
+                        conversation_id=(prior_conv_id if adapter.engine_id == "gpt" else worker_conv_id),
+                        gpt_session_id=gpt_session_id,
                         engine=adapter.engine_id,
                         reused_session=bool(worker_conv_id and worker_conv_id == category_conv_id),
                         forked_session=bool(worker_conv_id and worker_conv_id != category_conv_id),
@@ -1007,7 +1055,8 @@ class SolverService:
             report = {}
 
         candidate_flag = _extract_flag_from_job(job, report if isinstance(report, dict) else {}, log_content)
-        if candidate_flag:
+        verified_local = isinstance(report, dict) and report.get("local_verification") == "passed"
+        if candidate_flag and verified_local:
             meta_path = job.path / "metadata.json"
             if meta_path.is_file():
                 def _mut_flag(st: dict) -> dict:
@@ -1052,10 +1101,12 @@ class SolverService:
                 updates["outcome"] = "analyzed"
             return self._write_job(job, **updates)
 
-        if candidate_flag and not (isinstance(report, dict) and report.get("local_verification") == "passed"):
-            return self._write_job(job, state="completed", phase="completed", error_code=None,
-                                   candidate_flag=candidate_flag, outcome="candidate_found",
-                                   message="Worker recovered candidate flag.",
+        if candidate_flag and not verified_local:
+            return self._write_job(job, state="failed", phase="verify_local",
+                                   error_code="E_VERIFY_LOCAL",
+                                   unverified_candidate=candidate_flag,
+                                   outcome="candidate_unverified",
+                                   message="Candidate flag needs a successful local verification report.",
                                    exit_code=exit_code, ended_at=self._now())
 
         if not (job.path / "solver" / "solve.py").is_file():
@@ -1089,7 +1140,7 @@ class SolverService:
                 updates["outcome"] = "analyzed"
             return self._write_job(job, **updates)
 
-        if not isinstance(report, dict) or report.get("local_verification") != "passed":
+        if not verified_local:
             updates = {
                 "state": "failed",
                 "phase": "verify_local",
@@ -1115,14 +1166,23 @@ class SolverService:
             updates["candidate_flag"] = candidate_flag
         return self._write_job(job, **updates)
 
+    @staticmethod
+    def _gpt_continuation_instruction(result: dict) -> str | None:
+        """Return the next short instruction only for a normal no-flag turn."""
+        if result.get("state") != "failed" or result.get("error_code") != "E_VERIFY_LOCAL":
+            return None
+        if isinstance(result.get("unverified_candidate"), str) and result["unverified_candidate"]:
+            return "verify candidate"
+        return "continue"
+
     def run(self, raw_ids: str, *, workers: int = 3, agy_command: Sequence[str] | None = None,
             on_refresh: Callable[[], None] | None = None, acquire_lock: bool = True,
             reuse_session: bool = True, per_category: bool = False,
             engine: str | None = None) -> list[dict]:
         if engine:
             self.engine = engine
-        if workers < 1 or (workers > 3 and not per_category):
-            raise ValueError("workers must be between 1 and 3 unless per_category mode is enabled.")
+        if workers < 1 or (workers > 5 and not per_category):
+            raise ValueError("workers must be between 1 and 5 unless per_category mode is enabled.")
         jobs = self.select_ids(raw_ids)
         if agy_command:
             command = list(agy_command)
@@ -1254,10 +1314,26 @@ class SolverService:
                                 if reader.is_alive():
                                     self._terminate_group(process, force_group=True)
                                     reader.join(timeout=0.5)
-                            completed[job] = self._finish_worker(
+                            result = self._finish_worker(
                                 job, process, timed_out=timed_out, stalled=stalled,
                             )
                             del active[job]
+                            instruction = (
+                                self._gpt_continuation_instruction(result)
+                                if self.engine == "gpt" else None
+                            )
+                            if instruction is not None:
+                                attempts = int(result.get("continuation_attempts") or 0) + 1
+                                self._write_job(
+                                    job, state="queued", phase="continuation", error_code=None,
+                                    message=f"Queueing GPT continuation #{attempts}.",
+                                    continuation_attempts=attempts,
+                                    continuation_instruction=instruction,
+                                    ended_at=None,
+                                )
+                                queue.append(job)
+                            else:
+                                completed[job] = result
                     if active:
                         time.sleep(0.05)
             except BaseException as exc:
@@ -1312,6 +1388,7 @@ class SolverService:
         stale_seconds: int = 300,
         reuse_session: bool = True,
         per_category: bool = False,
+        engine: Optional[str] = None,
     ) -> dict:
         jobs = self.select_ids(raw_ids)
         if not jobs:
@@ -1338,13 +1415,15 @@ class SolverService:
             "--workspace", str(self.workspace.resolve()),
             "--ids", raw_ids,
             "--workers", str(workers),
-            "--timeout", str(timeout_seconds),
-            "--stale-timeout", str(stale_seconds),
+            "--timeout", str(int(timeout_seconds)),
+            "--stale-timeout", str(int(round(stale_seconds))),
         ]
         if not reuse_session:
             cmd.append("--new-session")
         if per_category:
             cmd.append("--per-category")
+        if engine:
+            cmd.extend(["--engine", str(engine)])
 
         env = os.environ.copy()
         pkg_root = str(Path(__file__).resolve().parent.parent.parent)

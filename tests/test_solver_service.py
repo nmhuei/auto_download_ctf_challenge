@@ -80,6 +80,26 @@ def test_queue_eligibility_ignores_malformed_cached_flag():
         assert eligibility.local_flag is None
 
 
+def test_unverified_candidate_flag_is_not_hoarded_or_completed():
+    with tempfile.TemporaryDirectory() as temp:
+        workspace = Path(temp)
+        root = make_challenge(workspace, "Crypto", "candidate", 1, source=True)
+        worker = workspace / "fake_candidate.py"
+        worker.write_text(
+            "from pathlib import Path\n"
+            "Path('flag.txt').write_text('CTF{unverified_candidate}')\n",
+            encoding="utf-8",
+        )
+
+        service = SolverService(workspace)
+        result = service.run("1", workers=1, agy_command=[sys.executable, str(worker)])[0]
+
+        assert result["state"] == "failed"
+        assert result["error_code"] == "E_VERIFY_LOCAL"
+        metadata = json.loads((root / "metadata.json").read_text(encoding="utf-8"))
+        assert not metadata.get("status", {}).get("flag", {}).get("value")
+
+
 def test_per_category_run_rechecks_platform_solve_before_launching_worker():
     """The daemon must enforce Solve all eligibility after the menu confirmation."""
     with tempfile.TemporaryDirectory() as temp:
@@ -154,10 +174,10 @@ def test_select_ids_resolves_names_aliases_and_category_abbreviations():
         assert jobs_multi[2].name == "Beyond_the_fourth_wall"
 
 
-def test_three_worker_pool_persists_progress_logs_and_final_solver():
+def test_five_worker_pool_persists_progress_logs_and_final_solver():
     with tempfile.TemporaryDirectory() as temp:
         workspace = Path(temp)
-        for index in range(4):
+        for index in range(5):
             make_challenge(workspace, "Web", f"job-{index}", index, source=True)
 
         worker = workspace / "fake_agy.py"
@@ -175,11 +195,11 @@ def test_three_worker_pool_persists_progress_logs_and_final_solver():
         """), encoding="utf-8")
 
         service = SolverService(workspace)
-        results = service.run("1,2,3,4", workers=3,
+        results = service.run("1,2,3,4,5", workers=5,
                               agy_command=[sys.executable, str(worker)])
 
-        assert [result["state"] for result in results] == ["completed"] * 4
-        assert service.max_active_workers <= 3
+        assert [result["state"] for result in results] == ["completed"] * 5
+        assert service.max_active_workers <= 5
         for job in service.scan():
             state = service.read_job(job)
             assert state["state"] == "completed"
@@ -572,6 +592,9 @@ def test_flag_extraction_prefers_flag_txt_and_ignores_dummies():
         (root / "solver" / "solve.py").write_text("print('ok')\n", encoding="utf-8")
         # Real flag in flag.txt
         (root / "flag.txt").write_text("ASIS{M1ddL3_3nd14n_N1bbL35_M4k3_Q3MU_D122y!}\n", encoding="utf-8")
+        (root / "script" / "worker-report.json").write_text(
+            '{"local_verification":"passed"}', encoding="utf-8"
+        )
         # Log has a dummy probe flag from early testing
         (root / "script" / "agy.log").write_text(
             "early test with ASIS{test}\nand also ASIS{dummy}\n",
@@ -992,3 +1015,117 @@ def test_solver_worker_forks_session_when_requested(monkeypatch, tmp_path: Path)
         assert state["reused_session"] is False
         # Verify master session was NOT corrupted or changed
         assert service.get_category_session("Crypto") == "conv-master-crypto-123"
+
+
+def test_gpt_worker_persists_a_local_session_before_launch(monkeypatch, tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    make_challenge(workspace, "Crypto", "clockwork", 1, source=True)
+    service = SolverService(workspace, engine="gpt")
+    job = service.scan()[0]
+    launched = []
+
+    class _MockProc:
+        pid = 11112
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(
+        "ctf_downloader.solver.adapters.gpt.GptSolverAdapter.create_session",
+        lambda self, job: "sess_ctf_clockwork",
+    )
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: launched.extend(cmd) or _MockProc())
+
+    service._start_worker(job, None, engine="gpt")
+
+    state = service.read_job(job)
+    assert state["gpt_session_id"] == "sess_ctf_clockwork"
+    assert launched[:4] == [
+        "/home/light/.local/bin/gpt", "run", "--resume-session", "sess_ctf_clockwork",
+    ]
+
+
+def test_gpt_json_result_records_the_bound_bqa_workspace(tmp_path: Path):
+    from ctf_downloader.solver.adapters.gpt import GptSolverAdapter
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    make_challenge(workspace, "Crypto", "clockwork", 1, source=True)
+    service = SolverService(workspace, engine="gpt")
+    job = service.scan()[0]
+
+    service._append_output(
+        job,
+        '{"session_id":"sess_ctf_clockwork","conversation_id":"conv_1",'
+        '"bqa_chat_id":"cw-clockwork","bqa_workspace_path":"/tmp/bqa/clockwork"}\n',
+        adapter=GptSolverAdapter(),
+    )
+
+    state = service.read_job(job)
+    assert state["conversation_id"] == "conv_1"
+    assert state["bqa_chat_id"] == "cw-clockwork"
+    assert state["bqa_workspace_path"] == "/tmp/bqa/clockwork"
+
+
+def test_gpt_resume_rebinds_the_saved_bqa_workspace(monkeypatch, tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    make_challenge(workspace, "Crypto", "clockwork", 1, source=True)
+    service = SolverService(workspace, engine="gpt")
+    job = service.scan()[0]
+    service._write_job(
+        job, state="failed", gpt_session_id="sess_ctf_clockwork",
+        bqa_chat_id="cw-clockwork", bqa_workspace_path="/tmp/bqa/clockwork",
+    )
+    launched = []
+
+    class _MockProc:
+        pid = 11113
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: launched.extend(cmd) or _MockProc())
+    service._start_worker(job, None, engine="gpt")
+
+    assert launched[-1] == "host_workspace_bind resume_id=cw-clockwork; continue"
+
+
+def test_gpt_continuation_policy_only_requeues_normal_no_flag_outcomes(tmp_path: Path):
+    service = SolverService(tmp_path, engine="gpt")
+
+    assert service._gpt_continuation_instruction({
+        "state": "failed", "error_code": "E_VERIFY_LOCAL",
+    }) == "continue"
+    assert service._gpt_continuation_instruction({
+        "state": "failed", "error_code": "E_VERIFY_LOCAL",
+        "unverified_candidate": "CTF{candidate}",
+    }) == "verify candidate"
+    assert service._gpt_continuation_instruction({
+        "state": "failed", "error_code": "E_TIMEOUT",
+    }) is None
+
+
+def test_gpt_scheduler_requeues_a_normal_no_flag_turn(monkeypatch, tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    make_challenge(workspace, "Crypto", "clockwork", 1, source=True)
+    service = SolverService(workspace, engine="gpt")
+    starts = []
+
+    class _DoneProc:
+        pid = 11114
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(service, "_start_worker", lambda job, *_args, **_kwargs: starts.append(job) or _DoneProc())
+    outcomes = iter([
+        {"state": "failed", "error_code": "E_VERIFY_LOCAL"},
+        {"state": "completed", "error_code": None},
+    ])
+    monkeypatch.setattr(service, "_finish_worker", lambda *_args, **_kwargs: next(outcomes))
+
+    results = service.run("1", workers=1, engine="gpt")
+
+    assert len(starts) == 2
+    assert results == [{"state": "completed", "error_code": None}]
+    assert service.read_job(starts[0])["continuation_attempts"] == 1

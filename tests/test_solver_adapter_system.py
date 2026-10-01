@@ -13,12 +13,14 @@ from ctf_downloader.solver.adapters.agy import AgySolverAdapter
 from ctf_downloader.solver.adapters.codex import CodexSolverAdapter
 from ctf_downloader.solver.adapters.claude import ClaudeSolverAdapter
 from ctf_downloader.solver.adapters.generic import GenericCliAdapter
+from ctf_downloader.solver.adapters.gpt import GptSolverAdapter
 
 
 def test_registered_adapters_include_agy_codex_claude():
     registered = list_registered_adapters()
     assert DEFAULT_SOLVER_ENGINE == "agy"
     assert "agy" in registered
+    assert "gpt" in registered
     assert "codex" in registered
     assert "claude" in registered
     assert "generic" in registered
@@ -226,3 +228,69 @@ def test_category_sessions_isolated_by_engine(tmp_path):
     assert service.get_category_session("Crypto") == "conv-agy-master"
 
 
+def test_gpt_adapter_capabilities_and_invocation(tmp_path):
+    adp = GptSolverAdapter(binary_override="/home/light/.local/bin/gpt")
+    caps = adp.capabilities()
+    assert caps.supports_streaming is True
+    assert caps.supports_session_resume is True
+    assert caps.default_log_filename == "gpt.log"
+    assert adp.engine_id == "gpt"
+
+    job = mock.MagicMock()
+    job.path = tmp_path
+    spec = adp.build_invocation(
+        job=job,
+        prompt="Analyze reverse engineering binary",
+        session_id="sess_1234",
+    )
+    assert spec.argv[0] == "/home/light/.local/bin/gpt"
+    assert spec.argv == [
+        "/home/light/.local/bin/gpt", "run", "--resume-session", "sess_1234",
+        "-b", "br", "--json", "-p", "Analyze reverse engineering binary",
+    ]
+    assert spec.log_filename == "gpt.log"
+
+
+def test_gpt_adapter_stream_line_decoding():
+    adp = GptSolverAdapter()
+
+    # 1. CTF Progress JSON
+    events = adp.decode_stream_line('@@CTF_PROGRESS@@ {"phase": "exploit", "message": "Buffer overflow reached", "candidate_flag": "flag{pwn_success}"}')
+    assert len(events) >= 1
+    prog_ev = [e for e in events if e.event_type == "progress"][0]
+    assert prog_ev.phase == "exploit"
+    assert prog_ev.candidate_flag == "flag{pwn_success}"
+
+    # 2. Flag regex detection in normal output
+    events_flag = adp.decode_stream_line("Here is the secret: CTF{web_sqli_bypassed_2026}")
+    assert any(e.candidate_flag == "CTF{web_sqli_bypassed_2026}" for e in events_flag)
+
+    # 3. Thinking telemetry
+    events_think = adp.decode_stream_line("💭 [Thinking] Analyzing AES S-Box structure")
+    assert any(e.event_type == "progress" and "AES S-Box" in (e.message or "") for e in events_think)
+
+    # 4. Tool calling telemetry
+    events_tool = adp.decode_stream_line("🔧 [Tool] Calling host_run_command (python3 solve.py)...")
+    assert any(e.event_type == "tool_call" for e in events_tool)
+
+    # 5. Classification
+    assert adp.classify_exit(0, events_flag) == "completed"
+
+
+def test_gpt_adapter_provisions_and_returns_a_persisted_local_session(monkeypatch, tmp_path):
+    import ctf_downloader.solver.adapters.gpt as gpt_module
+
+    adp = GptSolverAdapter(binary_override="/usr/local/bin/gpt")
+    job = mock.MagicMock()
+    job.display_id = 7
+    job.category = "Crypto"
+    job.name = "Clockwork"
+
+    completed = mock.MagicMock(stdout='{"status":"created","session_id":"sess_ctf7"}\n')
+    run = mock.Mock(return_value=completed)
+    monkeypatch.setattr(gpt_module.subprocess, "run", run)
+
+    assert adp.create_session(job) == "sess_ctf7"
+    assert run.call_args.args[0] == [
+        "/usr/local/bin/gpt", "session", "new", "--json", "--tag", "ctf:7:crypto-clockwork",
+    ]

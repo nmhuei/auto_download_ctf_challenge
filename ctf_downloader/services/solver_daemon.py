@@ -36,6 +36,7 @@ def run_daemon(
     stale_timeout: int,
     reuse_session: bool = True,
     per_category: bool = False,
+    engine: str | None = None,
 ) -> int:
     control_dir = workspace / ".ctf-solver"
     control_dir.mkdir(parents=True, exist_ok=True)
@@ -126,6 +127,7 @@ def run_daemon(
             acquire_lock=False,
             reuse_session=reuse_session,
             per_category=per_category,
+            engine=engine,
         )
         with log_path.open("a", encoding="utf-8") as f:
             f.write(f"[{_now()}] Daemon completed work for ids '{ids}'. Total results: {len(results)}\n")
@@ -164,9 +166,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--ids", required=True, help="Challenge display IDs to solve")
     parser.add_argument("--workers", type=int, default=3, help="Max worker concurrency")
     parser.add_argument("--timeout", type=int, default=3600, help="Per-worker timeout seconds")
-    parser.add_argument("--stale-timeout", type=int, default=300, help="Stale heartbeat timeout seconds")
+    parser.add_argument("--stale-timeout", type=float, default=300, help="Stale heartbeat timeout seconds")
     parser.add_argument("--new-session", action="store_true", help="Start new sessions instead of reusing category sessions")
     parser.add_argument("--per-category", action="store_true", help="Allow one worker slot per category")
+    parser.add_argument("--engine", default=None, help="Solver engine adapter (e.g. agy, gpt, codex, claude)")
     args = parser.parse_args(argv)
 
     ws = Path(args.workspace).resolve()
@@ -178,6 +181,7 @@ def main(argv: list[str] | None = None) -> None:
         args.stale_timeout,
         reuse_session=not args.new_session,
         per_category=args.per_category,
+        engine=args.engine,
     ))
 
 

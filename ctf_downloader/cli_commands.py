@@ -914,6 +914,7 @@ def handle_solve(args):
             timeout_seconds=getattr(args, 'timeout', 3600),
             stale_seconds=getattr(args, 'stale_timeout', 300),
             reuse_session=reuse_session,
+            engine=getattr(args, 'engine', None),
         )
         if not res.get("success"):
             Logger.error(res.get("message", "Background startup failed."))
@@ -931,6 +932,7 @@ def handle_solve(args):
                 workers=getattr(args, 'workers', 3),
                 on_refresh=lambda: live.update(_make_solver_radar_view(service)),
                 reuse_session=reuse_session,
+                engine=getattr(args, 'engine', None),
             )
     except (SolverSelectionError, SolverAlreadyRunning) as exc:
         Logger.error(str(exc))

@@ -91,7 +91,7 @@ Dự án trang bị sẵn 3 kỹ năng tác chiến chuẩn mực cho các AI Ag
 | --- | --- |
 | `ctf pull` | `--allow-private-redirects` · `--burp-port` · `--category` · `--cookie` · `--exclude` · `--force` · `--from-burp` · `--git-base` · `--git-remote` · `--insecure` · `--interactive` · `--no-git` · `--no-git-push` · `--no-template` · `--no-third-party` · `--output` · `--proxy` · `--refresh-meta` · `--save-cookie` · `--threads` · `--timeout` · `--token` · `--update` · `--url` · `--verify-downloads` |
 | `ctf status` | `--category` · `--container` · `--label` · `--search` · `--set` · `--solved` · `--solver` · `--unsolved` · `--watch` · `--workspace` |
-| `ctf solve` | `--active` · `--attach` · `--bg` · `--cancel` · `--detach` · `--distill` · `--foreground` · `--ids` · `--logs` · `--new-session` · `--reset-sessions` · `--stale-timeout` · `--status` · `--stop` · `--timeout` · `--workers` · `--workspace` |
+| `ctf solve` | `--active` · `--attach` · `--bg` · `--cancel` · `--detach` · `--distill` · `--engine` · `--foreground` · `--ids` · `--logs` · `--new-session` · `--reset-sessions` · `--stale-timeout` · `--status` · `--stop` · `--timeout` · `--workers` · `--workspace` |
 | `ctf note` | `--remove` · `--workspace` |
 | `ctf tag` | `--remove` · `--workspace` |
 | `ctf workspaces` | `--dir` |

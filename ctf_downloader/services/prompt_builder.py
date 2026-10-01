@@ -165,7 +165,7 @@ class CategoryPromptBuilder:
         minimal: bool = False,
     ) -> str:
         """Construct a scoped prompt tailored to the challenge category via declarative CategoryRegistry."""
-        if minimal:
+        if minimal and not is_resume:
             return cls.build_command_prompt(job)
 
         if fallback_mode:

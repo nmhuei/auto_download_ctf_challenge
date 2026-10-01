@@ -51,7 +51,7 @@ _ctf() {
         pull)        opts="-u --url -c --cookie -t --token -o --output -j --threads -C --category -E --exclude --no-third-party --no-template -f --force --verify-downloads --allow-private-redirects --update --refresh-meta --timeout --no-git --git-base --git-remote --no-git-push -k --insecure --from-burp --save-cookie --burp-port --proxy -i --interactive" ;;
         auth)        opts="-w --workspace -u --url -c --cookie -t --token --from-burp --burp-port --show --clear" ;;
         status)      opts="-w --workspace -u --unsolved -s --solved -C --category --container --label --search --solver --watch --set" ;;
-        solve)       opts="-w --workspace --ids --workers --timeout --stale-timeout --detach --bg --foreground --status --active --stop --cancel --logs --attach --watch --new-session --reset-sessions --distill" ;;
+        solve)       opts="-w --workspace --ids --workers --timeout --stale-timeout --detach --bg --foreground --status --active --stop --cancel --logs --attach --watch --new-session --reset-sessions --distill --engine" ;;
         note)        opts="-w --workspace --remove" ;;
         tag)         opts="-r --remove -w --workspace" ;;
         workspaces)  opts="-d --dir" ;;
