@@ -120,6 +120,8 @@ def _is_dummy_flag(candidate: str) -> bool:
     }
     if content in dummy_patterns or content.startswith("test_"):
         return True
+    if "not_flag" in content or "notflag" in content or "fake" in content or "placeholder" in content:
+        return True
     return False
 
 
@@ -934,7 +936,7 @@ class SolverService:
             is_continuation = is_resume
             if is_resume:
                 last_out = str(prior_state.get("last_output") or "")
-                if "don't have an active" in last_out or "not actually restoring" in last_out:
+                if "don't have an active" in last_out or "not actually restoring" in last_out or "don't currently have access" in last_out:
                     is_resume = False
                     is_continuation = False
                     worker_conv_id = None
