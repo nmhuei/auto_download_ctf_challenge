@@ -1416,7 +1416,7 @@ class PullService:
                             ["removed", str(len(removed_local))],
                             ["drift", str(len(drift))]])
         if new_on_server:
-            Logger.info("🆕 Challenge mới trên server (chạy --update để tải): "
+            Logger.info("🆕 Challenge mới trên server (chạy 'ctf update' hoặc 'ctf sync --pull' để tải): "
                         + ", ".join(str(c["name"]) for c in new_on_server))
         if removed_local:
             Logger.warning("➖ Challenge local không còn trên server (đã mark "
@@ -1427,7 +1427,7 @@ class PullService:
             Logger.warning(
                 "⚠️ metadata.json hỏng (không đọc được JSON) tại: "
                 + ", ".join(c["path"] for c in corrupt_local)
-                + " — chạy '--update' để dựng lại hoặc khôi phục thủ công.")
+                + " — chạy 'ctf update' để dựng lại hoặc khôi phục thủ công.")
         if write_errors:
             Logger.warning(
                 f"⚠️ Sync ghi THẤT BẠI trên {len(write_errors)} thao tác "
@@ -1441,7 +1441,7 @@ class PullService:
                       for d in drift]
             Logger.print_table("Drift — solved trên server, local chưa",
                                ["Challenge", "By", "Solvers"], d_rows)
-            Logger.warning("⚠️ KHÔNG tự đổi trạng thái — dùng 'ctf sync --apply' để tự động cập nhật "
+            Logger.warning("⚠️ KHÔNG tự đổi trạng thái — dùng 'ctf update' hoặc 'ctf sync --apply' để tự động cập nhật "
                            "hoặc 'ctf status set <id> solved'.")
         return result
 

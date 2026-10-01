@@ -622,6 +622,10 @@ class CloudflareAdaptiveSession(requests.Session):
         browser, is_main = self._browser_for_url(url)
         if browser is None:
             return None
+        if is_main:
+            for key, value in self.headers.items():
+                if str(key).lower() not in _BROWSER_MANAGED_HEADERS:
+                    browser.headers[str(key)] = str(value)
         browser_kwargs = self._browser_kwargs(kwargs)
         if not is_main:
             headers = dict(browser_kwargs.get("headers") or {})

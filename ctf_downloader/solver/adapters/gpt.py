@@ -23,7 +23,7 @@ from ..base import (
 
 _CTF_PROGRESS_RE = re.compile(r"@@CTF_PROGRESS@@\s*(\{.*?\})")
 _FLAG_RE = re.compile(r"(?:asis|flag|ctf|picoctf|htb|shell|seccon)\{[a-zA-Z0-9_\-\.\:\@\!\?\$\#\%\&\*\+\=]+\}", re.IGNORECASE)
-_FILTER_KEYWORDS = ("cybersecurity", "safety policy", "content policy", "harmful content", "cannot assist")
+_FILTER_KEYWORDS = ("safety policy", "content policy", "harmful content", "cannot assist with this request", "against our use case policy")
 _QUOTA_KEYWORDS = ("quota exceeded", "rate limit exceeded", "too many requests", "insufficient_quota")
 
 

@@ -1774,7 +1774,13 @@ def handle_sync(args):
                      f"'{args.workspace}': {e}")
         sys.exit(1)
 
-    if getattr(args, 'pull', False):
+    is_update_cmd = (
+        getattr(args, 'subcommand', None) == 'update'
+        or getattr(args, 'pull', False)
+        or getattr(args, 'update', False)
+    )
+
+    if is_update_cmd:
         try:
             config = DownloaderConfig(
                 url=platform.ctf_info.url,
@@ -1785,6 +1791,7 @@ def handle_sync(args):
                 insecure=getattr(args, 'insecure', False),
             )
             result = PullService.run_update(config)
+            PullService.sync_workspace(repo, platform, apply_drift=True)
             if not result.get('ok'):
                 sys.exit(1)
             return

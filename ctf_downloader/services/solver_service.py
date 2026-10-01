@@ -133,13 +133,60 @@ def _valid_local_flag(candidate: object) -> str | None:
     return None
 
 
+def _get_rejected_flags(job: SolverJob) -> set[str]:
+    rejected: set[str] = set()
+    try:
+        meta_path = job.path / "metadata.json"
+        if meta_path.is_file():
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            st = meta.get("status", {}).get("flag", {})
+            if st.get("state") == "submitted_wrong" and st.get("value"):
+                v = str(st["value"]).strip()
+                if v:
+                    rejected.add(v)
+                    if v.startswith("CSSCTF{"):
+                        rejected.add("CTF{" + v[7:])
+                    elif v.startswith("CTF{"):
+                        rejected.add("CSSCTF{" + v[4:])
+    except Exception:
+        pass
+    try:
+        cur = job.path
+        for _ in range(4):
+            hist_candidate = cur / "submit_history.json"
+            if hist_candidate.is_file():
+                hist = json.loads(hist_candidate.read_text(encoding="utf-8"))
+                for entry in hist.get("entries", []):
+                    if entry.get("result") == "incorrect":
+                        if str(entry.get("challenge_id")) == str(job.challenge_id):
+                            fv = str(entry.get("flag") or "").strip()
+                            if fv:
+                                rejected.add(fv)
+                                if fv.startswith("CSSCTF{"):
+                                    rejected.add("CTF{" + fv[7:])
+                                elif fv.startswith("CTF{"):
+                                    rejected.add("CSSCTF{" + fv[4:])
+                break
+            cur = cur.parent
+    except Exception:
+        pass
+    return rejected
+
+
 def _extract_flag_from_job(job: SolverJob, report: dict, log_content: str) -> str | None:
+    rejected = _get_rejected_flags(job)
+
+    def _is_usable(candidate_flag: str | None) -> bool:
+        if not candidate_flag or _is_dummy_flag(candidate_flag):
+            return False
+        return candidate_flag not in rejected
+
     # 1. Report explicit fields
     if isinstance(report, dict):
         raw = report.get("candidate_flag") or report.get("flag")
         if isinstance(raw, str) and raw.strip():
             m = _FLAG_RE.search(raw.strip())
-            if m and not _is_dummy_flag(m.group(0)):
+            if m and _is_usable(m.group(0)):
                 return m.group(0)
 
     # 2. Local flag.txt files (top priority for solver outputs)
@@ -153,7 +200,7 @@ def _extract_flag_from_job(job: SolverJob, report: dict, log_content: str) -> st
             try:
                 txt = p.read_text(encoding="utf-8", errors="replace").strip()
                 m = _FLAG_RE.search(txt)
-                if m and not _is_dummy_flag(m.group(0)):
+                if m and _is_usable(m.group(0)):
                     return m.group(0)
             except OSError:
                 pass
@@ -163,14 +210,14 @@ def _extract_flag_from_job(job: SolverJob, report: dict, log_content: str) -> st
         for field in ("summary", "notes", "description"):
             val = str(report.get(field) or "")
             m = _FLAG_RE.search(val)
-            if m and not _is_dummy_flag(m.group(0)):
+            if m and _is_usable(m.group(0)):
                 return m.group(0)
 
-    # 4. Reverse search in log content (filtering dummies, prefer latest match)
+    # 4. Reverse search in log content (filtering dummies & rejected flags, prefer latest match)
     if log_content:
         matches = _FLAG_RE.findall(log_content)
         for m in reversed(matches):
-            if not _is_dummy_flag(m):
+            if _is_usable(m):
                 return m
 
     return None
@@ -203,7 +250,7 @@ class SolverService:
     """A single-process scheduler with per-challenge durable state."""
 
     def __init__(self, workspace: str | Path, *, timeout_seconds: int = 3600,
-                 stale_seconds: float = 300, engine: str = DEFAULT_SOLVER_ENGINE,
+                 stale_seconds: float = 900, engine: str = DEFAULT_SOLVER_ENGINE,
                  minimal_prompt: bool = True):
         self.workspace = Path(workspace).resolve()
         self.repo = WorkspaceRepo(self.workspace)
@@ -323,9 +370,11 @@ class SolverService:
 
         try:
             status = self.repo.read_status(job.path / "metadata.json")
-            saved = _valid_local_flag((status.get("flag") or {}).get("value"))
-            if saved:
-                return saved
+            flag_obj = status.get("flag") or {}
+            if flag_obj.get("state") != "submitted_wrong":
+                saved = _valid_local_flag(flag_obj.get("value"))
+                if saved:
+                    return saved
         except Exception:
             pass
         return None
@@ -339,13 +388,24 @@ class SolverService:
         if local_flag:
             return SolverEligibility(False, "local_flag", local_flag)
         if str(state.get("state") or "") in {"queued", "starting", "running"}:
-            return SolverEligibility(False, "active")
+            pid = state.get("pid")
+            ticks = state.get("pid_start_ticks")
+            boot_id = state.get("boot_id")
+            if pid and self._pid_is_alive(pid, start_ticks=ticks, boot_id=boot_id):
+                return SolverEligibility(False, "active")
         if not (job.has_source or job.has_instance):
             return SolverEligibility(False, "no_input")
         return SolverEligibility(True, "ready")
 
     def select_ids(self, raw_ids: str) -> list[SolverJob]:
-        tokens = [part.strip() for part in str(raw_ids).split(",") if part.strip()]
+        raw_str = str(raw_ids).strip()
+        known = self.scan()
+        if raw_str.lower() in ("all", "*"):
+            return known
+        if raw_str.lower() in ("unsolved", "ready"):
+            return [j for j in known if not j.is_solved]
+
+        tokens = [part.strip() for part in raw_str.split(",") if part.strip()]
         if not tokens:
             raise SolverSelectionError("Please enter at least one challenge ID.")
 
@@ -353,7 +413,6 @@ class SolverService:
             if not token.isascii():
                 raise SolverSelectionError("Invalid challenge IDs; use format like 1,2,3 or challenge name.")
 
-        known = self.scan()
         selected_jobs: list[SolverJob] = []
         missing: list[str] = []
 
@@ -361,7 +420,9 @@ class SolverService:
             matched: SolverJob | None = None
             if token.isdecimal():
                 num = int(token)
-                matched = next((j for j in known if j.display_id == num or str(j.challenge_id) == token), None)
+                matched = next((j for j in known if j.display_id == num), None)
+                if not matched:
+                    matched = next((j for j in known if str(j.challenge_id) == token), None)
             else:
                 m = re.match(r"^([a-zA-Z]+)[-_]?(\d+)$", token)
                 if m:
@@ -869,20 +930,21 @@ class SolverService:
 
         is_continuation = bool(worker_conv_id) and not is_resume
         if adapter.engine_id == "gpt":
-            is_resume = bool(prior_state.get("gpt_session_id"))
+            is_resume = bool(prior_state.get("gpt_session_id")) and bool(prior_state.get("bqa_chat_id"))
             is_continuation = is_resume
             if is_resume:
-                workspace_id = prior_state.get("bqa_chat_id")
-                if not isinstance(workspace_id, str) or not workspace_id:
-                    self._write_job(
-                        job, state="blocked", phase="workspace", error_code="E_WORKSPACE_MAPPING",
-                        message="GPT session exists but no BQA workspace mapping was recorded.", ended_at=self._now(),
-                    )
-                    raise OSError("GPT continuation requires a recorded BQA workspace")
-                instruction = prior_state.get("continuation_instruction")
-                if instruction not in {"continue", "verify candidate"}:
-                    instruction = "continue"
-                prompt = f"host_workspace_bind resume_id={workspace_id}; {instruction}"
+                last_out = str(prior_state.get("last_output") or "")
+                if "don't have an active" in last_out or "not actually restoring" in last_out:
+                    is_resume = False
+                    is_continuation = False
+                    worker_conv_id = None
+                    prompt = f"solve {job.path}"
+                else:
+                    workspace_id = prior_state.get("bqa_chat_id")
+                    instruction = prior_state.get("continuation_instruction")
+                    if not isinstance(instruction, str) or not instruction.strip():
+                        instruction = "continue"
+                    prompt = f"host_workspace_bind resume_id={workspace_id}; {instruction}"
             else:
                 prompt = f"solve {job.path}"
         else:
@@ -1111,6 +1173,9 @@ class SolverService:
                                    message="Candidate flag needs a successful local verification report.",
                                    exit_code=exit_code, ended_at=self._now())
 
+        rejected_flags = _get_rejected_flags(job)
+        cleared_candidate = None if (state.get("candidate_flag") in rejected_flags or not candidate_flag) else state.get("candidate_flag")
+
         if not (job.path / "solver" / "solve.py").is_file():
             updates = {
                 "state": "failed",
@@ -1119,6 +1184,8 @@ class SolverService:
                 "message": "Worker exited without solver/solve.py.",
                 "exit_code": exit_code,
                 "ended_at": self._now(),
+                "unverified_candidate": None,
+                "candidate_flag": cleared_candidate,
             }
             if has_analysis:
                 updates["outcome"] = "analyzed"
@@ -1137,6 +1204,8 @@ class SolverService:
                 "message": "Worker did not update the generated solver template.",
                 "exit_code": exit_code,
                 "ended_at": self._now(),
+                "unverified_candidate": None,
+                "candidate_flag": cleared_candidate,
             }
             if has_analysis:
                 updates["outcome"] = "analyzed"
@@ -1150,6 +1219,8 @@ class SolverService:
                 "message": "Missing successful script/worker-report.json local verification.",
                 "exit_code": exit_code,
                 "ended_at": self._now(),
+                "unverified_candidate": None,
+                "candidate_flag": cleared_candidate,
             }
             if has_analysis:
                 updates["outcome"] = "analyzed"
@@ -1253,6 +1324,10 @@ class SolverService:
                         else:
                             candidate_idx = 0
                         job = queue.pop(candidate_idx)
+                        eligibility = self.queue_eligibility(job)
+                        if not eligibility.ready:
+                            completed[job] = self.read_job(job)
+                            continue
                         job_cat = job.category.strip().casefold()
                         # Normal BQA may run same-category jobs concurrently;
                         # per-category mode deliberately selects a different
@@ -1326,6 +1401,10 @@ class SolverService:
                                 if self.engine == "gpt" else None
                             )
                             if instruction is not None:
+                                eligibility = self.queue_eligibility(job)
+                                if not eligibility.ready:
+                                    completed[job] = result
+                                    continue
                                 attempts = int(result.get("continuation_attempts") or 0) + 1
                                 self._write_job(
                                     job, state="queued", phase="continuation", error_code=None,

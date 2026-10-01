@@ -74,6 +74,7 @@ class _PhosphorHelpParser(argparse.ArgumentParser):
             ('solve', 'Kích hoạt SuperBQA'),
             ('workspaces', 'Quét mọi workspace CTF trên máy'),
             ('sync', 'Đồng bộ metadata động workspace ↔ platform'),
+            ('update', 'Tải challenge mới và đồng bộ trạng thái solved'),
             ('instance', 'Quản lý container động của challenge'),
             ('submit', 'Gửi flag lên platform và ghi nhật ký'),
             ('hoard', 'Lưu flag tìm được vào kho local (chưa nộp)'),
@@ -382,7 +383,7 @@ def build_unified_parser():
                               help='Bỏ qua confirm archive (bắt buộc khi non-interactive); xoá workspace gốc vẫn cần xác nhận riêng')
 
     # 11. SYNC — đồng bộ metadata 2 chiều workspace <-> platform (P2-1)
-    sync_parser = subparsers.add_parser('sync', aliases=['resync'],
+    sync_parser = subparsers.add_parser('sync', aliases=['resync', 'update'],
                                          help='Đồng bộ metadata động (points/solves/connection) workspace ↔ platform; không đụng status/flag/file')
     sync_parser.set_defaults(workspace_explicit=False)
     sync_parser.add_argument('workspace_ref', nargs='?', metavar='EVENT',
@@ -394,7 +395,8 @@ def build_unified_parser():
     sync_parser.add_argument('-a', '--apply', '--pull-status', action='store_true',
                              dest='apply_drift',
                              help='Tự động áp dụng trạng thái solved từ server vào local (giải quyết drift)')
-    sync_parser.add_argument('--pull', action='store_true',
+    sync_parser.add_argument('--pull', '-u', '--update', action='store_true',
+                             dest='pull',
                              help='Tải thêm các challenge MỚI trên server về workspace')
     sync_parser.add_argument('-k', '--insecure', action='store_true',
                              help='Bỏ qua xác minh SSL/TLS certificate (dùng cho CTF server LAN/self-signed)')
@@ -824,7 +826,7 @@ def main():
         handle_register(args)
     elif cmd in ['storage', 'du', 'archive']:
         _run_framed(handle_storage, args, 'storage', ctx_attr='base_dir')
-    elif cmd in ['sync', 'resync']:
+    elif cmd in ['sync', 'resync', 'update']:
         _run_framed(handle_sync, args, 'sync')
     elif cmd in ['history', 'log']:
         _run_framed(handle_history, args, 'history')
