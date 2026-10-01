@@ -23,14 +23,14 @@ def make_workspace() -> Path:
     return root
 
 
-def test_solve_parser_defaults_to_three_workers_and_rejects_more_than_three():
+def test_solve_parser_leaves_worker_default_to_workspace_configuration():
     args = build_unified_parser().parse_args(["solve", "--ids", "1,2", "--workers", "3"])
 
     assert args.subcommand == "solve"
     assert args.ids == "1,2"
     assert args.workers == 3
-    with pytest.raises(SystemExit):
-        build_unified_parser().parse_args(["solve", "--ids", "1", "--workers", "4"])
+    default_args = build_unified_parser().parse_args(["solve", "--ids", "1"])
+    assert default_args.workers is None
 
 
 def test_status_solver_parser_accepts_detail_target_and_watch():

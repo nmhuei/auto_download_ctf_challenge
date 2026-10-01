@@ -164,7 +164,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="SuperBQA Background Solver Supervisor Daemon")
     parser.add_argument("--workspace", required=True, help="Path to CTF workspace")
     parser.add_argument("--ids", required=True, help="Challenge display IDs to solve")
-    parser.add_argument("--workers", type=int, default=3, help="Max worker concurrency")
+    parser.add_argument("--workers", type=int, default=None, help="Max worker concurrency (default: workspace .env)")
     parser.add_argument("--timeout", type=int, default=3600, help="Per-worker timeout seconds")
     parser.add_argument("--stale-timeout", type=float, default=300, help="Stale heartbeat timeout seconds")
     parser.add_argument("--new-session", action="store_true", help="Start new sessions instead of reusing category sessions")

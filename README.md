@@ -56,7 +56,8 @@ ctf auth --show                              # Xem credentials và trạng thái
 ctf register -u <URL> --tempmail             # Tự tạo tài khoản qua email tạm (mail.tm)
 
 # === 2. GIẢI BÀI TỰ ĐỘNG (SUPERBQA) ===
-ctf solve -w ./my_ctf --workers 3            # Chạy pool 3 worker giải bài nền
+CTF_SOLVER_MAX_WORKERS=3 ctf solve -w ./my_ctf # Giới hạn pool bằng env
+ctf solve -w ./my_ctf --workers 2            # Chạy ít hơn mức đã cấu hình
 ctf solve --status                           # Theo dõi tiến độ, logs và candidate flags
 
 # === 3. CONTAINER ĐỘNG & SCOREBOARD ===

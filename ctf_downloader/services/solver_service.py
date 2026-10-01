@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Callable, Iterator, Sequence
 
 from ..solver.registry import DEFAULT_SOLVER_ENGINE, get_solver_adapter
+from ..solver.settings import solver_max_workers
 from ..storage.fileio import atomic_write_json, locked_update_json
 from ..storage.workspace_repo import WorkspaceRepo, is_superseded
 from ..utils.agy_resolver import resolve_agy_binary
@@ -209,6 +210,7 @@ class SolverService:
         self.timeout_seconds = max(1, int(timeout_seconds))
         self.stale_seconds = max(0.01, float(stale_seconds))
         self.engine = str(engine or DEFAULT_SOLVER_ENGINE)
+        self.worker_limit = solver_max_workers(self.workspace)
         self.minimal_prompt = minimal_prompt
         self.max_active_workers = 0
         self._activity_lock = threading.Lock()
@@ -1175,14 +1177,15 @@ class SolverService:
             return "verify candidate"
         return "continue"
 
-    def run(self, raw_ids: str, *, workers: int = 3, agy_command: Sequence[str] | None = None,
+    def run(self, raw_ids: str, *, workers: int | None = None, agy_command: Sequence[str] | None = None,
             on_refresh: Callable[[], None] | None = None, acquire_lock: bool = True,
             reuse_session: bool = True, per_category: bool = False,
             engine: str | None = None) -> list[dict]:
         if engine:
             self.engine = engine
-        if workers < 1 or workers > 3:
-            raise ValueError("workers must be between 1 and 3.")
+        workers = self.worker_limit if workers is None else workers
+        if workers < 1 or workers > self.worker_limit:
+            raise ValueError(f"workers must be between 1 and {self.worker_limit}.")
         jobs = self.select_ids(raw_ids)
         if agy_command:
             command = list(agy_command)
@@ -1383,7 +1386,7 @@ class SolverService:
         self,
         raw_ids: str,
         *,
-        workers: int = 3,
+        workers: int | None = None,
         timeout_seconds: int = 3600,
         stale_seconds: int = 300,
         reuse_session: bool = True,
@@ -1414,7 +1417,7 @@ class SolverService:
             "ctf_downloader.services.solver_daemon",
             "--workspace", str(self.workspace.resolve()),
             "--ids", raw_ids,
-            "--workers", str(workers),
+            "--workers", str(self.worker_limit if workers is None else workers),
             "--timeout", str(int(timeout_seconds)),
             "--stale-timeout", str(int(round(stale_seconds))),
         ]

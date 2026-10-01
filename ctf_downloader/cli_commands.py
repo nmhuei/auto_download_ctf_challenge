@@ -910,7 +910,7 @@ def handle_solve(args):
     if getattr(args, 'detach', False):
         res = service.spawn_background(
             ids,
-            workers=getattr(args, 'workers', 3),
+            workers=getattr(args, 'workers', None),
             timeout_seconds=getattr(args, 'timeout', 3600),
             stale_seconds=getattr(args, 'stale_timeout', 300),
             reuse_session=reuse_session,
@@ -929,7 +929,7 @@ def handle_solve(args):
         with Live(_make_solver_radar_view(service), console=console, refresh_per_second=4) as live:
             service.run(
                 ids,
-                workers=getattr(args, 'workers', 3),
+                workers=getattr(args, 'workers', None),
                 on_refresh=lambda: live.update(_make_solver_radar_view(service)),
                 reuse_session=reuse_session,
                 engine=getattr(args, 'engine', None),
@@ -2951,5 +2951,4 @@ def handle_auth(args):
     t_disp = (t_saved[:8] + "...") if (t_saved and len(t_saved) > 12) else (t_saved or "(none)")
     Logger.info(f"  Cookie: {c_disp}")
     Logger.info(f"  Token:  {t_disp}")
-
 

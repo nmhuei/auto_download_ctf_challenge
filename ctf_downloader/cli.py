@@ -214,8 +214,8 @@ def build_unified_parser():
                                          help='BQA EATING: Analyze and auto-solve CTF challenges in parallel')
     solve_parser.add_argument('-w', '--workspace', default='.', help='CTF workspace directory (default: current dir)')
     solve_parser.add_argument('--ids', help='Challenge display IDs, e.g. 1,2,3')
-    solve_parser.add_argument('--workers', type=int, choices=(1, 2, 3), default=3,
-                             help='Parallel worker count (1-3, default: 3)')
+    solve_parser.add_argument('--workers', type=int, default=None,
+                             help='Parallel worker count (default: CTF_SOLVER_MAX_WORKERS or 3)')
     solve_parser.add_argument('--timeout', type=int, default=3600,
                              help='Per-worker timeout in seconds (default: 3600)')
     solve_parser.add_argument('--stale-timeout', type=float, default=300,

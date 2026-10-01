@@ -1450,7 +1450,7 @@ class CTFInteractiveConsole:
                     return
                 if not ids:
                     continue
-                bg_kwargs = {"workers": 3}
+                bg_kwargs = {"workers": service.worker_limit}
                 if getattr(self, "_solver_engine", None) and self._solver_engine != "agy":
                     bg_kwargs["engine"] = self._solver_engine
                 res = service.spawn_background(ids, **bg_kwargs)
@@ -1480,7 +1480,7 @@ class CTFInteractiveConsole:
                 if not confirm:
                     continue
                 category_count = len({job.category.strip().casefold() for job in target_jobs})
-                bg_kwargs = {"workers": min(3, max(1, category_count)), "per_category": True}
+                bg_kwargs = {"workers": min(service.worker_limit, max(1, category_count)), "per_category": True}
                 if getattr(self, "_solver_engine", None) and self._solver_engine != "agy":
                     bg_kwargs["engine"] = self._solver_engine
                 res = service.spawn_background(
