@@ -174,7 +174,7 @@ def test_select_ids_resolves_names_aliases_and_category_abbreviations():
         assert jobs_multi[2].name == "Beyond_the_fourth_wall"
 
 
-def test_five_worker_pool_persists_progress_logs_and_final_solver():
+def test_global_three_worker_pool_persists_progress_logs_and_final_solver():
     with tempfile.TemporaryDirectory() as temp:
         workspace = Path(temp)
         for index in range(5):
@@ -195,11 +195,11 @@ def test_five_worker_pool_persists_progress_logs_and_final_solver():
         """), encoding="utf-8")
 
         service = SolverService(workspace)
-        results = service.run("1,2,3,4,5", workers=5,
+        results = service.run("1,2,3,4,5", workers=3,
                               agy_command=[sys.executable, str(worker)])
 
         assert [result["state"] for result in results] == ["completed"] * 5
-        assert service.max_active_workers <= 5
+        assert service.max_active_workers <= 3
         for job in service.scan():
             state = service.read_job(job)
             assert state["state"] == "completed"

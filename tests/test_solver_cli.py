@@ -1,6 +1,7 @@
 import json
 import tempfile
 from pathlib import Path
+import pytest
 
 from ctf_downloader.cli import build_unified_parser
 from ctf_downloader.cli_commands import handle_status
@@ -22,12 +23,14 @@ def make_workspace() -> Path:
     return root
 
 
-def test_solve_parser_defaults_to_three_workers_and_accepts_five_workers():
-    args = build_unified_parser().parse_args(["solve", "--ids", "1,2", "--workers", "5"])
+def test_solve_parser_defaults_to_three_workers_and_rejects_more_than_three():
+    args = build_unified_parser().parse_args(["solve", "--ids", "1,2", "--workers", "3"])
 
     assert args.subcommand == "solve"
     assert args.ids == "1,2"
-    assert args.workers == 5
+    assert args.workers == 3
+    with pytest.raises(SystemExit):
+        build_unified_parser().parse_args(["solve", "--ids", "1", "--workers", "4"])
 
 
 def test_status_solver_parser_accepts_detail_target_and_watch():

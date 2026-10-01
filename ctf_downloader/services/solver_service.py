@@ -1181,8 +1181,8 @@ class SolverService:
             engine: str | None = None) -> list[dict]:
         if engine:
             self.engine = engine
-        if workers < 1 or (workers > 5 and not per_category):
-            raise ValueError("workers must be between 1 and 5 unless per_category mode is enabled.")
+        if workers < 1 or workers > 3:
+            raise ValueError("workers must be between 1 and 3.")
         jobs = self.select_ids(raw_ids)
         if agy_command:
             command = list(agy_command)
