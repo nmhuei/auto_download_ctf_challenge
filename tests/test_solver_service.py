@@ -1087,7 +1087,7 @@ def test_gpt_resume_rebinds_the_saved_bqa_workspace(monkeypatch, tmp_path: Path)
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: launched.extend(cmd) or _MockProc())
     service._start_worker(job, None, engine="gpt")
 
-    assert launched[-1] == "host_workspace_bind resume_id=cw-clockwork; continue"
+    assert launched[-1] == "continue"
 
 
 def test_gpt_continuation_policy_only_requeues_normal_no_flag_outcomes(tmp_path: Path):
@@ -1102,6 +1102,12 @@ def test_gpt_continuation_policy_only_requeues_normal_no_flag_outcomes(tmp_path:
     }) == "verify candidate"
     assert service._gpt_continuation_instruction({
         "state": "failed", "error_code": "E_TIMEOUT",
+    }) == "continue"
+    assert service._gpt_continuation_instruction({
+        "state": "failed", "error_code": "E_STALLED",
+    }) == "continue"
+    assert service._gpt_continuation_instruction({
+        "state": "completed", "error_code": None,
     }) is None
 
 

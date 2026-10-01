@@ -24,6 +24,7 @@ from typing import Callable, Iterator, Sequence
 from ..solver.registry import DEFAULT_SOLVER_ENGINE, get_solver_adapter
 from ..solver.settings import solver_max_workers
 from ..storage.fileio import atomic_write_json, locked_update_json
+from ..storage.session_store import SolverSessionStore
 from ..storage.workspace_repo import WorkspaceRepo, is_superseded
 from ..utils.agy_resolver import resolve_agy_binary
 from .prompt_builder import CategoryPromptBuilder
@@ -252,10 +253,11 @@ class SolverService:
     """A single-process scheduler with per-challenge durable state."""
 
     def __init__(self, workspace: str | Path, *, timeout_seconds: int = 3600,
-                 stale_seconds: float = 900, engine: str = DEFAULT_SOLVER_ENGINE,
+                 stale_seconds: float = 1200, engine: str = DEFAULT_SOLVER_ENGINE,
                  minimal_prompt: bool = True):
         self.workspace = Path(workspace).resolve()
         self.repo = WorkspaceRepo(self.workspace)
+        self.session_store = SolverSessionStore(self.workspace)
         self.timeout_seconds = max(1, int(timeout_seconds))
         self.stale_seconds = max(0.01, float(stale_seconds))
         self.engine = str(engine or DEFAULT_SOLVER_ENGINE)
@@ -350,8 +352,9 @@ class SolverService:
         a solve from an Agy completion without a flag or platform confirmation.
         """
         state = state if isinstance(state, dict) else self.read_job(job)
+        rejected = _get_rejected_flags(job)
         candidate = _valid_local_flag(state.get("candidate_flag") or state.get("flag"))
-        if candidate:
+        if candidate and candidate not in rejected:
             return candidate
 
         report: dict = {}
@@ -364,10 +367,10 @@ class SolverService:
             except (OSError, ValueError):
                 pass
         candidate = _valid_local_flag(report.get("candidate_flag") or report.get("flag"))
-        if candidate:
+        if candidate and candidate not in rejected:
             return candidate
         candidate = _extract_flag_from_job(job, report, "")
-        if candidate:
+        if candidate and candidate not in rejected:
             return candidate
 
         try:
@@ -375,7 +378,7 @@ class SolverService:
             flag_obj = status.get("flag") or {}
             if flag_obj.get("state") != "submitted_wrong":
                 saved = _valid_local_flag(flag_obj.get("value"))
-                if saved:
+                if saved and saved not in rejected:
                     return saved
         except Exception:
             pass
@@ -904,12 +907,26 @@ class SolverService:
         gpt_session_id: str | None = None
         if adapter.engine_id == "gpt":
             category_conv_id = None
-            existing_session = prior_state.get("gpt_session_id")
+            existing_session = (
+                self.session_store.get_session(str(job.display_id), "gpt")
+                or prior_state.get("gpt_session_id")
+            )
+            if is_filtered:
+                self.session_store.archive_session(str(job.display_id), "gpt", reason="filtered")
+                existing_session = None
+
             if isinstance(existing_session, str) and existing_session:
                 gpt_session_id = existing_session
+                self.session_store.increment_continuation(str(job.display_id), "gpt")
             else:
                 try:
                     gpt_session_id = adapter.create_session(job)
+                    self.session_store.save_session(
+                        str(job.display_id),
+                        "gpt",
+                        gpt_session_id,
+                        metadata={"name": job.name, "category": job.category},
+                    )
                 except Exception as exc:
                     self._write_job(
                         job, state="failed", phase="session", error_code="E_GPT_SESSION",
@@ -932,23 +949,20 @@ class SolverService:
 
         is_continuation = bool(worker_conv_id) and not is_resume
         if adapter.engine_id == "gpt":
-            is_resume = bool(prior_state.get("gpt_session_id")) and bool(prior_state.get("bqa_chat_id"))
+            is_resume = bool(existing_session)
             is_continuation = is_resume
-            if is_resume:
-                last_out = str(prior_state.get("last_output") or "")
-                if "don't have an active" in last_out or "not actually restoring" in last_out or "don't currently have access" in last_out:
-                    is_resume = False
-                    is_continuation = False
-                    worker_conv_id = None
-                    prompt = f"solve {job.path}"
+            instruction = prior_state.get("continuation_instruction")
+            if isinstance(instruction, str) and instruction.strip():
+                clean_inst = instruction.strip()
+                words = clean_inst.split()
+                if 1 <= len(words) <= 3:
+                    prompt = clean_inst
                 else:
-                    workspace_id = prior_state.get("bqa_chat_id")
-                    instruction = prior_state.get("continuation_instruction")
-                    if not isinstance(instruction, str) or not instruction.strip():
-                        instruction = "continue"
-                    prompt = f"host_workspace_bind resume_id={workspace_id}; {instruction}"
+                    prompt = "continue"
+            elif is_resume:
+                prompt = "continue"
             else:
-                prompt = f"solve {job.path}"
+                prompt = "solve challenge"
         else:
             prompt = self.build_prompt(
                 job,
@@ -1152,6 +1166,9 @@ class SolverService:
                 msg = f"{worker_label} worker stopped: model quota limit reached."
                 if has_analysis:
                     msg += " Analysis preserved in script/analysis.md."
+            if _FILTER_RE.search(output) or _FILTER_RE.search(log_content):
+                error_code = "E_FILTER"
+                msg = f"{worker_label} worker was stopped by a safety filter."
 
             updates: dict[str, object] = {
                 "state": "failed",
@@ -1161,11 +1178,21 @@ class SolverService:
                 "exit_code": exit_code,
                 "ended_at": self._now(),
             }
-            if candidate_flag:
+            if error_code == "E_FILTER":
+                self.session_store.archive_session(str(job.display_id), adapter.engine_id, reason="filtered")
+                updates["gpt_session_id"] = None
+                updates["filter_detected"] = True
+                updates["was_filtered"] = True
+            rejected_flags = _get_rejected_flags(job)
+            if candidate_flag and candidate_flag not in rejected_flags:
                 updates["candidate_flag"] = candidate_flag
             if has_analysis:
                 updates["outcome"] = "analyzed"
             return self._write_job(job, **updates)
+
+        rejected_flags = _get_rejected_flags(job)
+        if candidate_flag in rejected_flags:
+            candidate_flag = None
 
         if candidate_flag and not verified_local:
             return self._write_job(job, state="failed", phase="verify_local",
@@ -1175,7 +1202,6 @@ class SolverService:
                                    message="Candidate flag needs a successful local verification report.",
                                    exit_code=exit_code, ended_at=self._now())
 
-        rejected_flags = _get_rejected_flags(job)
         cleared_candidate = None if (state.get("candidate_flag") in rejected_flags or not candidate_flag) else state.get("candidate_flag")
 
         if not (job.path / "solver" / "solve.py").is_file():
@@ -1243,11 +1269,14 @@ class SolverService:
 
     @staticmethod
     def _gpt_continuation_instruction(result: dict) -> str | None:
-        """Return the next short instruction only for a normal no-flag turn."""
-        if result.get("state") != "failed" or result.get("error_code") != "E_VERIFY_LOCAL":
+        """Return the next short instruction (<= 3 words) for GPT worker continuation."""
+        if result.get("state") == "completed":
             return None
-        if isinstance(result.get("unverified_candidate"), str) and result["unverified_candidate"]:
+        candidate = result.get("unverified_candidate") or result.get("candidate_flag")
+        if isinstance(candidate, str) and candidate:
             return "verify candidate"
+        if result.get("error_code") == "E_FILTER":
+            return "solve challenge"
         return "continue"
 
     def run(self, raw_ids: str, *, workers: int | None = None, agy_command: Sequence[str] | None = None,
@@ -1414,6 +1443,8 @@ class SolverService:
                                     continuation_attempts=attempts,
                                     continuation_instruction=instruction,
                                     ended_at=None,
+                                    pid=None,
+                                    pgid=None,
                                 )
                                 queue.append(job)
                             else:
@@ -1469,7 +1500,7 @@ class SolverService:
         *,
         workers: int | None = None,
         timeout_seconds: int = 3600,
-        stale_seconds: int = 300,
+        stale_seconds: int = 1200,
         reuse_session: bool = True,
         per_category: bool = False,
         engine: Optional[str] = None,

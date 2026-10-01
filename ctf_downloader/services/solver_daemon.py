@@ -166,7 +166,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--ids", required=True, help="Challenge display IDs to solve")
     parser.add_argument("--workers", type=int, default=None, help="Max worker concurrency (default: workspace .env)")
     parser.add_argument("--timeout", type=int, default=3600, help="Per-worker timeout seconds")
-    parser.add_argument("--stale-timeout", type=float, default=300, help="Stale heartbeat timeout seconds")
+    parser.add_argument("--stale-timeout", type=float, default=1200, help="Stale heartbeat timeout seconds")
     parser.add_argument("--new-session", action="store_true", help="Start new sessions instead of reusing category sessions")
     parser.add_argument("--per-category", action="store_true", help="Allow one worker slot per category")
     parser.add_argument("--engine", default=None, help="Solver engine adapter (e.g. agy, gpt, codex, claude)")

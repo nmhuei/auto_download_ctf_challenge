@@ -804,7 +804,7 @@ def handle_solve(args):
     service = SolverService(
         args.workspace,
         timeout_seconds=getattr(args, 'timeout', 3600),
-        stale_seconds=getattr(args, 'stale_timeout', 300),
+        stale_seconds=getattr(args, 'stale_timeout', 1200),
     )
 
     # 0. Check --reset-sessions
@@ -912,7 +912,7 @@ def handle_solve(args):
             ids,
             workers=getattr(args, 'workers', None),
             timeout_seconds=getattr(args, 'timeout', 3600),
-            stale_seconds=getattr(args, 'stale_timeout', 300),
+            stale_seconds=getattr(args, 'stale_timeout', 1200),
             reuse_session=reuse_session,
             engine=getattr(args, 'engine', None),
         )

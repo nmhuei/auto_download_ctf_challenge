@@ -219,8 +219,8 @@ def build_unified_parser():
                              help='Parallel worker count (default: CTF_SOLVER_MAX_WORKERS or 3)')
     solve_parser.add_argument('--timeout', type=int, default=3600,
                              help='Per-worker timeout in seconds (default: 3600)')
-    solve_parser.add_argument('--stale-timeout', type=float, default=300,
-                             help='Terminate worker without output/heartbeat after seconds (default: 300)')
+    solve_parser.add_argument('--stale-timeout', type=float, default=1200,
+                             help='Terminate worker without output/heartbeat after seconds (default: 1200)')
     solve_parser.add_argument('--detach', '--bg', action='store_true',
                              help='Run in background daemon mode')
     solve_parser.add_argument('--foreground', '-f', action='store_true',
