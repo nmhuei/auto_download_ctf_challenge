@@ -106,7 +106,7 @@ Dự án trang bị sẵn 3 kỹ năng tác chiến chuẩn mực cho các AI Ag
 | `ctf menu` | `--cookie` · `--token` · `--workspace` |
 | `ctf storage` | `--base-dir` · `--threshold-mb` |
 | `ctf storage archive` | `--git-remote` · `--out` · `--yes` |
-| `ctf sync` | `--apply` · `--insecure` · `--pull` · `--pull-status` · `--verify` · `--workspace` |
+| `ctf sync` | `--apply` · `--insecure` · `--pull` · `--pull-status` · `--update` · `--verify` · `--workspace` |
 | `ctf history` | `--all` · `--clear` · `--limit` · `--prune` · `--tail` · `--workspace` |
 | `ctf sniper` | `--poll` · `--retry-wrong` · `--start-at` · `--workspace` |
 | `ctf serve` | `--port` · `--workspace` |

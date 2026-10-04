@@ -71,3 +71,16 @@ When invoked via `/ctf-toolkit <target>`, `/ctf <target>`, or terse shorthand:
   - **Tier 3 (Math/Logic Isolation)**: Extract formal roadblocks to `math_workspace/` (`TASK.md` + `instance.json`) and invoke the `ctf-ask` skill. Never leak challenge context, URLs, or binaries to Astra.
 
 *See [recovery.md](references/recovery.md) for empirical failure mode analysis.*
+
+---
+
+## Unknown Platform Resolution & Platform Authoring
+
+If the platform is not supported or missing (`CTF-PULL-D02`), invoke the `ctf-add-new-platform` skill to create and scaffold the new platform.
+
+When encountering an unsupported or new CTF platform (`CTF-PULL-D02`), follow the standard two-path blueprint:
+1. **Path A (Declarative JSON - Zero Python Code)**: Add `ctf_downloader/platforms/definitions/<key>.json` or `.ctf/platforms/<key>.json`.
+2. **Path B (Custom Python Adapter)**: Subclass `BasePlatform` in `ctf_downloader/platforms/<key>.py` with `@register`.
+
+*See the `ctf-add-new-platform` skill and [platform_authoring.md](references/platform_authoring.md) for full JSON schema references, Python boilerplate templates, and deterministic unit test templates.*
+

@@ -128,6 +128,31 @@ class GptSolverAdapter(SolverAdapter):
         if not raw_text:
             return events
 
+        # `gpt run --json` emits one terminal document even when the process
+        # itself exits successfully.  Treat lifecycle failures as failures,
+        # not as ordinary text: a zero exit code only means the CLI rendered
+        # the response, not that the upstream turn settled.
+        try:
+            terminal = json.loads(raw_text)
+        except ValueError:
+            terminal = None
+        if isinstance(terminal, dict) and "lifecycle_status" in terminal:
+            lifecycle = str(terminal.get("lifecycle_status") or "")
+            message = str(terminal.get("error") or terminal.get("text") or lifecycle)
+            if lifecycle == "completed_turn":
+                events.append(NormalizedSolverEvent(
+                    event_type="done", phase="completed", message=message, raw=terminal,
+                ))
+            elif lifecycle in {"upstream_error", "transport_lost", "server_active"}:
+                events.append(NormalizedSolverEvent(
+                    event_type="upstream", phase="upstream", message=message, raw=terminal,
+                ))
+            else:
+                events.append(NormalizedSolverEvent(
+                    event_type="terminal", phase="terminal", message=message, raw=terminal,
+                ))
+            return events
+
         # 1. Check for @@CTF_PROGRESS@@ JSON markers
         match = _CTF_PROGRESS_RE.search(raw_text)
         if match:
@@ -177,11 +202,22 @@ class GptSolverAdapter(SolverAdapter):
 
         # 4. Check for Tool telemetry (🔧 [Tool] Calling ... / 🔧 [Tool Finished] ...)
         if "🔧 [Tool" in raw_text or "🔧" in raw_text:
+            cleaned = (
+                raw_text.replace("🔧 [Tool Call:", "")
+                .replace("🔧 [Tool Finished]", "")
+                .replace("🔧 [Tool]", "")
+                .replace("🔧", "")
+                .strip()
+            )
+            if cleaned.startswith("Calling "):
+                cleaned = cleaned[len("Calling "):].strip()
+            if cleaned.endswith("..."):
+                cleaned = cleaned[:-3].strip()
             events.append(
                 NormalizedSolverEvent(
                     event_type="tool_call",
                     phase="tool",
-                    message=raw_text,
+                    message=cleaned,
                     raw=raw_text,
                 )
             )
@@ -223,6 +259,10 @@ class GptSolverAdapter(SolverAdapter):
         for ev in events:
             if ev.candidate_flag:
                 return "completed"
+            if ev.event_type == "upstream":
+                return "upstream_error"
+            if ev.event_type == "terminal":
+                return "model_terminal"
             if ev.event_type == "refusal":
                 return "refused"
             if ev.event_type == "quota":

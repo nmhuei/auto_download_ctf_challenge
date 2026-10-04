@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Callable, Iterator, Sequence
 
 from ..solver.registry import DEFAULT_SOLVER_ENGINE, get_solver_adapter
-from ..solver.settings import solver_max_workers
+from ..solver.settings import solver_max_workers, solver_default_engine, set_last_solver_engine
 from ..storage.fileio import atomic_write_json, locked_update_json
 from ..storage.session_store import SolverSessionStore
 from ..storage.workspace_repo import WorkspaceRepo, is_superseded
@@ -106,6 +106,7 @@ _QUOTA_RE = re.compile(
     re.IGNORECASE,
 )
 _FLAG_RE = re.compile(r'\b[A-Za-z0-9_\-]{3,24}\{[^\s{}\'\"]{4,200}\}')
+_GPT_AUTONOMY_MIN_DURATION_MS = 10 * 60 * 1000
 
 
 def _is_dummy_flag(candidate: str) -> bool:
@@ -253,14 +254,15 @@ class SolverService:
     """A single-process scheduler with per-challenge durable state."""
 
     def __init__(self, workspace: str | Path, *, timeout_seconds: int = 3600,
-                 stale_seconds: float = 1200, engine: str = DEFAULT_SOLVER_ENGINE,
+                 stale_seconds: float = 1200, engine: str | None = None,
                  minimal_prompt: bool = True):
         self.workspace = Path(workspace).resolve()
         self.repo = WorkspaceRepo(self.workspace)
         self.session_store = SolverSessionStore(self.workspace)
         self.timeout_seconds = max(1, int(timeout_seconds))
         self.stale_seconds = max(0.01, float(stale_seconds))
-        self.engine = str(engine or DEFAULT_SOLVER_ENGINE)
+        resolved_engine = engine or solver_default_engine(self.workspace)
+        self.engine = str(resolved_engine)
         self.worker_limit = solver_max_workers(self.workspace)
         self.minimal_prompt = minimal_prompt
         self.max_active_workers = 0
@@ -484,6 +486,24 @@ class SolverService:
 
         def mutate(state: dict) -> dict:
             state.update(updates)
+            if state.get("engine") == "gpt":
+                try:
+                    duration_ms = max(0, int(state.get("gpt_duration_ms") or 0))
+                except (TypeError, ValueError):
+                    duration_ms = 0
+                solved = state.get("outcome") == "solved_local"
+                state["autonomy"] = {
+                    "session_id": state.get("gpt_session_id"),
+                    "turn_count": 1,
+                    "duration_ms": duration_ms,
+                    "minimum_duration_ms": _GPT_AUTONOMY_MIN_DURATION_MS,
+                    "passed": bool(solved or duration_ms >= _GPT_AUTONOMY_MIN_DURATION_MS),
+                    "reason": (
+                        "verified_flag" if solved
+                        else "continuous_runtime" if duration_ms >= _GPT_AUTONOMY_MIN_DURATION_MS
+                        else "insufficient_single_turn"
+                    ),
+                }
             state["display_id"] = job.display_id
             state["challenge_id"] = job.challenge_id
             state["updated_at"] = self._now()
@@ -595,7 +615,12 @@ class SolverService:
             return
         if category:
             cat_key = category.strip().lower()
-            locked_update_json(self.category_sessions_path, lambda cur: {k: v for k, v in cur.items() if k.strip().lower() != cat_key})
+            def _filter(cur: dict) -> dict:
+                return {
+                    k: v for k, v in cur.items()
+                    if k.strip().lower() != cat_key and not k.strip().lower().endswith(f":{cat_key}")
+                }
+            locked_update_json(self.category_sessions_path, _filter)
         else:
             with contextlib.suppress(OSError):
                 self.category_sessions_path.unlink()
@@ -761,6 +786,8 @@ class SolverService:
             return
         self._touch_activity(job)
         updates: dict[str, object] = {"heartbeat_at": self._now(), "last_output": stripped[-500:]}
+        if getattr(adapter, "engine_id", None) == "gpt":
+            updates["engine"] = "gpt"
         if _FILTER_RE.search(stripped):
             updates["filter_detected"] = True
         if _AGY_PRINT_TIMEOUT_RE.search(stripped):
@@ -774,7 +801,7 @@ class SolverService:
                         eng = getattr(adapter, "engine_id", "agy")
                         if eng != "gpt" and not self.get_category_session(job.category, engine=eng):
                             self.save_category_session(job.category, evt.message, job, engine=eng)
-                    elif evt.event_type == "progress":
+                    elif evt.event_type in ("progress", "tool_call"):
                         if evt.phase:
                             updates["phase"] = evt.phase
                         if evt.message:
@@ -811,6 +838,18 @@ class SolverService:
                             value = evt_obj.get(field)
                             if isinstance(value, str) and value:
                                 updates["gpt_session_id" if field == "session_id" else field] = value
+                        lifecycle = evt_obj.get("lifecycle_status")
+                        if isinstance(lifecycle, str) and lifecycle:
+                            updates["gpt_lifecycle_status"] = lifecycle
+                        duration_ms = evt_obj.get("duration_ms")
+                        if isinstance(duration_ms, (int, float)) and duration_ms >= 0:
+                            updates["gpt_duration_ms"] = int(duration_ms)
+                        tool_calls = evt_obj.get("tool_calls")
+                        if isinstance(tool_calls, list):
+                            updates["gpt_tool_call_count"] = len(tool_calls)
+                        thoughts = evt_obj.get("thinking")
+                        if isinstance(thoughts, list):
+                            updates["gpt_thinking_count"] = len(thoughts)
                 if isinstance(evt_obj, dict) and evt_obj.get("event") == "step_update":
                     su = evt_obj.get("step_update", {})
                     stype = su.get("step_type")
@@ -951,18 +990,11 @@ class SolverService:
         if adapter.engine_id == "gpt":
             is_resume = bool(existing_session)
             is_continuation = is_resume
-            instruction = prior_state.get("continuation_instruction")
-            if isinstance(instruction, str) and instruction.strip():
-                clean_inst = instruction.strip()
-                words = clean_inst.split()
-                if 1 <= len(words) <= 3:
-                    prompt = clean_inst
-                else:
-                    prompt = "continue"
-            elif is_resume:
-                prompt = "continue"
-            else:
-                prompt = "solve challenge"
+            # BR executes in its own BQA workspace; subprocess cwd is not
+            # inherited.  Always hand it the exact challenge root, including
+            # on an explicit later resume, and never let scheduler retries
+            # replace the task with an ambiguous `continue`.
+            prompt = f"solve {job.path.resolve()}"
         else:
             prompt = self.build_prompt(
                 job,
@@ -1202,6 +1234,15 @@ class SolverService:
                                    message="Candidate flag needs a successful local verification report.",
                                    exit_code=exit_code, ended_at=self._now())
 
+        gpt_lifecycle = state.get("gpt_lifecycle_status") if getattr(adapter, "engine_id", None) == "gpt" else None
+        if gpt_lifecycle and gpt_lifecycle != "completed_turn" and not (candidate_flag and verified_local):
+            error_code = "E_UPSTREAM" if gpt_lifecycle in {"upstream_error", "transport_lost", "server_active"} else "E_MODEL_TERMINAL"
+            return self._write_job(
+                job, state="failed", phase="terminal", error_code=error_code,
+                message=f"GPT turn ended with lifecycle {gpt_lifecycle}; session retained for explicit inspection.",
+                exit_code=exit_code, ended_at=self._now(),
+            )
+
         cleared_candidate = None if (state.get("candidate_flag") in rejected_flags or not candidate_flag) else state.get("candidate_flag")
 
         if not (job.path / "solver" / "solve.py").is_file():
@@ -1269,15 +1310,8 @@ class SolverService:
 
     @staticmethod
     def _gpt_continuation_instruction(result: dict) -> str | None:
-        """Return the next short instruction (<= 3 words) for GPT worker continuation."""
-        if result.get("state") == "completed":
-            return None
-        candidate = result.get("unverified_candidate") or result.get("candidate_flag")
-        if isinstance(candidate, str) and candidate:
-            return "verify candidate"
-        if result.get("error_code") == "E_FILTER":
-            return "solve challenge"
-        return "continue"
+        """GPT autonomy is one durable turn; never enqueue a synthetic follow-up."""
+        return None
 
     def run(self, raw_ids: str, *, workers: int | None = None, agy_command: Sequence[str] | None = None,
             on_refresh: Callable[[], None] | None = None, acquire_lock: bool = True,
@@ -1285,6 +1319,7 @@ class SolverService:
             engine: str | None = None) -> list[dict]:
         if engine:
             self.engine = engine
+            set_last_solver_engine(engine, self.workspace)
         workers = self.worker_limit if workers is None else workers
         if workers < 1 or workers > self.worker_limit:
             raise ValueError(f"workers must be between 1 and {self.worker_limit}.")
@@ -1446,6 +1481,7 @@ class SolverService:
                                     pid=None,
                                     pgid=None,
                                 )
+                                time.sleep(1.0)
                                 queue.append(job)
                             else:
                                 completed[job] = result
@@ -1537,8 +1573,10 @@ class SolverService:
             cmd.append("--new-session")
         if per_category:
             cmd.append("--per-category")
-        if engine:
-            cmd.extend(["--engine", str(engine)])
+        chosen_engine = engine or self.engine
+        if chosen_engine:
+            cmd.extend(["--engine", str(chosen_engine)])
+            set_last_solver_engine(chosen_engine, self.workspace)
 
         env = os.environ.copy()
         pkg_root = str(Path(__file__).resolve().parent.parent.parent)

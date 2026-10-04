@@ -1043,6 +1043,7 @@ def test_gpt_worker_persists_a_local_session_before_launch(monkeypatch, tmp_path
     assert launched[:4] == [
         "/home/light/.local/bin/gpt", "run", "--resume-session", "sess_ctf_clockwork",
     ]
+    assert launched[-1] == f"solve {job.path.resolve()}"
 
 
 def test_gpt_json_result_records_the_bound_bqa_workspace(tmp_path: Path):
@@ -1067,7 +1068,7 @@ def test_gpt_json_result_records_the_bound_bqa_workspace(tmp_path: Path):
     assert state["bqa_workspace_path"] == "/tmp/bqa/clockwork"
 
 
-def test_gpt_resume_rebinds_the_saved_bqa_workspace(monkeypatch, tmp_path: Path):
+def test_gpt_resume_keeps_challenge_path_instead_of_generic_continue(monkeypatch, tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     make_challenge(workspace, "Crypto", "clockwork", 1, source=True)
@@ -1087,31 +1088,31 @@ def test_gpt_resume_rebinds_the_saved_bqa_workspace(monkeypatch, tmp_path: Path)
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: launched.extend(cmd) or _MockProc())
     service._start_worker(job, None, engine="gpt")
 
-    assert launched[-1] == "continue"
+    assert launched[-1] == f"solve {job.path.resolve()}"
 
 
-def test_gpt_continuation_policy_only_requeues_normal_no_flag_outcomes(tmp_path: Path):
+def test_gpt_continuation_policy_never_requeues_automatic_turns(tmp_path: Path):
     service = SolverService(tmp_path, engine="gpt")
 
     assert service._gpt_continuation_instruction({
         "state": "failed", "error_code": "E_VERIFY_LOCAL",
-    }) == "continue"
+    }) is None
     assert service._gpt_continuation_instruction({
         "state": "failed", "error_code": "E_VERIFY_LOCAL",
         "unverified_candidate": "CTF{candidate}",
-    }) == "verify candidate"
+    }) is None
     assert service._gpt_continuation_instruction({
         "state": "failed", "error_code": "E_TIMEOUT",
-    }) == "continue"
+    }) is None
     assert service._gpt_continuation_instruction({
         "state": "failed", "error_code": "E_STALLED",
-    }) == "continue"
+    }) is None
     assert service._gpt_continuation_instruction({
         "state": "completed", "error_code": None,
     }) is None
 
 
-def test_gpt_scheduler_requeues_a_normal_no_flag_turn(monkeypatch, tmp_path: Path):
+def test_gpt_scheduler_does_not_requeue_a_normal_no_flag_turn(monkeypatch, tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     make_challenge(workspace, "Crypto", "clockwork", 1, source=True)
@@ -1124,14 +1125,37 @@ def test_gpt_scheduler_requeues_a_normal_no_flag_turn(monkeypatch, tmp_path: Pat
             return 0
 
     monkeypatch.setattr(service, "_start_worker", lambda job, *_args, **_kwargs: starts.append(job) or _DoneProc())
-    outcomes = iter([
-        {"state": "failed", "error_code": "E_VERIFY_LOCAL"},
-        {"state": "completed", "error_code": None},
-    ])
+    outcomes = iter([{"state": "failed", "error_code": "E_VERIFY_LOCAL"}])
     monkeypatch.setattr(service, "_finish_worker", lambda *_args, **_kwargs: next(outcomes))
 
     results = service.run("1", workers=1, engine="gpt")
 
-    assert len(starts) == 2
-    assert results == [{"state": "completed", "error_code": None}]
-    assert service.read_job(starts[0])["continuation_attempts"] == 1
+    assert len(starts) == 1
+    assert results == [{"state": "failed", "error_code": "E_VERIFY_LOCAL"}]
+
+
+def test_gpt_json_telemetry_records_one_turn_autonomy_metrics(tmp_path: Path):
+    from ctf_downloader.solver.adapters.gpt import GptSolverAdapter
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    make_challenge(workspace, "Crypto", "clockwork", 1, source=True)
+    service = SolverService(workspace, engine="gpt")
+    job = service.scan()[0]
+
+    service._append_output(
+        job,
+        '{"status":"ok","lifecycle_status":"completed_turn",'
+        '"session_id":"sess_clockwork","duration_ms":600000,'
+        '"thinking":["Inspecting attachment"],'
+        '"tool_calls":[{"tool":"list_directory"}]}' + "\n",
+        adapter=GptSolverAdapter(),
+    )
+
+    state = service.read_job(job)
+    assert state["gpt_lifecycle_status"] == "completed_turn"
+    assert state["gpt_duration_ms"] == 600000
+    assert state["gpt_tool_call_count"] == 1
+    assert state["gpt_thinking_count"] == 1
+    assert state["autonomy"]["passed"] is True
+    assert state["autonomy"]["reason"] == "continuous_runtime"

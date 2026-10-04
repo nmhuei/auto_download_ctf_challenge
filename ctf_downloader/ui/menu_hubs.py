@@ -150,10 +150,12 @@ def hub_workspace_targets(app: Any) -> None:
             break
         elif choice == "1":
             if hasattr(app, "_menu_select_workspace"):
-                app._menu_select_workspace()
+                if app._menu_select_workspace():
+                    break
         elif choice == "2":
             if hasattr(app, "_menu_download_new"):
-                app._menu_download_new()
+                if app._menu_download_new():
+                    break
         elif choice == "3":
             if hasattr(app, "_menu_config_credentials"):
                 app._menu_config_credentials()

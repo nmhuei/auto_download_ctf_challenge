@@ -77,7 +77,7 @@ def test_main_menu_enter_selects_last_action(monkeypatch):
         app.workspace_path = str(ws)
         app.cookie = app.token = None
         app.config = {}
-        app._last_action = "3"
+        app._last_action = "S"
 
         called = []
         monkeypatch.setattr(app, "_menu_solver", lambda: called.append("solver"))
@@ -87,11 +87,11 @@ def test_main_menu_enter_selects_last_action(monkeypatch):
         full_output = "\n".join(con.printed)
         assert "● active" not in full_output
         assert "[default" not in full_output
-        assert "Select action (1-5, 0 [T=Theme]):" in full_output
+        assert "Select action (1-5, S=Solver, 0=Exit [T=Theme]):" in full_output
 
 
 def test_main_menu_aliases_and_cleaning(monkeypatch):
-    con = FakeMenuConsole(inputs=[" [3] ", " q "])
+    con = FakeMenuConsole(inputs=[" [S] ", " q "])
     monkeypatch.setattr(im, "_menu_console", lambda: con)
 
     with tempfile.TemporaryDirectory() as temp:
@@ -107,7 +107,7 @@ def test_main_menu_aliases_and_cleaning(monkeypatch):
         app.run()
 
         assert "solver" in called
-        assert app._last_action == "3"
+        assert app._last_action == "S"
 
 
 def test_menu_view_challenge_detail_lists_and_selects_by_index(monkeypatch):
@@ -551,6 +551,7 @@ def test_menu_configure_auth_sanitization_and_clearing(monkeypatch):
     monkeypatch.setattr(AuthService, "save_auth", lambda ws=None, url=None, cookie=None, token=None, **kw: saved_calls.append((ws, cookie, token)))
     monkeypatch.setattr(AuthService, "delete_auth", lambda ws=None, url=None, **kw: deleted_calls.append(ws))
     monkeypatch.setattr(im, "_pause", lambda: None)
+    monkeypatch.setattr(im, "update_global_config", lambda mut: mut({}))
 
     with tempfile.TemporaryDirectory() as temp:
         app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
@@ -579,7 +580,7 @@ def test_menu_configure_auth_sanitization_and_clearing(monkeypatch):
 
 
 def test_menu_header_auth_pointer(monkeypatch):
-    """Header warning must direct to [1] -> [3] when unauthenticated."""
+    """Header warning must direct to 'ctf auth' when unauthenticated."""
     with tempfile.TemporaryDirectory() as temp:
         app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
         app.workspace_path = temp
@@ -592,7 +593,7 @@ def test_menu_header_auth_pointer(monkeypatch):
         app._print_header()
 
         output = "\n".join(con.printed)
-        assert "! auth not configured · use [1] -> [3]" in output
+        assert "! auth not configured · use 'ctf auth' to configure credentials" in output
 
 
 def test_menu_solver_empty_workspace_guidance(monkeypatch):
@@ -727,4 +728,252 @@ def test_update_menu_theme_recolors_rank_console():
         im._update_menu_theme("exodia")
 
 
+def test_hub_workspace_switch_auto_returns_to_main_menu(monkeypatch):
+    """When switching workspace in Hub [1], successfully selecting a workspace
+    must automatically return to the main dashboard without extra keypresses."""
+    from ctf_downloader.ui.menu_hubs import hub_workspace_targets
+
+    prompt_inputs = ["1"]
+    def _fake_prompt(text):
+        if prompt_inputs:
+            return prompt_inputs.pop(0)
+        return "0"
+
+    monkeypatch.setattr("ctf_downloader.ui.menu_hubs._prompt", _fake_prompt)
+
+    class DummyApp:
+        def __init__(self):
+            self.switch_called = 0
+
+        def _menu_select_workspace(self):
+            self.switch_called += 1
+            return True
+
+    app = DummyApp()
+    hub_workspace_targets(app)
+
+    assert app.switch_called == 1
+
+
+def test_hub_workspace_cancel_stays_in_hub(monkeypatch):
+    """If user cancels workspace selection, stay in Hub [1]."""
+    from ctf_downloader.ui.menu_hubs import hub_workspace_targets
+
+    prompt_inputs = ["1", "0"]
+    def _fake_prompt(text):
+        return prompt_inputs.pop(0)
+
+    monkeypatch.setattr("ctf_downloader.ui.menu_hubs._prompt", _fake_prompt)
+
+    class DummyApp:
+        def __init__(self):
+            self.switch_called = 0
+
+        def _menu_select_workspace(self):
+            self.switch_called += 1
+            return False
+
+    app = DummyApp()
+    hub_workspace_targets(app)
+
+    assert app.switch_called == 1
+    assert len(prompt_inputs) == 0
+
+
+def test_main_menu_action_1_directly_invokes_switch_workspace(monkeypatch):
+    """Option 1 in main menu directly opens workspace selector without intermediate hub."""
+    con = FakeMenuConsole(inputs=["1", "0"])
+    monkeypatch.setattr(im, "_menu_console", lambda: con)
+
+    with tempfile.TemporaryDirectory() as temp:
+        ws = create_dummy_workspace(temp)
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = str(ws)
+        app.cookie = app.token = None
+        app.config = {}
+        app._last_action = None
+
+        switch_called = []
+        monkeypatch.setattr(app, "_menu_switch_workspace", lambda: switch_called.append(True) or True)
+        app.run()
+
+        assert len(switch_called) == 1
+        assert app._last_action == "1"
+
+
+def test_main_menu_action_2_invokes_flag_format(monkeypatch):
+    """Option 2 in main menu invokes _menu_flag_format."""
+    con = FakeMenuConsole(inputs=["2", "0"])
+    monkeypatch.setattr(im, "_menu_console", lambda: con)
+
+    with tempfile.TemporaryDirectory() as temp:
+        ws = create_dummy_workspace(temp)
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = str(ws)
+        app.cookie = app.token = None
+        app.config = {}
+        app._last_action = None
+
+        called = []
+        monkeypatch.setattr(app, "_menu_flag_format", lambda: called.append(True))
+        app.run()
+
+        assert len(called) == 1
+        assert app._last_action == "2"
+
+
+def test_main_menu_action_3_invokes_submit_flag(monkeypatch):
+    """Option 3 in main menu invokes _menu_submit_flag."""
+    con = FakeMenuConsole(inputs=["3", "0"])
+    monkeypatch.setattr(im, "_menu_console", lambda: con)
+
+    with tempfile.TemporaryDirectory() as temp:
+        ws = create_dummy_workspace(temp)
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = str(ws)
+        app.cookie = app.token = None
+        app.config = {}
+        app._last_action = None
+
+        called = []
+        monkeypatch.setattr(app, "_menu_submit_flag", lambda: called.append(True))
+        app.run()
+
+        assert len(called) == 1
+        assert app._last_action == "3"
+
+
+def test_main_menu_action_s_invokes_solver(monkeypatch):
+    """Option S in main menu invokes _menu_solver."""
+    con = FakeMenuConsole(inputs=["s", "0"])
+    monkeypatch.setattr(im, "_menu_console", lambda: con)
+
+    with tempfile.TemporaryDirectory() as temp:
+        ws = create_dummy_workspace(temp)
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = str(ws)
+        app.cookie = app.token = None
+        app.config = {}
+        app._last_action = None
+
+        called = []
+        monkeypatch.setattr(app, "_menu_solver", lambda: called.append(True))
+        app.run()
+
+        assert len(called) == 1
+        assert app._last_action == "S"
+
+
+def test_menu_flag_format_set_and_clear(monkeypatch):
+    monkeypatch.setattr(im, "_pause", lambda: None)
+
+    with tempfile.TemporaryDirectory() as temp:
+        ws = create_dummy_workspace(temp)
+        (ws / "challenges.json").write_text(json.dumps({"ctf_info": {}, "challenges": []}), encoding="utf-8")
+
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = str(ws)
+        app.cookie = app.token = None
+        app.config = {}
+
+        con1 = FakeMenuConsole(inputs=["CSSCTF{...}"])
+        monkeypatch.setattr(im, "_menu_console", lambda: con1)
+        monkeypatch.setattr(im, "_prompt", lambda p: "CSSCTF{...}")
+        app._menu_flag_format()
+
+        fmt = app._get_flag_format()
+        assert fmt == r"^CSSCTF\{.+\}$"
+
+        monkeypatch.setattr(im, "_prompt", lambda p: "clear")
+        con2 = FakeMenuConsole(inputs=["clear"])
+        monkeypatch.setattr(im, "_menu_console", lambda: con2)
+        app._menu_flag_format()
+
+        fmt_cleared = app._get_flag_format()
+        assert not fmt_cleared
+
+
+def test_submit_flag_format_validation_and_wrapping(monkeypatch):
+    monkeypatch.setattr(im, "_pause", lambda: None)
+
+    with tempfile.TemporaryDirectory() as temp:
+        ws = create_dummy_workspace(temp)
+        (ws / "challenges.json").write_text(json.dumps({
+            "ctf_info": {"flag_format": r"^CSSCTF\{.+\}$"},
+            "challenges": []
+        }), encoding="utf-8")
+
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = str(ws)
+        app.cookie = app.token = None
+        app.config = {}
+
+        submitted = []
+
+        class MockSubmitter:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def submit_single_flag(self, challenge_id, challenge_name, flag_value):
+                submitted.append(flag_value)
+                return True
+
+        monkeypatch.setattr(im, "FlagSubmitter", MockSubmitter)
+        target = {"id": 1, "name": "Chall 1", "category": "Web"}
+
+        # 1. Flag hợp lệ -> submit luôn không hỏi lựa chọn
+        con1 = FakeMenuConsole()
+        monkeypatch.setattr(im, "_menu_console", lambda: con1)
+        monkeypatch.setattr(im, "_prompt", lambda p: "CSSCTF{valid_flag}")
+        app._submit_flag_for_target(target)
+        assert submitted[-1] == "CSSCTF{valid_flag}"
+
+        # 2. Flag sai format -> chọn [1] tiếp tục submit nguyên bản
+        con2 = FakeMenuConsole()
+        monkeypatch.setattr(im, "_menu_console", lambda: con2)
+        prompts2 = ["wrong_flag", "1"]
+        monkeypatch.setattr(im, "_prompt", lambda p: prompts2.pop(0))
+        app._submit_flag_for_target(target)
+        assert submitted[-1] == "wrong_flag"
+
+        # 3. Flag sai format -> chọn [2] wrap lại rồi submit
+        con3 = FakeMenuConsole()
+        monkeypatch.setattr(im, "_menu_console", lambda: con3)
+        prompts3 = ["OTHER{inner_secret}", "2"]
+        monkeypatch.setattr(im, "_prompt", lambda p: prompts3.pop(0))
+        app._submit_flag_for_target(target)
+        assert submitted[-1] == "CSSCTF{inner_secret}"
+
+        # 4. Flag sai format -> chọn [0] huỷ bỏ
+        count_before = len(submitted)
+        con4 = FakeMenuConsole()
+        monkeypatch.setattr(im, "_menu_console", lambda: con4)
+        prompts4 = ["not_wrapped", "0"]
+        monkeypatch.setattr(im, "_prompt", lambda p: prompts4.pop(0))
+        app._submit_flag_for_target(target)
+        assert len(submitted) == count_before
+
+
+def test_menu_solver_switch_engine(monkeypatch):
+    """Option 8 switches the active solver engine and renders formatted engine switcher table."""
+    con = FakeMenuConsole(inputs=["8", "5", "0"])
+    monkeypatch.setattr(im, "_menu_console", lambda: con)
+    monkeypatch.setattr(im, "_pause", lambda: None)
+    persisted = []
+    monkeypatch.setattr(im, "set_last_solver_engine", lambda eng, ws, **kw: persisted.append(eng))
+
+    with tempfile.TemporaryDirectory() as temp:
+        ws = create_dummy_workspace(temp)
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = str(ws)
+        app.cookie = app.token = None
+        app.config = {}
+
+        app._menu_solver()
+
+        output = "\n".join(con.printed)
+        assert "AI SOLVER ENGINES" in output.upper()
+        assert "Auto-discovered Adapters" in output
+        assert app._solver_engine == "gpt"
+        assert persisted == ["gpt"]
 

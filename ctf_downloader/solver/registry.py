@@ -54,13 +54,10 @@ def register_solver_adapter(engine_id: str, adapter_cls: Type[SolverAdapter]) ->
 def get_solver_adapter(engine_id: Optional[str] = None, **kwargs) -> SolverAdapter:
     """Instantiate a solver adapter by engine ID. Defaults to 'agy'."""
     _auto_discover_adapters()
-    if engine_id is None:
-        key = DEFAULT_SOLVER_ENGINE
-    else:
-        key = str(engine_id).strip().lower()
-        if key not in _REGISTRY:
-            available = ", ".join(sorted(_REGISTRY.keys()))
-            raise KeyError(f"Unknown solver engine '{engine_id}'. Available engines: {available}")
+    key = str(engine_id or DEFAULT_SOLVER_ENGINE).strip().lower()
+    if key not in _REGISTRY:
+        available = ", ".join(sorted(_REGISTRY.keys()))
+        raise KeyError(f"Unknown solver engine '{engine_id or key}'. Available engines: {available}")
     cls = _REGISTRY[key]
     return cls(**kwargs)
 

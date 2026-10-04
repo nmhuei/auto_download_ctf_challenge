@@ -22,6 +22,12 @@ from .core import CTFDownloader
 from .config import DownloaderConfig
 from .utils.logger import Logger
 from .utils.sanitize import sanitize_cookie_input
+from .utils.flag_format import (
+    validate_flag,
+    extract_format_prefix,
+    normalize_flag_format_input,
+    wrap_flag_to_format,
+)
 from .services.auth_service import AuthService
 
 from .services.status_service import StatusService
@@ -33,6 +39,7 @@ from .storage.global_config import (  # noqa: F401 — re-export để giữ tư
     save_global_config,
     update_global_config,
 )
+from .solver.settings import solver_default_engine, set_last_solver_engine
 
 # PHOSPHOR FIELD KIT (design-system spec §2/§3) — AppHeader radar + tokens.
 from .ui.banner import app_header
@@ -60,11 +67,12 @@ SWITCHER_TITLE_W = 30
 SWITCHER_PLATFORM_W = 8
 
 _MAIN_ACTIONS_RAW = (
-    ('1', '🎯', 'Competitions & Auth', ''),
-    ('2', '🚩', 'Submit & Flag Vault', ''),
-    ('3', '⚡', 'SuperBQA AI Solver', ''),
+    ('1', '🎯', 'Select CTF Workspace', ''),
+    ('2', '🏁', 'Flag Format', ''),
+    ('3', '🚩', 'Submit Flag', ''),
     ('4', '🏆', 'Scoreboard & Rank', ''),
     ('5', '🌐', 'Dynamic Containers', ''),
+    ('S', '⚡', 'SuperBQA AI Solver', ''),
     ('0', '🚪', 'Exit', ''),
 )
 
@@ -483,11 +491,11 @@ class CTFInteractiveConsole:
         else:
             ctx.append("  ")
             ctx.append(ws_name or self.workspace_path, style=INFO)
-            ctx.append(" · no challenges · use [1] to clone / download CTF", style=FG_MUTED)
+            ctx.append(" · no challenges · use 'ctf pull <url>' to download CTF", style=FG_MUTED)
 
         if not (self.cookie or self.token):
             ctx.append("\n  ")
-            ctx.append("! auth not configured · use [1] -> [3] to configure credentials", style=WARN)
+            ctx.append("! auth not configured · use 'ctf auth' to configure credentials", style=WARN)
         con.print(ctx)
 
         if total > 0:
@@ -527,7 +535,7 @@ class CTFInteractiveConsole:
                     )
                 _menu_console().print(Padding(grid, (0, 2)))
 
-                prompt_msg = 'Select action (1-5, 0 [T=Theme]): '
+                prompt_msg = 'Select action (1-5, S=Solver, 0=Exit [T=Theme]): '
                 raw_choice = _prompt(prompt_msg).strip()
                 choice = raw_choice.strip(" []().")
                 if not choice and self._last_action:
@@ -552,15 +560,15 @@ class CTFInteractiveConsole:
                 key_map = {
                     '0': '0', 'q': '0', 'quit': '0', 'exit': '0', 'thoat': '0',
                     '1': '1', 'workspace': '1', 'ws': '1', 'target': '1',
-                    '2': '2', 'flag': '2', 'submit': '2', 'nop': '2',
-                    '3': '3', 'solve': '3', 'solver': '3', 'bqa': '3', 'eating': '3',
+                    '2': '2', 'format': '2', 'flagformat': '2',
+                    '3': '3', 'flag': '3', 'submit': '3', 'nop': '3',
                     '4': '4', 'rank': '4', 'ranking': '4', 'scoreboard': '4', 'board': '4', 'bxh': '4',
-                    '5': '5', 'instance': '5', 'container': '5', 'dock': '5', 'docker': '5',
+                    '5': '5', 'instance': '5', 'instances': '5', 'container': '5', 'containers': '5', 'dock': '5', 'docker': '5',
+                    's': 'S', 'solve': 'S', 'solver': 'S', 'bqa': 'S', 'eating': 'S',
                     'g': 'G', 'git': 'G', 'sync': 'G', 'push': 'G', 'backup': 'G',
                     't': 'T', 'theme': 'T', 'color': 'T', 'colors': 'T', 'style': 'T',
-                    's': '3',
                 }
-                canonical = key_map.get(choice_lower, choice.upper() if choice.upper() in ('G', 'T') else choice)
+                canonical = key_map.get(choice_lower, choice.upper() if choice.upper() in ('G', 'T', 'S') else choice)
 
                 if canonical == '0':
                     from .ui.theme import get_active_palette
@@ -572,15 +580,17 @@ class CTFInteractiveConsole:
                              style=FG_MUTED))
                     break
                 elif canonical == '1':
-                    hub_workspace_targets(self)
+                    self._menu_switch_workspace()
                 elif canonical == '2':
-                    hub_flag_submission(self)
+                    self._menu_flag_format()
                 elif canonical == '3':
-                    self._menu_solver()
+                    self._menu_submit_flag()
                 elif canonical == '4':
                     self._menu_ranking()
                 elif canonical == '5':
                     self._menu_container_manager()
+                elif canonical == 'S':
+                    self._menu_solver()
                 elif canonical == 'G':
                     con = _menu_console()
                     con.print()
@@ -591,8 +601,6 @@ class CTFInteractiveConsole:
                     _pause()
                 elif canonical == 'T':
                     self._menu_theme()
-                elif canonical == 'S':
-                    self._menu_solver()
                 # Compatibility fallbacks for legacy inputs
                 elif canonical == '6':
                     self._menu_submit_flag()
@@ -603,10 +611,10 @@ class CTFInteractiveConsole:
                 elif canonical == '9':
                     self._menu_configure_auth()
                 else:
-                    Logger.warning('Invalid selection. Please choose an option from 1 to 5, G, T, or 0.')
+                    Logger.warning('Invalid selection. Please choose an option from 1 to 5, S, or 0.')
                 # Ghi nhớ hành động gần nhất để vòng sau đánh dấu ❯ (§S1.1);
                 # input lạ ('x', '99') không được tính là action.
-                if canonical in ('1', '2', '3', '4', '5', '6', '7', '8', '9', 'G', 'T', 'S'):
+                if canonical in ('1', '2', '3', '4', '5', 'S', 'G', 'T'):
                     self._last_action = canonical
             except (EOFError, KeyboardInterrupt):
                 from .ui.theme import get_active_palette
@@ -698,9 +706,12 @@ class CTFInteractiveConsole:
                                 Logger.info("Git: Created local baseline snapshot.")
                     except Exception as ge:
                         Logger.warning(f"Git auto-snapshot: {ge}")
+                    _pause()
+                    return True
         except Exception as e:
             Logger.error(f'Download failed: {e}')
         _pause()
+        return False
 
     def _menu_switch_workspace(self):
         base_ctf = resolve_workspace_root()
@@ -773,7 +784,7 @@ class CTFInteractiveConsole:
 
         ch = _prompt(f'Select workspace (1-{len(workspaces)}, 0): ').strip()
         if ch in ('0', 'q', 'back', 'exit') or not ch:
-            return
+            return False
         else:
             try:
                 sel_idx = int(ch) - 1
@@ -787,11 +798,13 @@ class CTFInteractiveConsole:
                 self._load_saved_auth()
                 self._save_current_workspace()
                 Logger.success(f"Switched to workspace: {os.path.basename(self.workspace_path)}")
+                return True
             except Exception:
                 Logger.error('Invalid selection.')
                 _pause()
+                return False
 
-    def _save_current_workspace(self):
+    def _save_current_workspace(self, set_default: bool = True):
         """Persist workspace mặc định (+auth nếu có) NGUYÊN TỬ qua khóa
         flock — đọc-mutate-ghi trên state HIỆN HÀNH trên đĩa qua
         ``update_global_config`` (review c18-2, MED).
@@ -813,7 +826,8 @@ class CTFInteractiveConsole:
             pass
 
         def _mut(fresh):
-            fresh['default_workspace'] = ws
+            if set_default and ws:
+                fresh['default_workspace'] = ws
             auth_map = fresh.setdefault('auth', {})
             abs_ws = os.path.abspath(ws)
             keys = [ws, abs_ws]
@@ -1203,6 +1217,117 @@ class CTFInteractiveConsole:
         cname = str(target.get('name') or f'ID {cid}')
         self._run_container_action_for_id(str(cid), challenge_name=cname)
 
+    def _get_flag_format(self) -> Optional[str]:
+        """Lấy flag format đã cấu hình cho workspace hiện tại."""
+        try:
+            from .storage.workspace_repo import WorkspaceRepo
+            repo = WorkspaceRepo(self.workspace_path)
+            ctf_info = repo.read_challenges().get("ctf_info") or {}
+            fmt = ctf_info.get("flag_format")
+            if fmt and str(fmt).strip():
+                return str(fmt).strip()
+        except Exception:
+            pass
+
+        # Check .ctf-solver/flag_format.txt
+        try:
+            solver_fmt_file = Path(self.workspace_path) / ".ctf-solver" / "flag_format.txt"
+            if solver_fmt_file.is_file():
+                content = solver_fmt_file.read_text(encoding="utf-8").strip()
+                if content:
+                    return content
+        except Exception:
+            pass
+
+        # Check global config cache
+        try:
+            from .storage.global_config import load_global_config
+            cfg = load_global_config()
+            cached = (cfg.get("flag_formats") or {}).get(self.workspace_path)
+            if cached and str(cached).strip():
+                return str(cached).strip()
+        except Exception:
+            pass
+
+        return None
+
+    def _set_flag_format(self, fmt: str):
+        """Lưu flag format cho workspace hiện tại."""
+        fmt = (fmt or "").strip()
+        try:
+            from .storage.workspace_repo import WorkspaceRepo
+            repo = WorkspaceRepo(self.workspace_path)
+            repo.update_ctf_info(flag_format=fmt, flag_format_source="manual")
+        except Exception as e:
+            Logger.warning(f"Could not update challenges.json: {e}")
+
+        # Update .ctf-solver/flag_format.txt
+        try:
+            solver_dir = Path(self.workspace_path) / ".ctf-solver"
+            solver_dir.mkdir(parents=True, exist_ok=True)
+            fmt_file = solver_dir / "flag_format.txt"
+            if fmt:
+                fmt_file.write_text(fmt + "\n", encoding="utf-8")
+            elif fmt_file.exists():
+                fmt_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        # Update global config cache
+        try:
+            from .storage.global_config import update_global_config
+            def _mut(state):
+                state = dict(state or {})
+                fmts = dict(state.get("flag_formats") or {})
+                if fmt:
+                    fmts[self.workspace_path] = fmt
+                else:
+                    fmts.pop(self.workspace_path, None)
+                state["flag_formats"] = fmts
+                return state
+            update_global_config(_mut)
+        except Exception:
+            pass
+
+    def _menu_flag_format(self):
+        _section('Flag Format Configuration')
+        con = _menu_console()
+        current_fmt = self._get_flag_format()
+        ws_name = os.path.basename(self.workspace_path)
+
+        con.print(f"  [bold]Workspace:[/bold] [cyan]{ws_name}[/cyan]")
+        if current_fmt:
+            prefix = extract_format_prefix(current_fmt)
+            prefix_info = f" (Prefix: [bold cyan]{prefix}[/bold cyan])" if prefix else ""
+            con.print(f"  [bold]Current Flag Format:[/bold] [green]{current_fmt}[/green]{prefix_info}")
+        else:
+            con.print(f"  [bold]Current Flag Format:[/bold] [dim italic]Not set[/dim italic]")
+        con.print()
+        con.print("  [dim]Enter new format (e.g. CSSCTF{...}, FLAG, or regex ^CTF\\{.+\\}$).[/dim]")
+        con.print("  [dim]Press Enter to keep current, or 'clear' to remove.[/dim]")
+        con.print()
+
+        try:
+            val = _prompt('Flag format [Enter to keep]: ').strip()
+        except (EOFError, KeyboardInterrupt):
+            return
+
+        if not val:
+            return
+
+        if val.lower() in ('clear', 'reset', 'none', 'rm', '0'):
+            self._set_flag_format("")
+            Logger.success(f"Cleared flag format for workspace: {ws_name}")
+            _pause()
+            return
+
+        normalized = normalize_flag_format_input(val)
+        self._set_flag_format(normalized)
+        prefix = extract_format_prefix(normalized)
+        prefix_info = f" (Prefix: {prefix})" if prefix else ""
+        Logger.success(f"Flag format set to: {normalized}{prefix_info}")
+        _pause()
+
     def _menu_submit_flag(self):
         dash = CTFDashboard(self.workspace_path)
         challs = dash.local_challenges
@@ -1230,6 +1355,37 @@ class CTFInteractiveConsole:
         if not flag_str:
             Logger.info('Flag submission cancelled.')
             return
+
+        # Kiểm tra định dạng flag nếu workspace đã cấu hình flag format
+        fmt = self._get_flag_format()
+        if fmt:
+            if not validate_flag(flag_str, fmt):
+                wrapped_flag = wrap_flag_to_format(flag_str, fmt)
+                Logger.warning(f"⚠️ Flag không đúng format đã cấu hình: {fmt}")
+                con.print(f"  Flag đã nhập:  [bold yellow]{flag_str}[/bold yellow]")
+                has_wrap = (wrapped_flag != flag_str)
+                if has_wrap:
+                    con.print(f"  Gợi ý wrap:    [bold green]{wrapped_flag}[/bold green]")
+                con.print()
+                con.print("  [1] Tiếp tục submit flag này nguyên bản")
+                if has_wrap:
+                    con.print(f"  [2] Wrap lại thành [bold green]{wrapped_flag}[/bold green] rồi submit")
+                con.print("  [0] Huỷ bỏ (Cancel)")
+                con.print()
+                try:
+                    choice = _prompt("Lựa chọn (1, 2, 0) [1]: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    Logger.info("Đã huỷ nộp flag.")
+                    return
+
+                if choice in ('1', ''):
+                    pass
+                elif choice == '2' and has_wrap:
+                    flag_str = wrapped_flag
+                    Logger.info(f"Đã wrap flag thành: {flag_str}")
+                else:
+                    Logger.info("Đã huỷ nộp flag.")
+                    return
 
         sub = FlagSubmitter(
             workspace_dir=self.workspace_path,
@@ -1325,7 +1481,8 @@ class CTFInteractiveConsole:
                 return
 
             con = _menu_console()
-            res = service.spawn_background(str(matched_job.display_id), workers=1, engine=getattr(self, "_solver_engine", "agy"))
+            extra_kw = {"engine": current_engine} if current_engine and current_engine != "agy" else {}
+            res = service.spawn_background(str(matched_job.display_id), workers=1, **extra_kw)
             if not res.get("success"):
                 Logger.error(res.get("message", "SuperBQA startup failed."))
                 _pause()
@@ -1402,7 +1559,8 @@ class CTFInteractiveConsole:
                 sess_strs = [f"{cat} ({info.get('conversation_id', '')[:8]}...)" for cat, info in cat_sessions.items()]
                 con.print(f"  [dim]📁 Category Sessions: {', '.join(sess_strs)}[/dim]")
 
-            engine_name = getattr(self, "_solver_engine", "agy")
+            engine_name = getattr(self, "_solver_engine", None) or solver_default_engine(service.workspace)
+            self._solver_engine = engine_name
             con.print(f"  [bold cyan]⚙ Engine:[/bold cyan] [bold white]{engine_name.upper()}[/bold white]  ·  (Press 8 to switch engine)")
 
             con.print()
@@ -1427,18 +1585,56 @@ class CTFInteractiveConsole:
                 return
             elif act_clean in ('8', 'engine', 'switch'):
                 from .solver.registry import probe_available_adapters
-                con.print("\n  Available AI Engines (Auto-discovered):")
+                _render_header_panel("AI Solver Engines", "Auto-discovered Adapters")
+                con = _menu_console()
                 probes = probe_available_adapters()
-                curr_eng = getattr(self, "_solver_engine", "agy")
+                curr_eng = getattr(self, "_solver_engine", None) or solver_default_engine(service.workspace)
+
+                grid = Table.grid(padding=(0, 1))
+                grid.add_column("key", justify="right", no_wrap=True)
+                grid.add_column("title")
+                grid.add_column("id")
+                grid.add_column("status")
+
                 for idx, p in enumerate(probes, start=1):
-                    badge = f"[{SUCCESS}]Ready[/{SUCCESS}]" if p.usable else f"[{FG_MUTED}]{p.status_message}[/{FG_MUTED}]"
-                    active_marker = f" [{ACCENT}](Active)[/{ACCENT}]" if p.engine_id == curr_eng else ""
-                    con.print(f"    [{idx}] {p.display_name} ({p.engine_id}){active_marker} — {badge}")
+                    is_active = (p.engine_id == curr_eng)
+                    key_style = "menu.active" if is_active else "menu.key"
+                    title_style = "menu.active" if is_active else "fg.base"
+                    id_style = "menu.active" if is_active else "fg.muted"
+
+                    status_text = Text()
+                    if is_active:
+                        status_text.append("Active", style="menu.active")
+                        status_text.append(" · ", style="fg.faint")
+                    if p.usable:
+                        status_text.append("Ready", style="success")
+                    else:
+                        status_text.append(p.status_message or "Unavailable", style="fg.muted")
+
+                    grid.add_row(
+                        Text(f"[{idx}]", style=key_style),
+                        Text(p.display_name, style=title_style),
+                        Text(f"({p.engine_id})", style=id_style),
+                        Text("— ", style="fg.faint") + status_text,
+                    )
+
+                grid.add_row(
+                    Text("[0]", style="menu.exit"),
+                    Text("Back", style="fg.muted"),
+                    Text(""),
+                    Text(""),
+                )
+                con.print(Padding(grid, (0, 2)))
+                con.print()
+
                 try:
-                    eng_c = _prompt(f'  Select engine (1-{len(probes)}): ').strip()
+                    eng_c = _prompt(f'Select engine (1-{len(probes)}, 0 to cancel): ').strip()
+                    if eng_c in ('0', 'q', 'back', 'exit') or not eng_c:
+                        continue
                     if eng_c.isdigit() and 1 <= int(eng_c) <= len(probes):
                         chosen = probes[int(eng_c) - 1]
                         self._solver_engine = chosen.engine_id
+                        set_last_solver_engine(chosen.engine_id, service.workspace, persist_global=True)
                         Logger.success(f"Switched active solver engine to: {chosen.display_name} ({chosen.engine_id})")
                 except (EOFError, KeyboardInterrupt):
                     pass
@@ -1448,11 +1644,9 @@ class CTFInteractiveConsole:
                     ids = _prompt('Enter Challenge ID(s) to solve (e.g. 1 or 1,3,5): ').strip()
                 except (EOFError, KeyboardInterrupt):
                     return
-                if not ids:
-                    continue
                 bg_kwargs = {"workers": service.worker_limit}
-                if getattr(self, "_solver_engine", None) and self._solver_engine != "agy":
-                    bg_kwargs["engine"] = self._solver_engine
+                if engine_name and engine_name != "agy":
+                    bg_kwargs["engine"] = engine_name
                 res = service.spawn_background(ids, **bg_kwargs)
                 if not res.get("success"):
                     Logger.error(res.get("message", "Solver startup failed."))
@@ -1481,8 +1675,8 @@ class CTFInteractiveConsole:
                     continue
                 category_count = len({job.category.strip().casefold() for job in target_jobs})
                 bg_kwargs = {"workers": min(service.worker_limit, max(1, category_count)), "per_category": True}
-                if getattr(self, "_solver_engine", None) and self._solver_engine != "agy":
-                    bg_kwargs["engine"] = self._solver_engine
+                if engine_name and engine_name != "agy":
+                    bg_kwargs["engine"] = engine_name
                 res = service.spawn_background(
                     source_ids,
                     **bg_kwargs,
@@ -1761,7 +1955,7 @@ class CTFInteractiveConsole:
                 pass
             self.cookie = clean_c
             AuthService.save_auth(self.workspace_path, url=plat_url, cookie=self.cookie, token=self.token)
-            self._save_current_workspace()
+            self._save_current_workspace(set_default=False)
             Logger.success('Cookie saved successfully for this workspace!')
             _pause()
         elif ch == '2':
@@ -1776,7 +1970,7 @@ class CTFInteractiveConsole:
                 pass
             self.token = t_in.strip()
             AuthService.save_auth(self.workspace_path, url=plat_url, cookie=self.cookie, token=self.token)
-            self._save_current_workspace()
+            self._save_current_workspace(set_default=False)
             Logger.success('Token saved successfully for this workspace!')
             _pause()
         elif ch == '3':
@@ -1789,7 +1983,7 @@ class CTFInteractiveConsole:
             except Exception:
                 pass
             AuthService.delete_auth(self.workspace_path, url=plat_url)
-            self._save_current_workspace()
+            self._save_current_workspace(set_default=False)
             Logger.info('Credentials cleared.')
             _pause()
         elif ch == '4':
@@ -1850,7 +2044,7 @@ class CTFInteractiveConsole:
             formatted_cookie = "; ".join(cookie_parts)
             self.cookie = formatted_cookie
             AuthService.save_auth(self.workspace_path, url=plat_url, cookie=self.cookie, token=self.token)
-            self._save_current_workspace()
+            self._save_current_workspace(set_default=False)
             Logger.success(f"Synced & saved {len(cookies)} cookies from Burp Suite for this workspace!")
             _pause()
 

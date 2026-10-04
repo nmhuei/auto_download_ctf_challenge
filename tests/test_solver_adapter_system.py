@@ -213,7 +213,9 @@ def test_solver_service_run_with_codex_engine_invokes_codex_binary(tmp_path, mon
     assert "--json" in launched
 
 
-def test_category_sessions_isolated_by_engine(tmp_path):
+def test_category_sessions_isolated_by_engine(tmp_path, monkeypatch):
+    import ctf_downloader.storage.global_config as gc
+    monkeypatch.setattr(gc, "load_global_config", lambda: {})
     from ctf_downloader.services.solver_service import SolverService
 
     service = SolverService(tmp_path)
@@ -277,6 +279,17 @@ def test_gpt_adapter_stream_line_decoding():
     assert adp.classify_exit(0, events_flag) == "completed"
 
 
+def test_gpt_adapter_decodes_terminal_json_and_does_not_call_it_completed():
+    adp = GptSolverAdapter()
+    events = adp.decode_stream_line(
+        '{"status":"incomplete","lifecycle_status":"upstream_error",'
+        '"error":"SSE interrupted"}'
+    )
+
+    assert any(event.event_type == "upstream" for event in events)
+    assert adp.classify_exit(0, events) == "upstream_error"
+
+
 def test_gpt_adapter_provisions_and_returns_a_persisted_local_session(monkeypatch, tmp_path):
     import ctf_downloader.solver.adapters.gpt as gpt_module
 
@@ -294,3 +307,34 @@ def test_gpt_adapter_provisions_and_returns_a_persisted_local_session(monkeypatc
     assert run.call_args.args[0] == [
         "/usr/local/bin/gpt", "session", "new", "--json", "--tag", "ctf:7:crypto-clockwork",
     ]
+
+
+def test_solver_engine_memory_and_persistence(tmp_path, monkeypatch):
+    import ctf_downloader.storage.global_config as gc
+    fake_global = {}
+    monkeypatch.setattr(gc, "load_global_config", lambda: dict(fake_global))
+    def _fake_update(mut):
+        mut(fake_global)
+        return dict(fake_global)
+    monkeypatch.setattr(gc, "update_global_config", _fake_update)
+
+    from ctf_downloader.solver.settings import solver_default_engine, set_last_solver_engine
+    from ctf_downloader.services.solver_service import SolverService
+
+    # 1. Save and verify workspace-level persistence
+    set_last_solver_engine("gpt", tmp_path)
+    assert solver_default_engine(tmp_path) == "gpt"
+
+    # 2. SolverService loads remembered engine automatically
+    service = SolverService(tmp_path)
+    assert service.engine == "gpt"
+
+    # 3. Switching engine updates memory
+    set_last_solver_engine("codex", tmp_path)
+    assert solver_default_engine(tmp_path) == "codex"
+    service2 = SolverService(tmp_path)
+    assert service2.engine == "codex"
+
+    # 4. Global memory fallback when persisted globally or without workspace
+    set_last_solver_engine("codex", persist_global=True)
+    assert solver_default_engine(None) == "codex"

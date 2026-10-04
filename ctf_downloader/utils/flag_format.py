@@ -626,3 +626,65 @@ def validate_flag(flag: str, fmt_regex: str) -> bool:
         _log_redos_warning(fmt_regex)
         return False
     return result
+
+
+def extract_format_prefix(fmt: str) -> str:
+    """Trích xuất prefix của flag format (vd: ^CSSCTF\\{ -> 'CSSCTF', CSSCTF{ -> 'CSSCTF')."""
+    if not fmt:
+        return ""
+    m = re.search(r'\^?([A-Za-z0-9_-]+)\s*(?:\\)?\{', fmt)
+    if m:
+        return m.group(1)
+    clean = fmt.strip("^$ \t\r\n").rstrip("{.*}+")
+    return clean
+
+
+def normalize_flag_format_input(raw: str) -> str:
+    """Chuẩn hoá chuỗi format do user nhập thành regex format đầy đủ."""
+    raw = raw.strip()
+    if not raw:
+        return ""
+    # Nếu user nhập regex đầy đủ dạng ^PREFIX\{.+\}$ hoặc ^...$
+    if raw.startswith('^') and raw.endswith('$'):
+        try:
+            re.compile(raw)
+            return raw
+        except re.error:
+            pass
+
+    # Kiểm tra dạng PREFIX{...} hoặc PREFIX{xxx} hoặc PREFIX{}
+    sm = _SPAN_FMT_RE.match(raw)
+    if sm:
+        prefix = sm.group(1)
+        return build_format_regex(prefix)
+
+    # Nếu chỉ nhập prefix không: CSSCTF hoặc FLAG
+    if re.fullmatch(r'[A-Za-z0-9_-]+', raw):
+        return build_format_regex(raw)
+
+    # Fallback: nếu compile regex được thì bọc ^...$ nếu chưa có
+    try:
+        re.compile(raw)
+        if not raw.startswith('^') and not raw.endswith('$'):
+            return f"^{raw}$"
+        return raw
+    except re.error:
+        prefix = extract_format_prefix(raw)
+        if prefix:
+            return build_format_regex(prefix)
+        return raw
+
+
+def wrap_flag_to_format(flag: str, fmt: str) -> str:
+    """Bọc nội dung flag vào định dạng chuẩn nếu có prefix."""
+    prefix = extract_format_prefix(fmt)
+    if not prefix:
+        return flag.strip()
+    flag_str = flag.strip()
+    m = re.search(r'\{([^{}]+)\}', flag_str)
+    if m:
+        inner = m.group(1).strip()
+    else:
+        inner = flag_str.strip("{} \t\r\n")
+    return f"{prefix}{{{inner}}}"
+

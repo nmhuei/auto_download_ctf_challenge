@@ -1,0 +1,47 @@
+{
+  "key": "example_ctf",
+  "label": "Example CTF",
+  "throttle": 2.0,
+  "html_markers": [
+    "Powered by ExampleCTF",
+    "meta name=\"generator\" content=\"ExampleCTF\"",
+    "example-ctf-app"
+  ],
+  "cookie_hints": [
+    "example_session",
+    "example_token"
+  ],
+  "url_patterns": [
+    "/example"
+  ],
+  "endpoints": {
+    "auth_check": "/api/v1/user/me",
+    "challenges": "/api/v1/challenges",
+    "challenge_detail": "/api/v1/challenges/{id}",
+    "submit": "/api/v1/challenges/{id}/submit",
+    "scoreboard": "/api/v1/scoreboard"
+  },
+  "schema_mapping": {
+    "challenges_root": "data.challenges",
+    "id": "id",
+    "name": "title",
+    "category": "category",
+    "points": "points",
+    "description": "description",
+    "files": "files",
+    "solved": "solved",
+    "connection_info": "connection_info",
+    "solves_count": "solves"
+  },
+  "submit_spec": {
+    "method": "POST",
+    "flag_param": "flag",
+    "content_type": "json",
+    "success_field": "data.correct",
+    "message_field": "message"
+  },
+  "supports_container": false,
+  "supports_scoreboard": true,
+  "source": "builtin",
+  "description": "Declarative schema template for standard REST CTF platforms."
+}

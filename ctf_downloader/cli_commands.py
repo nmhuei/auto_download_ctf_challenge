@@ -434,8 +434,14 @@ def _solver_table(
             phase_text = Text("ready", style=_INFO_COLOR)
         elif eligibility.reason == "no_input" and value == "idle":
             phase_text = Text("no input", style=_FAINT_COLOR)
-        elif msg and phase in ("running", "starting"):
-            phase_text = Text(f"{phase} · {msg[:35]}", style=_WARN_COLOR)
+        elif msg and phase in ("running", "starting", "tool", "thinking"):
+            clean_msg = msg
+            for prefix in ("Calling ", "🔧 [Tool] ", "💭 [Thinking] "):
+                if clean_msg.startswith(prefix):
+                    clean_msg = clean_msg[len(prefix):]
+            if clean_msg.endswith(" worker started"):
+                clean_msg = "starting engine"
+            phase_text = Text(f"{phase} · {clean_msg[:35]}", style=_WARN_COLOR)
         elif msg and phase not in ("-", "queued", "completed", "failed", "filtered", "cancelled", "skipped"):
             phase_text = Text(f"{phase} · {msg[:25]}", style=_FAINT_COLOR)
         else:
@@ -905,6 +911,7 @@ def handle_solve(args):
         ids = service.prompt_ids()
 
     reuse_session = not getattr(args, 'new_session', False)
+    chosen_engine = getattr(args, 'engine', None) or service.engine
 
     # 5. Check --detach / --bg
     if getattr(args, 'detach', False):
@@ -914,7 +921,7 @@ def handle_solve(args):
             timeout_seconds=getattr(args, 'timeout', 3600),
             stale_seconds=getattr(args, 'stale_timeout', 1200),
             reuse_session=reuse_session,
-            engine=getattr(args, 'engine', None),
+            engine=chosen_engine,
         )
         if not res.get("success"):
             Logger.error(res.get("message", "Background startup failed."))
@@ -932,7 +939,7 @@ def handle_solve(args):
                 workers=getattr(args, 'workers', None),
                 on_refresh=lambda: live.update(_make_solver_radar_view(service)),
                 reuse_session=reuse_session,
-                engine=getattr(args, 'engine', None),
+                engine=chosen_engine,
             )
     except (SolverSelectionError, SolverAlreadyRunning) as exc:
         Logger.error(str(exc))

@@ -219,6 +219,7 @@ def detect_platform_info(base_url: str, session,
     probe_candidates = list(_PROBE_PRIORITY) + [
         k for k in PLATFORMS if k not in _PROBE_PRIORITY and PLATFORMS[k].probes
     ]
+    probe_matched = False
     for candidate in probe_candidates:
         spec = PLATFORMS.get(candidate)
         if spec is None:
@@ -229,42 +230,66 @@ def detect_platform_info(base_url: str, session,
                 matched = True
                 break
         if matched:
+            probe_matched = True
             if confidence != "high":
                 ptype, confidence = candidate, "high"
             break
 
+    # Nếu tầng 2 chỉ nghi ngờ (confidence medium) do cookie hint nhưng probe của platform đó thất bại
+    if not probe_matched and confidence == "medium" and ptype in PLATFORMS:
+        spec = PLATFORMS[ptype]
+        if spec.probes:
+            ptype, confidence = "unknown", "low"
+
     # ------------- Tầng 4: Fallback hành vi cũ & Auto-Recon ------------- #
     candidate_recon_schema = None
     if confidence != "high":
-        # Hành vi cũ: Custom REST / Next.js (/api/challenges, /api/auth/me)
+        # Hành vi: Custom REST / Next.js (/api/challenges, /api/auth/me, /api/me)
         recon_paths.append("/api/challenges")
         data, status = safe_get_json(session, f"{origin}/api/challenges",
                                      statuses=(200, 401, 403))
         if data is not None:
             recon_schema = _response_schema(data)
         payload = data.get("data") if isinstance(data, dict) else None
-        if isinstance(data, dict) and data.get("success") and isinstance(payload, dict) \
-                and "challenges" in payload:
+        is_custom_rest = False
+        if isinstance(data, dict):
+            if data.get("success") and isinstance(payload, dict) and "challenges" in payload:
+                is_custom_rest = True
+            elif "challenges" in data and isinstance(data["challenges"], list):
+                is_custom_rest = True
+            elif isinstance(data.get("data"), list):
+                is_custom_rest = True
+        elif isinstance(data, list):
+            is_custom_rest = True
+
+        if is_custom_rest:
             ptype, confidence = "custom_rest", "high"
             info.add_signal(f"GET /api/challenges -> shape Custom REST (HTTP {status})")
         else:
-            recon_paths.append("/api/auth/me")
-            data, status = safe_get_json(session, f"{origin}/api/auth/me",
-                                         statuses=(200,))
-            if data is not None:
-                recon_schema = _response_schema(data)
-            user_data = data.get("data") if isinstance(data, dict) else None
-            if isinstance(data, dict) and data.get("success") \
-                    and isinstance(user_data, dict) and user_data.get("user"):
-                ptype, confidence = "custom_rest", "high"
-                info.add_signal(f"GET /api/auth/me -> có user (HTTP {status})")
+            for auth_endpoint in ("/api/auth/me", "/api/me"):
+                recon_paths.append(auth_endpoint)
+                data, status = safe_get_json(session, f"{origin}{auth_endpoint}",
+                                             statuses=(200,))
+                if data is not None:
+                    recon_schema = _response_schema(data)
+                user_data = None
+                if isinstance(data, dict):
+                    user_data = (
+                        data.get("data", {}).get("user")
+                        if isinstance(data.get("data"), dict)
+                        else (data.get("user") or (data if data.get("logged_in") else None))
+                    )
+                if user_data:
+                    ptype, confidence = "custom_rest", "high"
+                    info.add_signal(f"GET {auth_endpoint} -> có user (HTTP {status})")
+                    break
 
         if confidence != "high" and "/games" in parsed.path:
             ptype, confidence = "gzctf", "medium"
             info.add_signal("URL chứa /games -> GZ::CTF (nhận diện qua URL, hành vi cũ)")
 
         # Tầng 4b: Tự động Auto-Recon khám phá platform chưa biết
-        if confidence != "high" and ptype == "unknown":
+        if confidence != "high":
             recon_result = PlatformReconEngine.probe_url(clean_base_url, session=session)
             if recon_result.candidate_schema and recon_result.confidence in ("high", "medium"):
                 candidate_recon_schema = recon_result.candidate_schema
