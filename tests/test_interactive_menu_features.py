@@ -961,6 +961,7 @@ def test_menu_solver_switch_engine(monkeypatch):
     monkeypatch.setattr(im, "_pause", lambda: None)
     persisted = []
     monkeypatch.setattr(im, "set_last_solver_engine", lambda eng, ws, **kw: persisted.append(eng))
+    monkeypatch.setattr("ctf_downloader.solver.settings.set_last_solver_engine", lambda eng, ws, **kw: persisted.append(eng))
 
     with tempfile.TemporaryDirectory() as temp:
         ws = create_dummy_workspace(temp)
@@ -976,4 +977,27 @@ def test_menu_solver_switch_engine(monkeypatch):
         assert "Auto-discovered Adapters" in output
         assert app._solver_engine == "gpt"
         assert persisted == ["gpt"]
+
+
+def test_menu_solver_empty_ids_cancels_gracefully(monkeypatch):
+    """Action 1 (solve target) with empty input or Enter cancels gracefully without crashing."""
+    # Inputs: "1" (solve target), "" (empty input / Enter to cancel), "0" (exit menu)
+    con = FakeMenuConsole(inputs=["1", "", "0"])
+    monkeypatch.setattr(im, "_menu_console", lambda: con)
+    monkeypatch.setattr(im, "_pause", lambda: None)
+
+    spawned = []
+    with tempfile.TemporaryDirectory() as temp:
+        ws = create_dummy_workspace(temp)
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = str(ws)
+        app.cookie = app.token = None
+        app.config = {}
+
+        with patch("ctf_downloader.services.solver_service.SolverService.spawn_background") as mock_spawn:
+            mock_spawn.side_effect = lambda *a, **kw: spawned.append((a, kw))
+            # Must not raise any exception
+            app._menu_solver()
+
+        assert len(spawned) == 0, "spawn_background should not be called when challenge ID is empty"
 

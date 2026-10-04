@@ -1541,7 +1541,12 @@ class SolverService:
         per_category: bool = False,
         engine: Optional[str] = None,
     ) -> dict:
-        jobs = self.select_ids(raw_ids)
+        if not raw_ids or not str(raw_ids).strip():
+            return {"success": False, "error": "NO_INPUT", "message": "No challenge selected."}
+        try:
+            jobs = self.select_ids(raw_ids)
+        except SolverSelectionError as exc:
+            return {"success": False, "error": "INVALID_SELECTION", "message": str(exc)}
         if not jobs:
             return {"success": False, "error": "NO_JOBS", "message": "No valid challenges found."}
 

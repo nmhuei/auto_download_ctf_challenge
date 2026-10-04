@@ -1641,13 +1641,20 @@ class CTFInteractiveConsole:
                 continue
             elif act_clean in ('1', 'solve', 'target', 'bqa', 'eat', 'eating'):
                 try:
-                    ids = _prompt('Enter Challenge ID(s) to solve (e.g. 1 or 1,3,5): ').strip()
+                    ids = _prompt('Enter Challenge ID(s) to solve (e.g. 1 or 1,3,5) [Enter to cancel]: ').strip()
                 except (EOFError, KeyboardInterrupt):
                     return
+                if not ids or ids in ('0', 'q', 'back', 'cancel', 'exit'):
+                    continue
                 bg_kwargs = {"workers": service.worker_limit}
                 if engine_name and engine_name != "agy":
                     bg_kwargs["engine"] = engine_name
-                res = service.spawn_background(ids, **bg_kwargs)
+                try:
+                    res = service.spawn_background(ids, **bg_kwargs)
+                except Exception as err:
+                    Logger.warning(f"Selection error: {err}")
+                    _pause()
+                    continue
                 if not res.get("success"):
                     Logger.error(res.get("message", "Solver startup failed."))
                     _pause()

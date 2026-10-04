@@ -909,6 +909,9 @@ def handle_solve(args):
             Logger.error("Missing --ids and stdin is not an interactive terminal.")
             sys.exit(1)
         ids = service.prompt_ids()
+        if not ids or not str(ids).strip() or str(ids).strip().lower() in ("0", "q", "exit", "cancel", "back"):
+            Logger.info("No challenge selected. Exiting.")
+            return
 
     reuse_session = not getattr(args, 'new_session', False)
     chosen_engine = getattr(args, 'engine', None) or service.engine
