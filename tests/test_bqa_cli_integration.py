@@ -102,3 +102,19 @@ def test_usage_error_and_non_pull_commands_skip_bqa_recovery():
         lambda _incident: pytest.fail("called for submit"),
     ) == 1
 
+    # bare ctf command (interactive UI) MUST skip recovery
+    assert run_with_bqa_recovery(
+        [],
+        lambda: (_ for _ in ()).throw(SystemExit(1)),
+        lambda _incident: pytest.fail("called for bare ctf"),
+    ) == 1
+
+    # interactive flags and UI subcommands MUST skip recovery
+    for ui_args in [["-i"], ["--interactive"], ["menu"], ["ui"], ["console"], ["solve"]]:
+        assert run_with_bqa_recovery(
+            ui_args,
+            lambda: (_ for _ in ()).throw(SystemExit(1)),
+            lambda _incident: pytest.fail(f"called for UI args: {ui_args}"),
+        ) == 1
+
+

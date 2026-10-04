@@ -1001,3 +1001,54 @@ def test_menu_solver_empty_ids_cancels_gracefully(monkeypatch):
 
         assert len(spawned) == 0, "spawn_background should not be called when challenge ID is empty"
 
+
+def test_safe_run_action_catches_exceptions_without_crashing(monkeypatch):
+    """_safe_run_action catches any arbitrary exception and does not crash the UI."""
+    paused = []
+    monkeypatch.setattr(im, "_pause", lambda: paused.append(True))
+    app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+
+    def buggy_action():
+        raise RuntimeError("Unexpected failure in UI feature")
+
+    # Must catch and return None, not raise
+    result = app._safe_run_action(buggy_action)
+    assert result is None
+    assert len(paused) == 1
+
+
+def test_menu_run_loop_catches_unhandled_action_exception(monkeypatch):
+    """Menu run() catches unhandled action exceptions and continues cleanly to exit."""
+    con = FakeMenuConsole(inputs=["1", "0"])
+    monkeypatch.setattr(im, "_menu_console", lambda: con)
+    monkeypatch.setattr(im, "_pause", lambda: None)
+
+    with tempfile.TemporaryDirectory() as temp:
+        ws = create_dummy_workspace(temp)
+        app = im.CTFInteractiveConsole.__new__(im.CTFInteractiveConsole)
+        app.workspace_path = str(ws)
+        app.cookie = app.token = None
+        app.config = {}
+        app._last_action = None
+
+        # Monkeypatch action 1 to raise an unexpected error
+        monkeypatch.setattr(app, "_menu_switch_workspace", MagicMock(side_effect=ValueError("Test crash")))
+        monkeypatch.setattr(app, "_load_saved_auth", lambda: None)
+        monkeypatch.setattr(app, "_print_header", lambda: None)
+
+        # Must execute without raising ValueError out of run()
+        app.run()
+        # Verify it handled and terminated cleanly on "0"
+        output = "\n".join(con.printed)
+        assert "Goodbye" in output
+
+
+def test_launch_interactive_menu_catches_fatal_initialization_error(monkeypatch):
+    """launch_interactive_menu catches fatal setup errors without letting them escape to CLI boundary."""
+    monkeypatch.setattr(im, "_menu_console", lambda: FakeMenuConsole())
+    with patch("ctf_downloader.interactive_menu.CTFInteractiveConsole") as mock_console:
+        mock_console.side_effect = RuntimeError("Fatal hardware or environment failure")
+        # Must not raise RuntimeError
+        im.launch_interactive_menu()
+
+

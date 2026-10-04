@@ -140,30 +140,39 @@ def hub_workspace_targets(app: Any) -> None:
     ]
 
     while True:
-        choice = render_hub_menu(
-            title="Workspaces & Targets",
-            subtitle="Competitions & Platforms",
-            actions=actions,
-            prompt_text="❯ Select action (0-4): ",
-        )
-        if choice in ("0", ""):
+        try:
+            choice = render_hub_menu(
+                title="Workspaces & Targets",
+                subtitle="Competitions & Platforms",
+                actions=actions,
+                prompt_text="❯ Select action (0-4): ",
+            )
+            if choice in ("0", ""):
+                break
+            elif choice == "1":
+                if hasattr(app, "_menu_select_workspace"):
+                    if app._menu_select_workspace():
+                        break
+            elif choice == "2":
+                if hasattr(app, "_menu_download_new"):
+                    if app._menu_download_new():
+                        break
+            elif choice == "3":
+                if hasattr(app, "_menu_config_credentials"):
+                    app._menu_config_credentials()
+            elif choice == "4":
+                if hasattr(app, "_menu_platform_doctor"):
+                    app._menu_platform_doctor()
+                else:
+                    _run_doctor_fallback(app)
+        except (EOFError, KeyboardInterrupt):
             break
-        elif choice == "1":
-            if hasattr(app, "_menu_select_workspace"):
-                if app._menu_select_workspace():
-                    break
-        elif choice == "2":
-            if hasattr(app, "_menu_download_new"):
-                if app._menu_download_new():
-                    break
-        elif choice == "3":
-            if hasattr(app, "_menu_config_credentials"):
-                app._menu_config_credentials()
-        elif choice == "4":
-            if hasattr(app, "_menu_platform_doctor"):
-                app._menu_platform_doctor()
-            else:
-                _run_doctor_fallback(app)
+        except Exception as exc:
+            Logger.error(f"Lỗi thao tác: {exc}")
+            if os.environ.get("CTF_DEBUG") == "1":
+                import traceback
+                traceback.print_exc()
+            _pause()
 
 
 def _run_doctor_fallback(app: Any) -> None:
@@ -195,53 +204,62 @@ def challenge_action_card(app: Any, target: Dict[str, Any]) -> None:
     ]
 
     while True:
-        con.print()
-        card_table = Table(box=None, show_header=False, pad_edge=False, padding=(0, 1))
-        card_table.add_column("Field", style=FG_MUTED, no_wrap=True)
-        card_table.add_column("Value")
-        card_table.add_row("Challenge", Text(str(cname), style=f"bold {FG_BASE}"))
-        card_table.add_row("Metadata", Text(f"ID: {cid}  ·  Category: {cat}  ·  Points: {pts}", style=FG_MUTED))
-        if target.get("connection_info"):
-            card_table.add_row("Connection", Text(str(target["connection_info"]), style=INFO))
-        if target.get("solved_by_me"):
-            card_table.add_row("Status", Text("✔ SOLVED", style="solved"))
-        else:
-            card_table.add_row("Status", Text("· Unsolved", style=FG_FAINT))
-
-        con.print(
-            Panel(
-                card_table,
-                title=Text(" ACTION CARD ", style=f"bold {ACCENT}"),
-                box=box.ROUNDED,
-                border_style=ACCENT_DEEP,
-                padding=(0, 1),
-            )
-        )
-
-        choice = render_hub_menu(
-            title=f"Tactical Action: {cname}",
-            actions=actions,
-            prompt_text="❯ Select action (0-4): ",
-        )
-
-        if choice in ("0", ""):
-            break
-        elif choice == "1":
-            if hasattr(app, "_view_challenge_detail_for"):
-                app._view_challenge_detail_for(target)
-            elif hasattr(app, "_show_challenge_detail"):
-                app._show_challenge_detail(target)
-        elif choice == "2":
-            if hasattr(app, "_run_container_action_for_id"):
-                app._run_container_action_for_id(cid, cname)
-        elif choice == "3":
-            if hasattr(app, "_submit_flag_for_target"):
-                app._submit_flag_for_target(target)
-        elif choice == "4":
-            if hasattr(app, "_launch_solver_for_target"):
-                app._launch_solver_for_target(target)
+        try:
+            con.print()
+            card_table = Table(box=None, show_header=False, pad_edge=False, padding=(0, 1))
+            card_table.add_column("Field", style=FG_MUTED, no_wrap=True)
+            card_table.add_column("Value")
+            card_table.add_row("Challenge", Text(str(cname), style=f"bold {FG_BASE}"))
+            card_table.add_row("Metadata", Text(f"ID: {cid}  ·  Category: {cat}  ·  Points: {pts}", style=FG_MUTED))
+            if target.get("connection_info"):
+                card_table.add_row("Connection", Text(str(target["connection_info"]), style=INFO))
+            if target.get("solved_by_me"):
+                card_table.add_row("Status", Text("✔ SOLVED", style="solved"))
             else:
-                _launch_single_solver(app, cid)
+                card_table.add_row("Status", Text("· Unsolved", style=FG_FAINT))
+
+            con.print(
+                Panel(
+                    card_table,
+                    title=Text(" ACTION CARD ", style=f"bold {ACCENT}"),
+                    box=box.ROUNDED,
+                    border_style=ACCENT_DEEP,
+                    padding=(0, 1),
+                )
+            )
+
+            choice = render_hub_menu(
+                title=f"Tactical Action: {cname}",
+                actions=actions,
+                prompt_text="❯ Select action (0-4): ",
+            )
+
+            if choice in ("0", ""):
+                break
+            elif choice == "1":
+                if hasattr(app, "_view_challenge_detail_for"):
+                    app._view_challenge_detail_for(target)
+                elif hasattr(app, "_show_challenge_detail"):
+                    app._show_challenge_detail(target)
+            elif choice == "2":
+                if hasattr(app, "_run_container_action_for_id"):
+                    app._run_container_action_for_id(cid, cname)
+            elif choice == "3":
+                if hasattr(app, "_submit_flag_for_target"):
+                    app._submit_flag_for_target(target)
+            elif choice == "4":
+                if hasattr(app, "_launch_solver_for_target"):
+                    app._launch_solver_for_target(target)
+                else:
+                    _launch_single_solver(app, cid)
+        except (EOFError, KeyboardInterrupt):
+            break
+        except Exception as exc:
+            Logger.error(f"Lỗi thao tác Action Card: {exc}")
+            if os.environ.get("CTF_DEBUG") == "1":
+                import traceback
+                traceback.print_exc()
+            _pause()
 
 
 def _launch_single_solver(app: Any, cid: Any) -> None:
@@ -270,25 +288,34 @@ def hub_challenge_operations(app: Any) -> None:
     ]
 
     while True:
-        choice = render_hub_menu(
-            title="Challenge Operations",
-            subtitle="Challenges & Instances",
-            actions=actions,
-            prompt_text="❯ Select action (0-3): ",
-        )
-        if choice in ("0", ""):
-            break
-        elif choice == "1":
-            if hasattr(app, "_menu_view_tree"):
-                app._menu_view_tree()
-        elif choice == "2":
-            if hasattr(app, "_menu_select_and_open_card"):
-                app._menu_select_and_open_card()
+        try:
+            choice = render_hub_menu(
+                title="Challenge Operations",
+                subtitle="Challenges & Instances",
+                actions=actions,
+                prompt_text="❯ Select action (0-3): ",
+            )
+            if choice in ("0", ""):
+                break
+            elif choice == "1":
+                if hasattr(app, "_menu_view_tree"):
+                    app._menu_view_tree()
+            elif choice == "2":
+                if hasattr(app, "_menu_select_and_open_card"):
+                    app._menu_select_and_open_card()
             elif hasattr(app, "_menu_view_challenge_detail"):
                 app._menu_view_challenge_detail()
-        elif choice == "3":
-            if hasattr(app, "_menu_manage_instances"):
-                app._menu_manage_instances()
+            elif choice == "3":
+                if hasattr(app, "_menu_manage_instances"):
+                    app._menu_manage_instances()
+        except (EOFError, KeyboardInterrupt):
+            break
+        except Exception as exc:
+            Logger.error(f"Lỗi thao tác Challenge Operations: {exc}")
+            if os.environ.get("CTF_DEBUG") == "1":
+                import traceback
+                traceback.print_exc()
+            _pause()
 
 
 def hub_flag_submission(app: Any) -> None:
@@ -301,25 +328,34 @@ def hub_flag_submission(app: Any) -> None:
     ]
 
     while True:
-        choice = render_hub_menu(
-            title="Flag Submission Lab",
-            subtitle="Harvesting & History",
-            actions=actions,
-            prompt_text="❯ Select action (0-3): ",
-        )
-        if choice in ("0", ""):
+        try:
+            choice = render_hub_menu(
+                title="Flag Submission Lab",
+                subtitle="Harvesting & History",
+                actions=actions,
+                prompt_text="❯ Select action (0-3): ",
+            )
+            if choice in ("0", ""):
+                break
+            elif choice == "1":
+                if hasattr(app, "_menu_submit_flag"):
+                    app._menu_submit_flag()
+            elif choice == "2":
+                if hasattr(app, "_menu_auto_submit"):
+                    app._menu_auto_submit()
+            elif choice == "3":
+                if hasattr(app, "_menu_flag_history"):
+                    app._menu_flag_history()
+                else:
+                    _show_flag_vault(app)
+        except (EOFError, KeyboardInterrupt):
             break
-        elif choice == "1":
-            if hasattr(app, "_menu_submit_flag"):
-                app._menu_submit_flag()
-        elif choice == "2":
-            if hasattr(app, "_menu_auto_submit"):
-                app._menu_auto_submit()
-        elif choice == "3":
-            if hasattr(app, "_menu_flag_history"):
-                app._menu_flag_history()
-            else:
-                _show_flag_vault(app)
+        except Exception as exc:
+            Logger.error(f"Lỗi thao tác Flag Submission Lab: {exc}")
+            if os.environ.get("CTF_DEBUG") == "1":
+                import traceback
+                traceback.print_exc()
+            _pause()
 
 
 def _show_flag_vault(app: Any) -> None:
@@ -344,33 +380,46 @@ def hub_system_arsenal(app: Any) -> None:
     ]
 
     while True:
-        choice = render_hub_menu(
-            title="System & Arsenal",
-            subtitle="Git & Settings",
-            actions=actions,
-            prompt_text="❯ Select action (0-3): ",
-        )
-        if choice in ("0", ""):
-            break
-        elif choice == "1":
-            if hasattr(app, "_menu_git"):
-                app._menu_git()
-        elif choice == "2":
-            if hasattr(app, "_menu_switch_theme"):
-                app._menu_switch_theme()
-        elif choice == "3":
-            if hasattr(app, "_menu_global_config"):
-                app._menu_global_config()
+        try:
+            choice = render_hub_menu(
+                title="System & Arsenal",
+                subtitle="Git & Settings",
+                actions=actions,
+                prompt_text="❯ Select action (0-3): ",
+            )
+            if choice in ("0", ""):
+                break
+            elif choice == "1":
+                if hasattr(app, "_menu_git"):
+                    app._menu_git()
+            elif choice == "2":
+                if hasattr(app, "_menu_switch_theme"):
+                    app._menu_switch_theme()
+            elif choice == "3":
+                if hasattr(app, "_menu_global_config"):
+                    app._menu_global_config()
             else:
                 _show_config_summary(app)
+        except (EOFError, KeyboardInterrupt):
+            break
+        except Exception as exc:
+            Logger.error(f"Lỗi thao tác System & Arsenal: {exc}")
+            if os.environ.get("CTF_DEBUG") == "1":
+                import traceback
+                traceback.print_exc()
+            _pause()
 
 
 def _show_config_summary(app: Any) -> None:
     """Display current global configurations."""
-    from ..storage.global_config import load_global_config
-    con = _hub_console()
-    cfg = load_global_config()
-    con.print(Text("\n  Global Configuration:", style=f"bold {FG_BASE}"))
-    for k, v in cfg.items():
-        con.print(Text(f"    • {k}: ", style=ACCENT) + Text(str(v), style=FG_MUTED))
+    try:
+        from ..storage.global_config import load_global_config
+        con = _hub_console()
+        cfg = load_global_config()
+        con.print(Text("\n  Global Configuration:", style=f"bold {FG_BASE}"))
+        for k, v in cfg.items():
+            con.print(Text(f"    • {k}: ", style=ACCENT) + Text(str(v), style=FG_MUTED))
+    except Exception as e:
+        Logger.error(f"Error loading global config: {e}")
     _pause()
+

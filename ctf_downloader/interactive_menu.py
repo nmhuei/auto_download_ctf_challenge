@@ -501,6 +501,20 @@ class CTFInteractiveConsole:
         if total > 0:
             self._render_radar_dashboard(con)
 
+    def _safe_run_action(self, func, *args, **kwargs):
+        """Execute a UI action with default exception handling to prevent crashing."""
+        try:
+            return func(*args, **kwargs)
+        except (EOFError, KeyboardInterrupt):
+            raise
+        except Exception as exc:
+            Logger.error(f"Lỗi thực thi chức năng: {exc}")
+            if os.environ.get("CTF_DEBUG") == "1":
+                import traceback
+                traceback.print_exc()
+            _pause()
+            return None
+
     def run(self):
         while True:
             # C12-M1: EOF/Ctrl-D (và Ctrl-C) ở prompt BẤT KỲ — kể cả prompt
@@ -549,7 +563,7 @@ class CTFInteractiveConsole:
                     dash = CTFDashboard(self.workspace_path)
                     target, err = _resolve_challenge_selection(dash.local_challenges, query)
                     if target:
-                        challenge_action_card(self, target)
+                        self._safe_run_action(challenge_action_card, self, target)
                         continue
                     else:
                         Logger.error(err or f'Challenge not found: {query}')
@@ -580,17 +594,17 @@ class CTFInteractiveConsole:
                              style=FG_MUTED))
                     break
                 elif canonical == '1':
-                    self._menu_switch_workspace()
+                    self._safe_run_action(self._menu_switch_workspace)
                 elif canonical == '2':
-                    self._menu_flag_format()
+                    self._safe_run_action(self._menu_flag_format)
                 elif canonical == '3':
-                    self._menu_submit_flag()
+                    self._safe_run_action(self._menu_submit_flag)
                 elif canonical == '4':
-                    self._menu_ranking()
+                    self._safe_run_action(self._menu_ranking)
                 elif canonical == '5':
-                    self._menu_container_manager()
+                    self._safe_run_action(self._menu_container_manager)
                 elif canonical == 'S':
-                    self._menu_solver()
+                    self._safe_run_action(self._menu_solver)
                 elif canonical == 'G':
                     con = _menu_console()
                     con.print()
@@ -600,16 +614,16 @@ class CTFInteractiveConsole:
                     con.print(Text("     • ctf git status    - Inspect dirty files & 50MB bloat guard", style=FG_MUTED))
                     _pause()
                 elif canonical == 'T':
-                    self._menu_theme()
+                    self._safe_run_action(self._menu_theme)
                 # Compatibility fallbacks for legacy inputs
                 elif canonical == '6':
-                    self._menu_submit_flag()
+                    self._safe_run_action(self._menu_submit_flag)
                 elif canonical == '7':
-                    self._menu_auto_submit()
+                    self._safe_run_action(self._menu_auto_submit)
                 elif canonical == '8':
-                    self._menu_scan_workspaces()
+                    self._safe_run_action(self._menu_scan_workspaces)
                 elif canonical == '9':
-                    self._menu_configure_auth()
+                    self._safe_run_action(self._menu_configure_auth)
                 else:
                     Logger.warning('Invalid selection. Please choose an option from 1 to 5, S, or 0.')
                 # Ghi nhớ hành động gần nhất để vòng sau đánh dấu ❯ (§S1.1);
@@ -625,6 +639,12 @@ class CTFInteractiveConsole:
                     Text('\nGoodbye! Good luck with your CTF competition.\n',
                          style=FG_MUTED))
                 break
+            except Exception as exc:
+                Logger.error(f"Đã xảy ra lỗi trong quá trình thao tác: {exc}")
+                if os.environ.get("CTF_DEBUG") == "1":
+                    import traceback
+                    traceback.print_exc()
+                _pause()
 
     def _menu_download_new(self):
         _section('Download & Initialize New CTF Competition')
@@ -1387,33 +1407,36 @@ class CTFInteractiveConsole:
                     Logger.info("Đã huỷ nộp flag.")
                     return
 
-        sub = FlagSubmitter(
-            workspace_dir=self.workspace_path,
-            cookie=self.cookie,
-            token=self.token
-        )
-        res = sub.submit_single_flag(
-            challenge_id=target.get('id'),
-            challenge_name=target.get('name'),
-            flag_value=flag_str
-        )
-        ok = res[0] if isinstance(res, (tuple, list)) and len(res) >= 1 else bool(res)
-        if ok:
-            try:
-                from .services.git_workflow import GitWorkflowService
-                repo_root = GitWorkflowService.find_repo_root(self.workspace_path)
-                if repo_root:
-                    cname = target.get('name') or target.get('id')
-                    res = GitWorkflowService.checkpoint_and_push(
-                        self.workspace_path,
-                        message=f"solve({target.get('category', 'ctf')}): {cname} -> flag captured",
-                        push=True,
-                        scoped_only=True,
-                    )
-                    if res.get("committed"):
-                        Logger.success("Git: Automatically checkpointed solve to Git.")
-            except Exception as ge:
-                Logger.warning(f"Git auto-checkpoint: {ge}")
+        try:
+            sub = FlagSubmitter(
+                workspace_dir=self.workspace_path,
+                cookie=self.cookie,
+                token=self.token
+            )
+            res = sub.submit_single_flag(
+                challenge_id=target.get('id'),
+                challenge_name=target.get('name'),
+                flag_value=flag_str
+            )
+            ok = res[0] if isinstance(res, (tuple, list)) and len(res) >= 1 else bool(res)
+            if ok:
+                try:
+                    from .services.git_workflow import GitWorkflowService
+                    repo_root = GitWorkflowService.find_repo_root(self.workspace_path)
+                    if repo_root:
+                        cname = target.get('name') or target.get('id')
+                        res = GitWorkflowService.checkpoint_and_push(
+                            self.workspace_path,
+                            message=f"solve({target.get('category', 'ctf')}): {cname} -> flag captured",
+                            push=True,
+                            scoped_only=True,
+                        )
+                        if res.get("committed"):
+                            Logger.success("Git: Automatically checkpointed solve to Git.")
+                except Exception as ge:
+                    Logger.warning(f"Git auto-checkpoint: {ge}")
+        except Exception as e:
+            Logger.error(f"Flag submission error: {e}")
         _pause()
 
     def _run_container_action_for_id(self, cid: str, challenge_name: str = ""):
@@ -1438,25 +1461,25 @@ class CTFInteractiveConsole:
             actions=actions,
             prompt_text="Select action (0-4): ",
         )
-        if act == '1':
-            mgr.start_instance(cid)
-        elif act == '2':
-            st = mgr.get_status(cid)
-            Logger.info(f'Status for ID {cid}: {st}')
-        elif act == '3':
-            mgr.extend_instance(cid)
-        elif act == '4':
-            mgr.stop_instance(cid)
-        else:
-            return
+        try:
+            if act == '1':
+                mgr.start_instance(cid)
+            elif act == '2':
+                st = mgr.get_status(cid)
+                Logger.info(f'Status for ID {cid}: {st}')
+            elif act == '3':
+                mgr.extend_instance(cid)
+            elif act == '4':
+                mgr.stop_instance(cid)
+            else:
+                return
+        except Exception as e:
+            Logger.error(f"Container operation failed: {e}")
 
         diag = getattr(mgr, 'last_diagnostic', None)
-        if diag and getattr(diag, 'recovery', None):
-            from .bqa_recovery import offer_bqa_recovery
-            if not offer_bqa_recovery(diag):
-                _pause()
-        else:
-            _pause()
+        if diag:
+            Logger.warning(f"Container notice: {diag}")
+        _pause()
 
     def _run_solver_for_target(self, target: dict):
         from .services.solver_service import SolverService
@@ -1481,6 +1504,7 @@ class CTFInteractiveConsole:
                 return
 
             con = _menu_console()
+            current_engine = getattr(self, "_solver_engine", None) or solver_default_engine(service.workspace)
             extra_kw = {"engine": current_engine} if current_engine and current_engine != "agy" else {}
             res = service.spawn_background(str(matched_job.display_id), workers=1, **extra_kw)
             if not res.get("success"):
@@ -1684,10 +1708,15 @@ class CTFInteractiveConsole:
                 bg_kwargs = {"workers": min(service.worker_limit, max(1, category_count)), "per_category": True}
                 if engine_name and engine_name != "agy":
                     bg_kwargs["engine"] = engine_name
-                res = service.spawn_background(
-                    source_ids,
-                    **bg_kwargs,
-                )
+                try:
+                    res = service.spawn_background(
+                        source_ids,
+                        **bg_kwargs,
+                    )
+                except Exception as err:
+                    Logger.error(f"Auto-solve startup failed: {err}")
+                    _pause()
+                    continue
                 if not res.get("success"):
                     Logger.error(res.get("message", "Auto-solve startup failed."))
                     _pause()
@@ -1699,11 +1728,17 @@ class CTFInteractiveConsole:
                 except (EOFError, KeyboardInterrupt):
                     return
                 if watch_now != 'n':
-                    _run_live_radar(service, con)
+                    try:
+                        _run_live_radar(service, con)
+                    except Exception as err:
+                        Logger.error(f"Live radar error: {err}")
                 _pause()
                 continue
             elif act_clean in ('3', 'radar', 'live', 'watch', 'active', 'agy', 'workers', 'tasks', 'running'):
-                _run_live_radar(service, con)
+                try:
+                    _run_live_radar(service, con)
+                except Exception as err:
+                    Logger.error(f"Live radar error: {err}")
                 _pause()
                 continue
             elif act == '4':
@@ -1743,8 +1778,11 @@ class CTFInteractiveConsole:
                 except (EOFError, KeyboardInterrupt):
                     return
                 if confirm:
-                    res = service.stop_background(tid if tid else None)
-                    Logger.info(res.get("message", "Stop signal sent."))
+                    try:
+                        res = service.stop_background(tid if tid else None)
+                        Logger.info(res.get("message", "Stop signal sent."))
+                    except Exception as err:
+                        Logger.error(f"Stop error: {err}")
                 _pause()
                 continue
             elif act == '6':
@@ -1770,14 +1808,17 @@ class CTFInteractiveConsole:
 
                 for c in targets:
                     con.print(f"\n  [dim]Distilling operational playbook for {c}...[/dim]")
-                    res = service.distill_playbook(c)
-                    if res.get("success"):
-                        con.print(f"  [{SUCCESS}]✔ Playbook updated for {c}:[/{SUCCESS}]")
-                        con.print(f"    📄 File: [{INFO}]{res.get('playbook_path')}[/{INFO}]")
-                        if res.get("main_conversation_id"):
-                            con.print(f"    🧠 Master Session: [dim]{res.get('main_conversation_id')}[/dim]")
-                    else:
-                        Logger.error(f"Failed to distill playbook for {c}")
+                    try:
+                        res = service.distill_playbook(c)
+                        if res.get("success"):
+                            con.print(f"  [{SUCCESS}]✔ Playbook updated for {c}:[/{SUCCESS}]")
+                            con.print(f"    📄 File: [{INFO}]{res.get('playbook_path')}[/{INFO}]")
+                            if res.get("main_conversation_id"):
+                                con.print(f"    🧠 Master Session: [dim]{res.get('main_conversation_id')}[/dim]")
+                        else:
+                            Logger.error(f"Failed to distill playbook for {c}")
+                    except Exception as err:
+                        Logger.error(f"Distill error for {c}: {err}")
                 _pause()
                 continue
             elif act_clean in ('7', 'help', 'h', 'ask', 'astra', 'ctf-ask'):
@@ -1799,34 +1840,37 @@ class CTFInteractiveConsole:
                 except (EOFError, KeyboardInterrupt):
                     return
                 if ws_input:
-                    ws_path = Path(self.workspace_path) / ws_input if not Path(ws_input).is_absolute() else Path(ws_input)
-                    if not ws_path.is_dir():
-                        Logger.error(f'Workspace directory not found: {ws_path}')
-                    else:
-                        val_script = Path(__file__).resolve().parents[1] / ".agents" / "skills" / "ctf-ask" / "scripts" / "validate_sanitized_handoff.py"
-                        if val_script.is_file():
-                            con.print(f"  [dim]Running preflight validation on {ws_path}...[/dim]")
-                            res = subprocess.run(
-                                [sys.executable, str(val_script), "preflight", "--workspace", str(ws_path)],
-                                capture_output=True,
-                                text=True,
-                                check=False,
-                            )
-                            if res.returncode == 0:
-                                con.print(f"  [{SUCCESS}]✔ Preflight PASSED: Workspace is clean, isolated, and valid.[/{SUCCESS}]")
-                            else:
-                                Logger.error("Preflight FAILED: Domain leakage or missing files detected.")
-                                try:
-                                    import json
-                                    err_data = json.loads(res.stdout)
-                                    for err in err_data.get("errors", []):
-                                        con.print(f"    [{DANGER}]✖ {err}[/{DANGER}]")
-                                    for fnd in err_data.get("findings", []):
-                                        con.print(f"    [{WARN}]▲ {fnd.get('label')}: {fnd.get('match')}[/{WARN}]")
-                                except Exception:
-                                    con.print(f"    [{DANGER}]{res.stderr or res.stdout}[/{DANGER}]")
+                    try:
+                        ws_path = Path(self.workspace_path) / ws_input if not Path(ws_input).is_absolute() else Path(ws_input)
+                        if not ws_path.is_dir():
+                            Logger.error(f'Workspace directory not found: {ws_path}')
                         else:
-                            Logger.warning(f"Validator script not found: {val_script}")
+                            val_script = Path(__file__).resolve().parents[1] / ".agents" / "skills" / "ctf-ask" / "scripts" / "validate_sanitized_handoff.py"
+                            if val_script.is_file():
+                                con.print(f"  [dim]Running preflight validation on {ws_path}...[/dim]")
+                                res = subprocess.run(
+                                    [sys.executable, str(val_script), "preflight", "--workspace", str(ws_path)],
+                                    capture_output=True,
+                                    text=True,
+                                    check=False,
+                                )
+                                if res.returncode == 0:
+                                    con.print(f"  [{SUCCESS}]✔ Preflight PASSED: Workspace is clean, isolated, and valid.[/{SUCCESS}]")
+                                else:
+                                    Logger.error("Preflight FAILED: Domain leakage or missing files detected.")
+                                    try:
+                                        import json
+                                        err_data = json.loads(res.stdout)
+                                        for err in err_data.get("errors", []):
+                                            con.print(f"    [{ERROR}]✖ {err}[/{ERROR}]")
+                                        for fnd in err_data.get("findings", []):
+                                            con.print(f"    [{WARN}]▲ {fnd.get('label')}: {fnd.get('match')}[/{WARN}]")
+                                    except Exception:
+                                        con.print(f"    [{ERROR}]{res.stderr or res.stdout}[/{ERROR}]")
+                            else:
+                                Logger.warning(f"Validator script not found: {val_script}")
+                    except Exception as err:
+                        Logger.error(f"Preflight error: {err}")
                 _pause()
                 continue
             else:
@@ -1885,34 +1929,40 @@ class CTFInteractiveConsole:
         _render_header_panel('Auto-Submit Flags', 'Scan and submit captured flags')
         confirm = Confirm.ask('Scan all README.md files and auto-submit filled flags?', default=True)
         if confirm:
-            sub = FlagSubmitter(
-                workspace_dir=self.workspace_path,
-                cookie=self.cookie,
-                token=self.token
-            )
-            results = sub.auto_submit_all()
-            if results and any(r.get("success") or r.get("status") == "correct" for r in results if isinstance(r, dict)):
-                try:
-                    from .services.git_workflow import GitWorkflowService
-                    repo_root = GitWorkflowService.find_repo_root(self.workspace_path)
-                    if repo_root:
-                        res = GitWorkflowService.checkpoint_and_push(
-                            self.workspace_path,
-                            message="solve(auto-submit): checkpoint captured flags",
-                            push=True,
-                            scoped_only=True,
-                        )
-                        if res.get("committed"):
-                            Logger.success("Git: Checkpointed submitted flags to Git.")
-                except Exception as ge:
-                    Logger.warning(f"Git auto-checkpoint: {ge}")
+            try:
+                sub = FlagSubmitter(
+                    workspace_dir=self.workspace_path,
+                    cookie=self.cookie,
+                    token=self.token
+                )
+                results = sub.auto_submit_all()
+                if results and any(r.get("success") or r.get("status") == "correct" for r in results if isinstance(r, dict)):
+                    try:
+                        from .services.git_workflow import GitWorkflowService
+                        repo_root = GitWorkflowService.find_repo_root(self.workspace_path)
+                        if repo_root:
+                            res = GitWorkflowService.checkpoint_and_push(
+                                self.workspace_path,
+                                message="solve(auto-submit): checkpoint captured flags",
+                                push=True,
+                                scoped_only=True,
+                            )
+                            if res.get("committed"):
+                                Logger.success("Git: Checkpointed submitted flags to Git.")
+                    except Exception as ge:
+                        Logger.warning(f"Git auto-checkpoint: {ge}")
+            except Exception as e:
+                Logger.error(f"Auto-submit failed: {e}")
         _pause()
 
     def _menu_scan_workspaces(self):
         base_dir = resolve_workspace_root()
         # Single scan table located in StatusService.scan_all_workspaces
         # (shared with cli handle_workspaces / manage.py -A)
-        StatusService.scan_all_workspaces(base_dir)
+        try:
+            StatusService.scan_all_workspaces(base_dir)
+        except Exception as e:
+            Logger.error(f"Scan workspaces failed: {e}")
         _pause()
 
     def _menu_configure_auth(self):
@@ -1935,124 +1985,130 @@ class CTFInteractiveConsole:
             prompt_text="Select action (0-4): ",
         )
 
-        if ch == '1':
-            c_in = _prompt('Paste Cookie [Enter to cancel]: ').strip()
-            if not c_in:
-                return
-            if os.path.isfile(c_in):
-                try:
-                    with open(c_in, 'r', encoding='utf-8') as f:
-                        raw_cookie = f.read().strip()
-                except Exception as e:
-                    Logger.error(f"Cannot read cookie file: {e}")
+        try:
+            if ch == '1':
+                c_in = _prompt('Paste Cookie [Enter to cancel]: ').strip()
+                if not c_in:
+                    return
+                if os.path.isfile(c_in):
+                    try:
+                        with open(c_in, 'r', encoding='utf-8') as f:
+                            raw_cookie = f.read().strip()
+                    except Exception as e:
+                        Logger.error(f"Cannot read cookie file: {e}")
+                        _pause()
+                        return
+                else:
+                    raw_cookie = c_in
+                clean_c = sanitize_cookie_input(raw_cookie)
+                if not clean_c:
+                    Logger.warning("Cookie provided is empty or invalid.")
                     _pause()
                     return
-            else:
-                raw_cookie = c_in
-            clean_c = sanitize_cookie_input(raw_cookie)
-            if not clean_c:
-                Logger.warning("Cookie provided is empty or invalid.")
+                plat_url = None
+                try:
+                    from .storage.workspace_repo import WorkspaceRepo
+                    plat_url = WorkspaceRepo(self.workspace_path).resolve_platform_url()
+                except Exception:
+                    pass
+                self.cookie = clean_c
+                AuthService.save_auth(self.workspace_path, url=plat_url, cookie=self.cookie, token=self.token)
+                self._save_current_workspace(set_default=False)
+                Logger.success('Cookie saved successfully for this workspace!')
                 _pause()
-                return
-            plat_url = None
-            try:
-                from .storage.workspace_repo import WorkspaceRepo
-                plat_url = WorkspaceRepo(self.workspace_path).resolve_platform_url()
-            except Exception:
-                pass
-            self.cookie = clean_c
-            AuthService.save_auth(self.workspace_path, url=plat_url, cookie=self.cookie, token=self.token)
-            self._save_current_workspace(set_default=False)
-            Logger.success('Cookie saved successfully for this workspace!')
-            _pause()
-        elif ch == '2':
-            t_in = _prompt('Paste API/Bearer Token [Enter to cancel]: ').strip()
-            if not t_in:
-                return
-            plat_url = None
-            try:
-                from .storage.workspace_repo import WorkspaceRepo
-                plat_url = WorkspaceRepo(self.workspace_path).resolve_platform_url()
-            except Exception:
-                pass
-            self.token = t_in.strip()
-            AuthService.save_auth(self.workspace_path, url=plat_url, cookie=self.cookie, token=self.token)
-            self._save_current_workspace(set_default=False)
-            Logger.success('Token saved successfully for this workspace!')
-            _pause()
-        elif ch == '3':
-            self.cookie = None
-            self.token = None
-            plat_url = None
-            try:
-                from .storage.workspace_repo import WorkspaceRepo
-                plat_url = WorkspaceRepo(self.workspace_path).resolve_platform_url()
-            except Exception:
-                pass
-            AuthService.delete_auth(self.workspace_path, url=plat_url)
-            self._save_current_workspace(set_default=False)
-            Logger.info('Credentials cleared.')
-            _pause()
-        elif ch == '4':
-            plat_url = None
-            try:
-                from .storage.workspace_repo import WorkspaceRepo
-                plat_url = WorkspaceRepo(self.workspace_path).resolve_platform_url()
-            except Exception:
-                pass
-            if not plat_url:
-                plat_url = _prompt('Target CTF URL or domain (e.g. asisctf.com) [Enter to cancel]: ').strip()
+            elif ch == '2':
+                t_in = _prompt('Paste API/Bearer Token [Enter to cancel]: ').strip()
+                if not t_in:
+                    return
+                plat_url = None
+                try:
+                    from .storage.workspace_repo import WorkspaceRepo
+                    plat_url = WorkspaceRepo(self.workspace_path).resolve_platform_url()
+                except Exception:
+                    pass
+                self.token = t_in.strip()
+                AuthService.save_auth(self.workspace_path, url=plat_url, cookie=self.cookie, token=self.token)
+                self._save_current_workspace(set_default=False)
+                Logger.success('Token saved successfully for this workspace!')
+                _pause()
+            elif ch == '3':
+                self.cookie = None
+                self.token = None
+                plat_url = None
+                try:
+                    from .storage.workspace_repo import WorkspaceRepo
+                    plat_url = WorkspaceRepo(self.workspace_path).resolve_platform_url()
+                except Exception:
+                    pass
+                AuthService.delete_auth(self.workspace_path, url=plat_url)
+                self._save_current_workspace(set_default=False)
+                Logger.info('Credentials cleared.')
+                _pause()
+            elif ch == '4':
+                plat_url = None
+                try:
+                    from .storage.workspace_repo import WorkspaceRepo
+                    plat_url = WorkspaceRepo(self.workspace_path).resolve_platform_url()
+                except Exception:
+                    pass
                 if not plat_url:
+                    plat_url = _prompt('Target CTF URL or domain (e.g. asisctf.com) [Enter to cancel]: ').strip()
+                    if not plat_url:
+                        return
+
+                from .services.burp_service import BurpService
+                con = _menu_console()
+                burp = BurpService()
+                if not burp.is_mcp_available(timeout=0.6):
+                    Logger.warning(
+                        f"Burp Suite MCP server is not reachable on localhost:{burp.mcp_port}.\n"
+                        "  Ensure Burp Suite is running and the MCP extension/server is listening on port 9876."
+                    )
+                    _pause()
                     return
 
-            from .services.burp_service import BurpService
-            con = _menu_console()
-            burp = BurpService()
-            if not burp.is_mcp_available(timeout=0.6):
-                Logger.warning(
-                    f"Burp Suite MCP server is not reachable on localhost:{burp.mcp_port}.\n"
-                    "  Ensure Burp Suite is running and the MCP extension/server is listening on port 9876."
-                )
+                with con.status(f"[bold {ACCENT}]Querying Burp Suite HTTP history for {plat_url}...[/bold {ACCENT}]"):
+                    cookies = burp.extract_cookies(plat_url, count=100, timeout=3.0)
+
+                if not cookies:
+                    Logger.warning(
+                        f"No session cookies found for '{plat_url}' in Burp Suite HTTP proxy history.\n"
+                        "  Tip: Browse the CTF platform in Burp's embedded browser or through proxy 127.0.0.1:8080 first."
+                    )
+                    _pause()
+                    return
+
+                grid = Table(box=box.ROUNDED, border_style=ACCENT_DEEP)
+                grid.add_column("Cookie Key", style=f"bold {ACCENT}")
+                grid.add_column("Preview Value", style=FG_BASE)
+                grid.add_column("Status", style=SOLVED)
+
+                cookie_parts = []
+                for k, v in cookies.items():
+                    masked_val = v[:6] + "..." + v[-4:] if len(v) > 12 else v
+                    grid.add_row(k, masked_val, "✔ Active")
+                    cookie_parts.append(f"{k}={v}")
+
+                con.print()
+                con.print(Panel(
+                    grid,
+                    title=f"[bold]🍪 EXTRACTED BURP SUITE SESSION ({len(cookies)} cookies)[/bold]",
+                    box=box.ROUNDED,
+                    border_style=ACCENT_DEEP,
+                    padding=(0, 1),
+                ))
+                con.print()
+
+                formatted_cookie = "; ".join(cookie_parts)
+                self.cookie = formatted_cookie
+                AuthService.save_auth(self.workspace_path, url=plat_url, cookie=self.cookie, token=self.token)
+                self._save_current_workspace(set_default=False)
+                Logger.success(f"Synced & saved {len(cookies)} cookies from Burp Suite for this workspace!")
                 _pause()
-                return
-
-            with con.status(f"[bold {ACCENT}]Querying Burp Suite HTTP history for {plat_url}...[/bold {ACCENT}]"):
-                cookies = burp.extract_cookies(plat_url, count=100, timeout=3.0)
-
-            if not cookies:
-                Logger.warning(
-                    f"No session cookies found for '{plat_url}' in Burp Suite HTTP proxy history.\n"
-                    "  Tip: Browse the CTF platform in Burp's embedded browser or through proxy 127.0.0.1:8080 first."
-                )
-                _pause()
-                return
-
-            grid = Table(box=box.ROUNDED, border_style=ACCENT_DEEP)
-            grid.add_column("Cookie Key", style=f"bold {ACCENT}")
-            grid.add_column("Preview Value", style=FG_BASE)
-            grid.add_column("Status", style=SOLVED)
-
-            cookie_parts = []
-            for k, v in cookies.items():
-                masked_val = v[:6] + "..." + v[-4:] if len(v) > 12 else v
-                grid.add_row(k, masked_val, "✔ Active")
-                cookie_parts.append(f"{k}={v}")
-
-            con.print()
-            con.print(Panel(
-                grid,
-                title=f"[bold]🍪 EXTRACTED BURP SUITE SESSION ({len(cookies)} cookies)[/bold]",
-                box=box.ROUNDED,
-                border_style=ACCENT_DEEP,
-                padding=(0, 1),
-            ))
-            con.print()
-
-            formatted_cookie = "; ".join(cookie_parts)
-            self.cookie = formatted_cookie
-            AuthService.save_auth(self.workspace_path, url=plat_url, cookie=self.cookie, token=self.token)
-            self._save_current_workspace(set_default=False)
-            Logger.success(f"Synced & saved {len(cookies)} cookies from Burp Suite for this workspace!")
+        except (EOFError, KeyboardInterrupt):
+            return
+        except Exception as e:
+            Logger.error(f"Authentication config failed: {e}")
             _pause()
 
     def _menu_git(self):
@@ -2351,14 +2407,23 @@ def _pause():
 def launch_interactive_menu(workspace_path: Optional[str] = None, cookie: Optional[str] = None, token: Optional[str] = None):
     # Full brand owns the first frame. The first menu redraw therefore skips
     # AppHeader to avoid showing UCS_ExOdia twice back-to-back.
-    from .ui.theme import init_theme
-    init_theme()
-    con = _menu_console()
-    con.print(splash(con.width))
-    app = CTFInteractiveConsole(
-        workspace_path=workspace_path,
-        cookie=cookie,
-        token=token,
-    )
-    app._suppress_next_brand = True
-    app.run()
+    try:
+        from .ui.theme import init_theme
+        init_theme()
+        con = _menu_console()
+        con.print(splash(con.width))
+        app = CTFInteractiveConsole(
+            workspace_path=workspace_path,
+            cookie=cookie,
+            token=token,
+        )
+        app._suppress_next_brand = True
+        app.run()
+    except (EOFError, KeyboardInterrupt):
+        pass
+    except Exception as exc:
+        Logger.error(f"Lỗi giao diện CTF: {exc}")
+        if os.environ.get("CTF_DEBUG") == "1":
+            import traceback
+            traceback.print_exc()
+

@@ -263,7 +263,8 @@ class TestInstanceServiceIntegration(unittest.TestCase):
 
 
 class TestInteractiveMenuContainerRecovery(unittest.TestCase):
-    def test_container_action_calls_offer_bqa_recovery_on_failure(self):
+    def test_container_action_does_not_call_bqa_recovery_in_ui(self):
+        """UI interactive menu decouples from BQA auto-recovery."""
         from ctf_downloader.interactive_menu import CTFInteractiveConsole
 
         menu = CTFInteractiveConsole(workspace_path="/tmp/fake_ws")
@@ -287,8 +288,8 @@ class TestInteractiveMenuContainerRecovery(unittest.TestCase):
                         menu._run_container_action_for_id("72", "LeakMeAk")
 
         mock_mgr.start_instance.assert_called_once_with("72")
-        offer_mock.assert_called_once_with(mock_diag)
-        pause_mock.assert_not_called()
+        offer_mock.assert_not_called()
+        pause_mock.assert_called_once()
 
     def test_menu_container_manager_direct_id_when_no_containers(self):
         from ctf_downloader.interactive_menu import CTFInteractiveConsole

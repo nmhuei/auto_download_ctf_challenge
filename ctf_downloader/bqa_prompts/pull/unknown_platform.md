@@ -1,6 +1,6 @@
 # [CTF-PULL-D02] Unknown or Unsupported CTF Platform
 
-Incident class: Unrecognized or unsupported CTF competition platform.
+Incident class: Unrecognized, unknown or unsupported CTF platform.
 Target objective: Enable platform detection and challenge pulling for this target.
 
 ---

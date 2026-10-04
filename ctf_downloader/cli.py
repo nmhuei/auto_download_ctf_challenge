@@ -667,14 +667,16 @@ def _skip_bqa_recovery(argv) -> bool:
         return True
     if os.environ.get("CTF_DISABLE_BQA") == "1":
         return True
-    if any(value in {"-h", "--help", "-v", "--version"} for value in argv):
+    if any(value in {"-h", "--help", "-v", "--version", "-i", "--interactive"} for value in argv):
         return True
     subcommand = next((arg for arg in argv if not arg.startswith("-")), None)
-    if subcommand in {"submit", "hoard"}:
+    # UI / menu / console is NEVER subject to BQA auto-recovery
+    if subcommand in {"menu", "ui", "console"}:
+        return True
+    # BQA auto-recovery is strictly for automated CLI commands (pull, download, clone, instance, sync --pull)
+    if subcommand not in {"pull", "download", "clone", "instance", "sync"}:
         return True
     if subcommand in {"sync", "resync"} and "--pull" not in argv:
-        return True
-    if subcommand is not None and subcommand not in {"pull", "download", "clone", "instance", "sync"}:
         return True
     return False
 
